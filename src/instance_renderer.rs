@@ -1,10 +1,10 @@
 //! GPU-instanced rendering for large numbers of identical meshes.
 //!
 //! [`InstanceRenderer`] draws a single base mesh many times, each with
-//! per-instance position, scale, and color provided via [`InstanceData`].
-//! Suitable for particle systems, tiled grids, and similar patterns.
+//! per-instance data provided via a type implementing [`InstanceVertex`].
+//! The default vertex type [`InstanceData`] provides position, scale, and color.
 //!
-//! # Example
+//! # Example (default vertex)
 //!
 //! ```ignore
 //! let hex = mikage::RegularPolygonMesh::generate(6);
@@ -19,6 +19,38 @@
 //! // In render pass (scene bind group already set at group 0):
 //! renderer.render(&mut pass);
 //! ```
+//!
+//! # Custom vertex types
+//!
+//! Implement [`InstanceVertex`] for your own type and use
+//! [`InstanceRenderer::with_shader`]:
+//!
+//! ```ignore
+//! #[repr(C)]
+//! #[derive(Clone, Copy, Pod, Zeroable)]
+//! struct TileInstance {
+//!     pos_angle: [f32; 4], // xyz + rotation angle
+//! }
+//!
+//! impl InstanceVertex for TileInstance {
+//!     fn vertex_attributes() -> Vec<wgpu::VertexAttribute> {
+//!         vec![wgpu::VertexAttribute {
+//!             format: wgpu::VertexFormat::Float32x4,
+//!             offset: 0,
+//!             shader_location: 2,
+//!         }]
+//!     }
+//! }
+//!
+//! let renderer = InstanceRenderer::<TileInstance>::with_shader(
+//!     &device, render_format, &scene_bgl,
+//!     &mesh.positions, &mesh.normals, &mesh.indices,
+//!     &resolved_shader_source,
+//!     InstanceRendererConfig::default_2d(),
+//! );
+//! ```
+
+use std::marker::PhantomData;
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
@@ -27,7 +59,17 @@ use crate::shader_processor::mikage_shader_processor;
 
 const SHADER_SOURCE: &str = include_str!("../assets/shaders/instancing.wgsl");
 
-/// Per-instance data uploaded to the GPU.
+/// Trait for per-instance vertex data.
+///
+/// Implementations must be `#[repr(C)]` and derive [`Pod`] + [`Zeroable`].
+/// Vertex attributes should use shader locations starting at 2
+/// (locations 0 and 1 are reserved for mesh position and normal).
+pub trait InstanceVertex: Pod + Zeroable {
+    /// Returns the vertex attributes for the instance buffer layout.
+    fn vertex_attributes() -> Vec<wgpu::VertexAttribute>;
+}
+
+/// Per-instance data: position + uniform scale + RGBA color (32 bytes).
 ///
 /// - `pos_scale`: xyz = world position, w = uniform scale
 /// - `color`: RGBA
@@ -38,41 +80,70 @@ pub struct InstanceData {
     pub color: [f32; 4],
 }
 
+impl InstanceVertex for InstanceData {
+    fn vertex_attributes() -> Vec<wgpu::VertexAttribute> {
+        vec![
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: 0,
+                shader_location: 2,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: 16,
+                shader_location: 3,
+            },
+        ]
+    }
+}
+
 /// Configuration for creating an [`InstanceRenderer`].
-pub struct InstanceRendererConfig {
-    /// Use the lit (Lambert diffuse) or unlit (flat color) fragment shader.
-    pub lit: bool,
+pub struct InstanceRendererConfig<'a> {
+    /// Vertex shader entry point name.
+    pub vertex_entry: &'a str,
+    /// Fragment shader entry point name.
+    pub fragment_entry: &'a str,
     /// Enable depth testing/writing.
     pub depth: bool,
     /// Multisample count (1 = no MSAA).
     pub sample_count: u32,
 }
 
-impl InstanceRendererConfig {
+impl InstanceRendererConfig<'_> {
     /// Configuration for 3D rendering: lit shading, depth enabled, no MSAA.
-    pub fn default_3d() -> Self {
-        Self {
-            lit: true,
+    ///
+    /// Uses the built-in instancing shader entry points (`vertex` / `fragment_lit`).
+    pub fn default_3d() -> InstanceRendererConfig<'static> {
+        InstanceRendererConfig {
+            vertex_entry: "vertex",
+            fragment_entry: "fragment_lit",
             depth: true,
             sample_count: 1,
         }
     }
 
     /// Configuration for 2D rendering: unlit shading, no depth, no MSAA.
-    pub fn default_2d() -> Self {
-        Self {
-            lit: false,
+    ///
+    /// Uses the built-in instancing shader entry points (`vertex` / `fragment_unlit`).
+    pub fn default_2d() -> InstanceRendererConfig<'static> {
+        InstanceRendererConfig {
+            vertex_entry: "vertex",
+            fragment_entry: "fragment_unlit",
             depth: false,
             sample_count: 1,
         }
     }
 }
 
-/// Renders many copies of a single mesh with per-instance transforms and colors.
+/// Renders many copies of a single mesh with per-instance data.
+///
+/// Generic over the instance vertex type `V`. The default type [`InstanceData`]
+/// provides position + scale + color. Use [`with_shader`](InstanceRenderer::with_shader)
+/// for custom vertex types with your own shader.
 ///
 /// The scene bind group (`@group(0)`) must be set by the caller before
 /// calling [`render`](InstanceRenderer::render).
-pub struct InstanceRenderer {
+pub struct InstanceRenderer<V: InstanceVertex = InstanceData> {
     pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
@@ -80,15 +151,17 @@ pub struct InstanceRenderer {
     instance_buffer: wgpu::Buffer,
     instance_capacity: u32,
     instance_count: u32,
+    _phantom: PhantomData<V>,
 }
 
 const INITIAL_INSTANCE_CAPACITY: u32 = 1024;
 
-impl InstanceRenderer {
-    /// Creates a new `InstanceRenderer` with the given base mesh.
+impl InstanceRenderer<InstanceData> {
+    /// Creates an `InstanceRenderer` using the built-in instancing shader.
     ///
-    /// `scene_bind_group_layout` is the layout for `@group(0)` containing
-    /// a [`SceneUniform`](crate::SceneUniform) buffer.
+    /// This is a convenience constructor for the default [`InstanceData`] layout
+    /// (position + scale + color). For custom vertex types, use
+    /// [`with_shader`](InstanceRenderer::with_shader).
     pub fn new(
         device: &wgpu::Device,
         render_format: wgpu::TextureFormat,
@@ -96,6 +169,41 @@ impl InstanceRenderer {
         positions: &[[f32; 3]],
         normals: &[[f32; 3]],
         indices: &[u32],
+        config: InstanceRendererConfig,
+    ) -> Self {
+        let resolved = mikage_shader_processor()
+            .resolve(SHADER_SOURCE)
+            .expect("failed to resolve instancing shader imports");
+        Self::with_shader(
+            device,
+            render_format,
+            scene_bind_group_layout,
+            positions,
+            normals,
+            indices,
+            &resolved,
+            config,
+        )
+    }
+}
+
+impl<V: InstanceVertex> InstanceRenderer<V> {
+    /// Creates an `InstanceRenderer` with a custom shader and vertex type.
+    ///
+    /// `shader_source` must be import-resolved WGSL. Use [`ShaderProcessor`](crate::ShaderProcessor)
+    /// to resolve `#import` directives before passing the source here.
+    ///
+    /// The shader must declare vertex attributes matching `V::vertex_attributes()`
+    /// at the expected shader locations (starting at 2).
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_shader(
+        device: &wgpu::Device,
+        render_format: wgpu::TextureFormat,
+        scene_bind_group_layout: &wgpu::BindGroupLayout,
+        positions: &[[f32; 3]],
+        normals: &[[f32; 3]],
+        indices: &[u32],
+        shader_source: &str,
         config: InstanceRendererConfig,
     ) -> Self {
         assert_eq!(
@@ -123,21 +231,19 @@ impl InstanceRenderer {
             usage: wgpu::BufferUsages::INDEX,
         });
 
+        let instance_stride = std::mem::size_of::<V>() as u64;
         let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("instance_data_buffer"),
-            size: (INITIAL_INSTANCE_CAPACITY as u64) * (std::mem::size_of::<InstanceData>() as u64),
+            size: (INITIAL_INSTANCE_CAPACITY as u64) * instance_stride,
             usage: wgpu::BufferUsages::VERTEX
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
 
-        let resolved_source = mikage_shader_processor()
-            .resolve(SHADER_SOURCE)
-            .expect("failed to resolve instancing shader imports");
         let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("instancing_shader"),
-            source: wgpu::ShaderSource::Wgsl(resolved_source.into()),
+            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -164,22 +270,12 @@ impl InstanceRenderer {
             ],
         };
 
-        // Instance buffer layout: pos_scale(float32x4) + color(float32x4) = 32 bytes
+        // Instance buffer layout from the vertex type
+        let instance_attributes = V::vertex_attributes();
         let instance_buffer_layout = wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<InstanceData>() as u64,
+            array_stride: instance_stride,
             step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x4,
-                    offset: 0,
-                    shader_location: 2,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x4,
-                    offset: 16,
-                    shader_location: 3,
-                },
-            ],
+            attributes: &instance_attributes,
         };
 
         let depth_stencil = if config.depth {
@@ -194,18 +290,12 @@ impl InstanceRenderer {
             None
         };
 
-        let fragment_entry = if config.lit {
-            "fragment_lit"
-        } else {
-            "fragment_unlit"
-        };
-
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("instancing_pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader_module,
-                entry_point: Some("vertex"),
+                entry_point: Some(config.vertex_entry),
                 compilation_options: Default::default(),
                 buffers: &[mesh_buffer_layout, instance_buffer_layout],
             },
@@ -226,7 +316,7 @@ impl InstanceRenderer {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader_module,
-                entry_point: Some(fragment_entry),
+                entry_point: Some(config.fragment_entry),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: render_format,
@@ -246,6 +336,7 @@ impl InstanceRenderer {
             instance_buffer,
             instance_capacity: INITIAL_INSTANCE_CAPACITY,
             instance_count: 0,
+            _phantom: PhantomData,
         }
     }
 
@@ -254,12 +345,14 @@ impl InstanceRenderer {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        instances: &[InstanceData],
+        instances: &[V],
     ) {
         self.instance_count = instances.len() as u32;
         if self.instance_count == 0 {
             return;
         }
+
+        let instance_stride = std::mem::size_of::<V>() as u64;
 
         // Grow buffer if needed (power-of-two capacity)
         if self.instance_count > self.instance_capacity {
@@ -270,7 +363,7 @@ impl InstanceRenderer {
                 .unwrap_or(self.instance_count);
             self.instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("instance_data_buffer"),
-                size: (new_cap as u64) * (std::mem::size_of::<InstanceData>() as u64),
+                size: (new_cap as u64) * instance_stride,
                 usage: wgpu::BufferUsages::VERTEX
                     | wgpu::BufferUsages::COPY_DST
                     | wgpu::BufferUsages::STORAGE,
@@ -311,13 +404,14 @@ impl InstanceRenderer {
         if required <= self.instance_capacity {
             return false;
         }
+        let instance_stride = std::mem::size_of::<V>() as u64;
         let new_cap = required
             .max(1024)
             .checked_next_power_of_two()
             .unwrap_or(required);
         self.instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("instance_data_buffer"),
-            size: (new_cap as u64) * (std::mem::size_of::<InstanceData>() as u64),
+            size: (new_cap as u64) * instance_stride,
             usage: wgpu::BufferUsages::VERTEX
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::STORAGE,
