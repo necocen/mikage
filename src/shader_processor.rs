@@ -251,7 +251,10 @@ mod tests {
         let source = "#import a";
         let result = sp.resolve(source);
 
-        assert!(matches!(result, Err(ShaderError::CircularDependency { .. })));
+        assert!(matches!(
+            result,
+            Err(ShaderError::CircularDependency { .. })
+        ));
     }
 
     #[test]
@@ -294,10 +297,7 @@ mod tests {
     #[test]
     fn define_import_path_stripped() {
         let mut sp = ShaderProcessor::new();
-        sp.register(
-            "mymod",
-            "#define_import_path mymod\nstruct Foo { x: f32 };",
-        );
+        sp.register("mymod", "#define_import_path mymod\nstruct Foo { x: f32 };");
 
         let source = "#import mymod\nfn main() {}";
         let result = sp.resolve(source).unwrap();
