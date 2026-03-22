@@ -1,6 +1,6 @@
 use mikage::{
     App, DEPTH_FORMAT, GpuContext, IcoSphereMesh, OrbitCamera, RenderContext, RunConfig,
-    SceneUniform, UpdateContext, create_depth_texture,
+    SceneUniform, ShaderProcessor, UpdateContext, create_depth_texture,
 };
 use wgpu::util::DeviceExt;
 use winit::dpi::PhysicalSize;
@@ -83,11 +83,16 @@ impl App for OrbitCameraApp {
         });
 
         // Shader
+        let mut sp = ShaderProcessor::new();
+        sp.register("mikage::scene_types", mikage::SCENE_TYPES_WGSL);
+        let resolved = sp
+            .resolve(SPHERE_SHADER)
+            .expect("failed to resolve sphere shader imports");
         let shader = ctx
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("sphere_shader"),
-                source: wgpu::ShaderSource::Wgsl(SPHERE_SHADER.into()),
+                source: wgpu::ShaderSource::Wgsl(resolved.into()),
             });
 
         // Pipeline layout
@@ -236,13 +241,7 @@ impl App for OrbitCameraApp {
 }
 
 const SPHERE_SHADER: &str = r#"
-struct SceneUniform {
-    view_proj: mat4x4<f32>,
-    camera_pos: vec4<f32>,
-    light_dir: vec4<f32>,
-    ambient: vec4<f32>,
-};
-
+#import mikage::scene_types
 @group(0) @binding(0) var<uniform> scene: SceneUniform;
 
 struct VertexOutput {

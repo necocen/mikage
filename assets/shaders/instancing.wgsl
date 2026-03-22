@@ -7,12 +7,7 @@
 // - fragment_lit: Lambert diffuse + ambient (for 3D)
 // - fragment_unlit: direct color pass-through (for 2D)
 
-struct SceneUniform {
-    view_proj: mat4x4<f32>,
-    camera_pos: vec4<f32>,
-    light_dir: vec4<f32>,
-    ambient: vec4<f32>,
-};
+#import mikage::scene_types
 @group(0) @binding(0) var<uniform> scene: SceneUniform;
 
 struct Vertex {

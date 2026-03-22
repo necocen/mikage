@@ -22,6 +22,8 @@ use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec4};
 use wgpu::util::DeviceExt;
 
+use crate::shader_processor::mikage_shader_processor;
+
 const SHADER_SOURCE: &str = include_str!("../assets/shaders/solid.wgsl");
 
 /// Per-object model matrix + RGBA color uniform (80 bytes).
@@ -101,9 +103,12 @@ impl SolidRenderer {
                 }],
             });
 
+        let resolved_source = mikage_shader_processor()
+            .resolve(SHADER_SOURCE)
+            .expect("failed to resolve solid shader imports");
         let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("solid_shader"),
-            source: wgpu::ShaderSource::Wgsl(SHADER_SOURCE.into()),
+            source: wgpu::ShaderSource::Wgsl(resolved_source.into()),
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {

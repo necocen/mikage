@@ -23,6 +23,8 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
+use crate::shader_processor::mikage_shader_processor;
+
 const SHADER_SOURCE: &str = include_str!("../assets/shaders/instancing.wgsl");
 
 /// Per-instance data uploaded to the GPU.
@@ -130,9 +132,12 @@ impl InstanceRenderer {
             mapped_at_creation: false,
         });
 
+        let resolved_source = mikage_shader_processor()
+            .resolve(SHADER_SOURCE)
+            .expect("failed to resolve instancing shader imports");
         let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("instancing_shader"),
-            source: wgpu::ShaderSource::Wgsl(SHADER_SOURCE.into()),
+            source: wgpu::ShaderSource::Wgsl(resolved_source.into()),
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {

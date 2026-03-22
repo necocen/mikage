@@ -2,12 +2,7 @@
 // Opaque objects use Lambert diffuse + ambient from SceneUniform.
 // Transparent objects are unlit (color passed through directly).
 
-struct SceneUniform {
-    view_proj: mat4x4<f32>,
-    camera_pos: vec4<f32>,
-    light_dir: vec4<f32>,
-    ambient: vec4<f32>,
-};
+#import mikage::scene_types
 @group(0) @binding(0) var<uniform> scene: SceneUniform;
 
 struct ModelUniform {

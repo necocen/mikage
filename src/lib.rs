@@ -55,6 +55,7 @@ pub mod input;
 pub mod instance_renderer;
 mod logging;
 pub mod runner;
+pub mod shader_processor;
 pub mod solid_renderer;
 mod time;
 
@@ -68,6 +69,7 @@ pub use helpers::{
 pub use input::InputState;
 pub use instance_renderer::{InstanceData, InstanceRenderer, InstanceRendererConfig};
 pub use runner::{RunConfig, run};
+pub use shader_processor::{SCENE_TYPES_WGSL, ShaderError, ShaderProcessor};
 pub use solid_renderer::{ModelUniform, SolidObjectId, SolidRenderer};
 
 /// Re-exported for building UI in [`App::gui`].
