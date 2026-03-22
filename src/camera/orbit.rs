@@ -148,9 +148,12 @@ impl CameraController for OrbitCamera {
         self.distance = self.distance.clamp(self.min_distance, self.max_distance);
     }
 
+    fn on_drag_end(&mut self) {
+        self.is_dragging = false;
+    }
+
     fn update(&mut self, _dt: f32) {
         if self.damping <= 0.0 || self.is_dragging {
-            self.is_dragging = false;
             return;
         }
 

@@ -275,6 +275,7 @@ fn main() {
     camera.distance = 3.0;
     camera.pitch = 0.4;
     camera.yaw = 0.6;
+    camera.damping = 0.85;
 
     mikage::run(
         OrbitCameraApp {

@@ -1,0 +1,339 @@
+//! GPU-instanced rendering for large numbers of identical meshes.
+//!
+//! [`InstanceRenderer`] draws a single base mesh many times, each with
+//! per-instance position, scale, and color provided via [`InstanceData`].
+//! Suitable for particle systems, tiled grids, and similar patterns.
+//!
+//! # Example
+//!
+//! ```ignore
+//! let hex = mikage::RegularPolygonMesh::generate(6);
+//! let mut renderer = InstanceRenderer::new(
+//!     &device, render_format, &scene_bgl,
+//!     &hex.positions, &hex.normals, &hex.indices,
+//!     InstanceRendererConfig::default_2d(),
+//! );
+//!
+//! renderer.update_instances(&device, &queue, &instances);
+//!
+//! // In render pass (scene bind group already set at group 0):
+//! renderer.render(&mut pass);
+//! ```
+
+use bytemuck::{Pod, Zeroable};
+use wgpu::util::DeviceExt;
+
+const SHADER_SOURCE: &str = include_str!("../assets/shaders/instancing.wgsl");
+
+/// Per-instance data uploaded to the GPU.
+///
+/// - `pos_scale`: xyz = world position, w = uniform scale
+/// - `color`: RGBA
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, Default)]
+pub struct InstanceData {
+    pub pos_scale: [f32; 4],
+    pub color: [f32; 4],
+}
+
+/// Configuration for creating an [`InstanceRenderer`].
+pub struct InstanceRendererConfig {
+    /// Use the lit (Lambert diffuse) or unlit (flat color) fragment shader.
+    pub lit: bool,
+    /// Enable depth testing/writing.
+    pub depth: bool,
+    /// Multisample count (1 = no MSAA).
+    pub sample_count: u32,
+}
+
+impl InstanceRendererConfig {
+    /// Configuration for 3D rendering: lit shading, depth enabled, no MSAA.
+    pub fn default_3d() -> Self {
+        Self {
+            lit: true,
+            depth: true,
+            sample_count: 1,
+        }
+    }
+
+    /// Configuration for 2D rendering: unlit shading, no depth, no MSAA.
+    pub fn default_2d() -> Self {
+        Self {
+            lit: false,
+            depth: false,
+            sample_count: 1,
+        }
+    }
+}
+
+/// Renders many copies of a single mesh with per-instance transforms and colors.
+///
+/// The scene bind group (`@group(0)`) must be set by the caller before
+/// calling [`render`](InstanceRenderer::render).
+pub struct InstanceRenderer {
+    pipeline: wgpu::RenderPipeline,
+    vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    index_count: u32,
+    instance_buffer: wgpu::Buffer,
+    instance_capacity: u32,
+    instance_count: u32,
+}
+
+const INITIAL_INSTANCE_CAPACITY: u32 = 1024;
+
+impl InstanceRenderer {
+    /// Creates a new `InstanceRenderer` with the given base mesh.
+    ///
+    /// `scene_bind_group_layout` is the layout for `@group(0)` containing
+    /// a [`SceneUniform`](crate::SceneUniform) buffer.
+    pub fn new(
+        device: &wgpu::Device,
+        render_format: wgpu::TextureFormat,
+        scene_bind_group_layout: &wgpu::BindGroupLayout,
+        positions: &[[f32; 3]],
+        normals: &[[f32; 3]],
+        indices: &[u32],
+        config: InstanceRendererConfig,
+    ) -> Self {
+        assert_eq!(
+            positions.len(),
+            normals.len(),
+            "positions and normals must have the same length"
+        );
+
+        // Interleave position + normal
+        let mut vertex_data: Vec<f32> = Vec::with_capacity(positions.len() * 6);
+        for i in 0..positions.len() {
+            vertex_data.extend_from_slice(&positions[i]);
+            vertex_data.extend_from_slice(&normals[i]);
+        }
+
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("instance_vertex_buffer"),
+            contents: bytemuck::cast_slice(&vertex_data),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("instance_index_buffer"),
+            contents: bytemuck::cast_slice(indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+
+        let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("instance_data_buffer"),
+            size: (INITIAL_INSTANCE_CAPACITY as u64) * (std::mem::size_of::<InstanceData>() as u64),
+            usage: wgpu::BufferUsages::VERTEX
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+
+        let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("instancing_shader"),
+            source: wgpu::ShaderSource::Wgsl(SHADER_SOURCE.into()),
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("instancing_pipeline_layout"),
+            bind_group_layouts: &[scene_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        // Vertex buffer layout: position(float32x3) + normal(float32x3) = 24 bytes
+        let mesh_buffer_layout = wgpu::VertexBufferLayout {
+            array_stride: 24,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x3,
+                    offset: 0,
+                    shader_location: 0,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x3,
+                    offset: 12,
+                    shader_location: 1,
+                },
+            ],
+        };
+
+        // Instance buffer layout: pos_scale(float32x4) + color(float32x4) = 32 bytes
+        let instance_buffer_layout = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<InstanceData>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 0,
+                    shader_location: 2,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 16,
+                    shader_location: 3,
+                },
+            ],
+        };
+
+        let depth_stencil = if config.depth {
+            Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            })
+        } else {
+            None
+        };
+
+        let fragment_entry = if config.lit {
+            "fragment_lit"
+        } else {
+            "fragment_unlit"
+        };
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("instancing_pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader_module,
+                entry_point: Some("vertex"),
+                compilation_options: Default::default(),
+                buffers: &[mesh_buffer_layout, instance_buffer_layout],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil,
+            multisample: wgpu::MultisampleState {
+                count: config.sample_count,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader_module,
+                entry_point: Some(fragment_entry),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: render_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview: None,
+            cache: None,
+        });
+
+        Self {
+            pipeline,
+            vertex_buffer,
+            index_buffer,
+            index_count: indices.len() as u32,
+            instance_buffer,
+            instance_capacity: INITIAL_INSTANCE_CAPACITY,
+            instance_count: 0,
+        }
+    }
+
+    /// Updates instance data. Resizes the GPU buffer if needed.
+    pub fn update_instances(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        instances: &[InstanceData],
+    ) {
+        self.instance_count = instances.len() as u32;
+        if self.instance_count == 0 {
+            return;
+        }
+
+        // Grow buffer if needed (power-of-two capacity)
+        if self.instance_count > self.instance_capacity {
+            let new_cap = self
+                .instance_count
+                .max(1024)
+                .checked_next_power_of_two()
+                .unwrap_or(self.instance_count);
+            self.instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("instance_data_buffer"),
+                size: (new_cap as u64) * (std::mem::size_of::<InstanceData>() as u64),
+                usage: wgpu::BufferUsages::VERTEX
+                    | wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::STORAGE,
+                mapped_at_creation: false,
+            });
+            self.instance_capacity = new_cap;
+        }
+
+        queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(instances));
+    }
+
+    /// Returns a reference to the instance buffer.
+    ///
+    /// Use this to bind the buffer as storage in a compute shader that writes
+    /// instance data directly on the GPU (e.g. particle-to-instance conversion).
+    pub fn instance_buffer(&self) -> &wgpu::Buffer {
+        &self.instance_buffer
+    }
+
+    /// Returns the current instance buffer capacity (number of instances).
+    pub fn instance_capacity(&self) -> u32 {
+        self.instance_capacity
+    }
+
+    /// Sets the number of instances to draw.
+    ///
+    /// Use this instead of [`update_instances`](InstanceRenderer::update_instances)
+    /// when a compute shader writes instance data directly to the buffer.
+    pub fn set_instance_count(&mut self, count: u32) {
+        self.instance_count = count;
+    }
+
+    /// Ensures the instance buffer has at least `required` capacity.
+    ///
+    /// Returns `true` if the buffer was reallocated (callers may need to
+    /// rebuild bind groups that reference the buffer).
+    pub fn ensure_capacity(&mut self, device: &wgpu::Device, required: u32) -> bool {
+        if required <= self.instance_capacity {
+            return false;
+        }
+        let new_cap = required
+            .max(1024)
+            .checked_next_power_of_two()
+            .unwrap_or(required);
+        self.instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("instance_data_buffer"),
+            size: (new_cap as u64) * (std::mem::size_of::<InstanceData>() as u64),
+            usage: wgpu::BufferUsages::VERTEX
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        self.instance_capacity = new_cap;
+        true
+    }
+
+    /// Renders all instances.
+    ///
+    /// The caller must set the scene bind group at `@group(0)` before calling
+    /// this method (via `pass.set_bind_group(0, &scene_bind_group, &[])`).
+    pub fn render<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
+        if self.instance_count == 0 {
+            return;
+        }
+        pass.set_pipeline(&self.pipeline);
+        pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+        pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..self.index_count, 0, 0..self.instance_count);
+    }
+}

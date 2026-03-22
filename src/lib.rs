@@ -52,18 +52,21 @@ pub mod context;
 pub(crate) mod egui_integration;
 pub mod helpers;
 pub mod input;
+pub mod instance_renderer;
 mod logging;
 pub mod runner;
 pub mod solid_renderer;
 mod time;
 
 pub use app::{App, ComputeContext, RenderContext, UpdateContext};
-pub use camera::{Camera, CameraController, OrbitCamera};
+pub use camera::{Camera, Camera2d, CameraController, OrbitCamera};
 pub use context::GpuContext;
 pub use helpers::{
-    CubeMesh, DEPTH_FORMAT, IcoSphereMesh, PlaneMesh, SceneUniform, create_depth_texture,
+    CubeMesh, DEPTH_FORMAT, IcoSphereMesh, PlaneMesh, QuadMesh2d, RegularPolygonMesh, SceneUniform,
+    create_depth_texture,
 };
 pub use input::InputState;
+pub use instance_renderer::{InstanceData, InstanceRenderer, InstanceRendererConfig};
 pub use runner::{RunConfig, run};
 pub use solid_renderer::{ModelUniform, SolidObjectId, SolidRenderer};
 

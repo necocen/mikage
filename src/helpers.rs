@@ -192,6 +192,88 @@ pub struct IcoSphereMesh {
     pub indices: Vec<u32>,
 }
 
+/// Unit quad mesh in the XY plane (for 2D rendering).
+///
+/// Centered at origin, size 1.0 x 1.0 (-0.5 to 0.5).
+/// Normal points in +Z direction. 4 vertices, 6 indices (2 triangles).
+pub struct QuadMesh2d {
+    pub positions: Vec<[f32; 3]>,
+    pub normals: Vec<[f32; 3]>,
+    pub indices: Vec<u32>,
+}
+
+impl QuadMesh2d {
+    /// Generates a unit quad in the XY plane with +Z normal.
+    pub fn generate() -> Self {
+        let positions = vec![
+            [-0.5, -0.5, 0.0],
+            [0.5, -0.5, 0.0],
+            [0.5, 0.5, 0.0],
+            [-0.5, 0.5, 0.0],
+        ];
+        let normals = vec![
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0],
+        ];
+        let indices = vec![0, 1, 2, 0, 2, 3];
+        Self {
+            positions,
+            normals,
+            indices,
+        }
+    }
+}
+
+/// Regular polygon mesh in the XY plane.
+///
+/// Centered at origin, circumradius 1.0. Normal points in +Z direction.
+/// Use `sides = 6` for a hexagon, `3` for a triangle, etc.
+pub struct RegularPolygonMesh {
+    pub positions: Vec<[f32; 3]>,
+    pub normals: Vec<[f32; 3]>,
+    pub indices: Vec<u32>,
+}
+
+impl RegularPolygonMesh {
+    /// Generates a regular polygon with the given number of sides.
+    ///
+    /// The polygon lies in the XY plane with circumradius 1.0 and +Z normals.
+    /// Vertices are arranged starting from the +X axis, going counter-clockwise.
+    pub fn generate(sides: u32) -> Self {
+        assert!(sides >= 3, "A polygon must have at least 3 sides");
+
+        let mut positions = Vec::with_capacity(sides as usize + 1);
+        let mut normals = Vec::with_capacity(sides as usize + 1);
+
+        // Center vertex
+        positions.push([0.0, 0.0, 0.0]);
+        normals.push([0.0, 0.0, 1.0]);
+
+        // Outer vertices
+        for i in 0..sides {
+            let angle = 2.0 * std::f32::consts::PI * i as f32 / sides as f32;
+            positions.push([angle.cos(), angle.sin(), 0.0]);
+            normals.push([0.0, 0.0, 1.0]);
+        }
+
+        // Triangle fan from center
+        let mut indices = Vec::with_capacity(sides as usize * 3);
+        for i in 0..sides {
+            indices.push(0); // center
+            indices.push(i + 1);
+            indices.push(if i + 1 < sides { i + 2 } else { 1 });
+        }
+
+        Self {
+            positions,
+            normals,
+            indices,
+        }
+    }
+}
+
 impl IcoSphereMesh {
     /// Generates an icosphere with the given subdivision level.
     ///

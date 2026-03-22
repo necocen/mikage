@@ -43,6 +43,11 @@ pub struct RunConfig {
     /// Whether to initialize the tracing logger. Default: `true`.
     /// Set to `false` if you initialize your own tracing subscriber.
     pub init_logging: bool,
+    /// MSAA sample count for render pipelines. Default: 1 (no MSAA).
+    /// Typical values: 1, 4. The framework stores this value and exposes it
+    /// via [`GpuContext::sample_count`](crate::GpuContext::sample_count);
+    /// applications use it when creating render pipelines.
+    pub sample_count: u32,
 }
 
 impl Default for RunConfig {
@@ -56,6 +61,7 @@ impl Default for RunConfig {
             wgpu_features: wgpu::Features::empty(),
             wgpu_limits: None,
             init_logging: true,
+            sample_count: 1,
         }
     }
 }
@@ -193,6 +199,7 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                 config.present_mode,
                 config.wgpu_features,
                 config.wgpu_limits.clone(),
+                config.sample_count,
             ));
             self.complete_init(window, gpu, config.camera);
         }
@@ -207,9 +214,16 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
             let present_mode = config.present_mode;
             let wgpu_features = config.wgpu_features;
             let wgpu_limits = config.wgpu_limits.clone();
+            let sample_count = config.sample_count;
             wasm_bindgen_futures::spawn_local(async move {
-                let gpu =
-                    GpuContext::new(window_clone, present_mode, wgpu_features, wgpu_limits).await;
+                let gpu = GpuContext::new(
+                    window_clone,
+                    present_mode,
+                    wgpu_features,
+                    wgpu_limits,
+                    sample_count,
+                )
+                .await;
                 *slot_clone.borrow_mut() = Some(gpu);
             });
 
@@ -281,6 +295,14 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                 }
                 WindowEvent::MouseWheel { .. } => {
                     state.camera.on_scroll(state.input.scroll_delta);
+                }
+                WindowEvent::MouseInput {
+                    state: winit::event::ElementState::Released,
+                    ..
+                } => {
+                    // Notify camera that dragging has ended so it can
+                    // transition to inertial motion.
+                    state.camera.on_drag_end();
                 }
                 _ => {}
             }

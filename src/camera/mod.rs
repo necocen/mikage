@@ -9,8 +9,10 @@
 //! If you only need a read-only camera (no framework-driven input), implement
 //! [`Camera`] alone and handle input yourself in [`App::update`](crate::App::update).
 
+pub mod camera2d;
 pub mod orbit;
 
+pub use camera2d::Camera2d;
 pub use orbit::OrbitCamera;
 
 /// Read-only camera interface: view and projection matrices.
@@ -50,6 +52,12 @@ pub trait CameraController: Camera {
 
     /// Called every frame. Use for damping or animation.
     fn update(&mut self, dt: f32);
+
+    /// Called when a mouse drag ends (button released).
+    ///
+    /// Use this to transition from active dragging to inertial motion.
+    /// Default implementation does nothing.
+    fn on_drag_end(&mut self) {}
 
     /// Enables or disables camera input.
     fn set_enabled(&mut self, enabled: bool);

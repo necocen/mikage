@@ -16,6 +16,8 @@ pub struct GpuContext {
     render_format: wgpu::TextureFormat,
     surface: wgpu::Surface<'static>,
     surface_config: wgpu::SurfaceConfiguration,
+    /// MSAA sample count for render pipelines.
+    sample_count: u32,
 }
 
 impl GpuContext {
@@ -24,6 +26,7 @@ impl GpuContext {
         present_mode: wgpu::PresentMode,
         required_features: wgpu::Features,
         required_limits: Option<wgpu::Limits>,
+        sample_count: u32,
     ) -> Self {
         let size = window.inner_size();
         tracing::info!("Initial window size: {}x{}", size.width, size.height);
@@ -126,6 +129,7 @@ impl GpuContext {
             render_format: view_format,
             surface,
             surface_config,
+            sample_count,
         }
     }
 
@@ -148,6 +152,13 @@ impl GpuContext {
     /// gamma correction across platforms.
     pub fn render_format(&self) -> wgpu::TextureFormat {
         self.render_format
+    }
+
+    /// Returns the MSAA sample count configured for this context.
+    ///
+    /// Use this value in `MultisampleState::count` when creating render pipelines.
+    pub fn sample_count(&self) -> u32 {
+        self.sample_count
     }
 
     /// Returns the current surface size in pixels.
