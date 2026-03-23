@@ -1,0 +1,489 @@
+//! 2D Boids flocking simulation — 10,000 entities on GPU compute.
+//!
+//! Demonstrates `InstanceRenderer` with GPU compute shader integration:
+//! the compute shader writes directly to the instance buffer with no CPU readback.
+
+use bytemuck::{Pod, Zeroable};
+use mikage::{
+    App, Camera2d, ComputeContext, GpuContext, InstanceRenderer, InstanceRendererConfig,
+    InstanceVertex, RegularPolygonMesh, RenderContext, RunConfig, SceneBinding, ShaderProcessor,
+    UpdateContext,
+};
+use wgpu::util::DeviceExt;
+use winit::dpi::PhysicalSize;
+
+// ---------------------------------------------------------------------------
+// Data structures
+// ---------------------------------------------------------------------------
+
+const NUM_BOIDS: u32 = 10_000;
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct BoidState {
+    pos: [f32; 2],
+    vel: [f32; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct BoidParams {
+    num_boids: u32,
+    dt: f32,
+    separation_radius: f32,
+    alignment_radius: f32,
+    cohesion_radius: f32,
+    separation_strength: f32,
+    alignment_strength: f32,
+    cohesion_strength: f32,
+    max_speed: f32,
+    min_speed: f32,
+    world_size: f32,
+    boid_scale: f32,
+    fov_cosine: f32, // cos(half_angle); -1.0 = 360°, 0.0 = 180°, 0.5 = 120°
+    _pad: [f32; 3],
+}
+
+impl Default for BoidParams {
+    fn default() -> Self {
+        Self {
+            num_boids: NUM_BOIDS,
+            dt: 0.016,
+            separation_radius: 0.8,
+            alignment_radius: 2.0,
+            cohesion_radius: 3.0,
+            separation_strength: 2.5,
+            alignment_strength: 1.0,
+            cohesion_strength: 0.5,
+            max_speed: 5.0,
+            min_speed: 1.0,
+            world_size: 150.0,
+            boid_scale: 0.3,
+            fov_cosine: -0.5, // ~240°
+            _pad: [0.0; 3],
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, Default)]
+struct RotatedInstance {
+    pos_angle_scale: [f32; 4],
+}
+
+impl InstanceVertex for RotatedInstance {
+    fn vertex_attributes() -> Vec<wgpu::VertexAttribute> {
+        vec![wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x4,
+            offset: 0,
+            shader_location: 2,
+        }]
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Simple deterministic PRNG (splitmix32)
+// ---------------------------------------------------------------------------
+
+fn splitmix32(state: &mut u32) -> u32 {
+    *state = state.wrapping_add(0x9e37_79b9);
+    let mut z = *state;
+    z = (z ^ (z >> 16)).wrapping_mul(0x85eb_ca6b);
+    z = (z ^ (z >> 13)).wrapping_mul(0xc2b2_ae35);
+    z ^ (z >> 16)
+}
+
+fn rand_f32(state: &mut u32) -> f32 {
+    (splitmix32(state) as f32) / (u32::MAX as f32)
+}
+
+fn generate_initial_boids(count: u32, world_size: f32) -> Vec<BoidState> {
+    let mut rng = 42u32;
+    (0..count)
+        .map(|_| {
+            let px = (rand_f32(&mut rng) * 2.0 - 1.0) * world_size;
+            let py = (rand_f32(&mut rng) * 2.0 - 1.0) * world_size;
+            let angle = rand_f32(&mut rng) * std::f32::consts::TAU;
+            let speed = rand_f32(&mut rng) * 3.0 + 1.0;
+            BoidState {
+                pos: [px, py],
+                vel: [angle.cos() * speed, angle.sin() * speed],
+            }
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// App
+// ---------------------------------------------------------------------------
+
+const RENDER_SHADER: &str = include_str!("shaders/boids_render.wgsl");
+const COMPUTE_SHADER: &str = include_str!("shaders/boids_compute.wgsl");
+
+struct BoidsApp {
+    renderer: Option<InstanceRenderer<RotatedInstance>>,
+    scene: Option<SceneBinding>,
+    compute_pipeline: Option<wgpu::ComputePipeline>,
+    boid_buffers: Option<[wgpu::Buffer; 2]>,
+    params_buffer: Option<wgpu::Buffer>,
+    compute_bind_group_layout: Option<wgpu::BindGroupLayout>,
+    compute_bind_groups: Option<[wgpu::BindGroup; 2]>,
+    frame_index: u32,
+
+    params: BoidParams,
+    fov_degrees: f32, // UI-friendly; synced to params.fov_cosine
+    paused: bool,
+    reset_requested: bool,
+}
+
+impl BoidsApp {
+    fn rebuild_compute_bind_groups(&mut self, device: &wgpu::Device) {
+        let layout = self.compute_bind_group_layout.as_ref().unwrap();
+        let bufs = self.boid_buffers.as_ref().unwrap();
+        let params_buf = self.params_buffer.as_ref().unwrap();
+        let instance_buf = self.renderer.as_ref().unwrap().instance_buffer();
+
+        let make_bg = |label: &str, buf_in: &wgpu::Buffer, buf_out: &wgpu::Buffer| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(label),
+                layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: buf_in.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: buf_out.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: instance_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: params_buf.as_entire_binding(),
+                    },
+                ],
+            })
+        };
+
+        let bg0 = make_bg("boids_bg_a2b", &bufs[0], &bufs[1]);
+        let bg1 = make_bg("boids_bg_b2a", &bufs[1], &bufs[0]);
+        self.compute_bind_groups = Some([bg0, bg1]);
+    }
+}
+
+impl App for BoidsApp {
+    fn init(&mut self, ctx: &GpuContext, _size: PhysicalSize<u32>) {
+        let device = &ctx.device;
+
+        let scene = SceneBinding::new(device);
+
+        // Render shader (resolve imports)
+        let mut sp = ShaderProcessor::new();
+        sp.register("mikage::scene_types", mikage::SCENE_TYPES_WGSL);
+        let resolved_render = sp.resolve(RENDER_SHADER).expect("render shader");
+
+        // Triangle mesh (pointing right = +X)
+        let mesh = RegularPolygonMesh::generate(3);
+        let mut renderer = InstanceRenderer::<RotatedInstance>::with_shader(
+            device,
+            ctx.render_format(),
+            scene.layout(),
+            &mesh.positions,
+            &mesh.normals,
+            &mesh.indices,
+            &resolved_render,
+            InstanceRendererConfig {
+                vertex_entry: "vertex",
+                fragment_entry: "fragment",
+                depth: false,
+                sample_count: 1,
+            },
+        );
+        renderer.ensure_capacity(device, self.params.num_boids);
+        renderer.set_instance_count(self.params.num_boids);
+
+        // Boid state buffers (double-buffered)
+        let initial = generate_initial_boids(self.params.num_boids, self.params.world_size);
+        let boid_buffers = [0, 1].map(|i| {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("boid_state_{i}")),
+                contents: bytemuck::cast_slice(&initial),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            })
+        });
+
+        // Params uniform buffer
+        let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("boid_params"),
+            contents: bytemuck::bytes_of(&self.params),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        // Compute pipeline
+        let compute_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("boids_compute_bgl"),
+                entries: &[
+                    // binding 0: boids_in (read-only storage)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // binding 1: boids_out (read-write storage)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // binding 2: instances (read-write storage)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // binding 3: params (uniform)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        let compute_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("boids_compute_pipeline_layout"),
+                bind_group_layouts: &[&compute_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+
+        let compute_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("boids_compute_shader"),
+            source: wgpu::ShaderSource::Wgsl(COMPUTE_SHADER.into()),
+        });
+
+        let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("boids_compute_pipeline"),
+            layout: Some(&compute_pipeline_layout),
+            module: &compute_module,
+            entry_point: Some("update_boids"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        self.renderer = Some(renderer);
+        self.scene = Some(scene);
+        self.compute_pipeline = Some(compute_pipeline);
+        self.boid_buffers = Some(boid_buffers);
+        self.params_buffer = Some(params_buffer);
+        self.compute_bind_group_layout = Some(compute_bind_group_layout);
+
+        self.rebuild_compute_bind_groups(device);
+    }
+
+    fn update(&mut self, ctx: &mut UpdateContext) {
+        // Handle reset
+        if self.reset_requested {
+            self.reset_requested = false;
+            let initial = generate_initial_boids(self.params.num_boids, self.params.world_size);
+            let data = bytemuck::cast_slice(&initial);
+            for buf in self.boid_buffers.as_ref().unwrap() {
+                ctx.gpu.queue.write_buffer(buf, 0, data);
+            }
+            self.frame_index = 0;
+        }
+
+        let aspect = ctx.window_size.width as f32 / ctx.window_size.height.max(1) as f32;
+        self.scene
+            .as_ref()
+            .unwrap()
+            .update_from_camera(&ctx.gpu.queue, &*ctx.camera, aspect);
+
+        // Sync FOV degrees → cosine
+        self.params.fov_cosine = (self.fov_degrees.to_radians() / 2.0).cos();
+
+        // Cap dt to prevent instability
+        self.params.dt = ctx.dt.min(1.0 / 30.0);
+        ctx.gpu.queue.write_buffer(
+            self.params_buffer.as_ref().unwrap(),
+            0,
+            bytemuck::bytes_of(&self.params),
+        );
+    }
+
+    fn compute(&mut self, ctx: &mut ComputeContext) {
+        if self.paused {
+            return;
+        }
+
+        let pipeline = self.compute_pipeline.as_ref().unwrap();
+        let bind_groups = self.compute_bind_groups.as_ref().unwrap();
+        let bg_index = (self.frame_index % 2) as usize;
+
+        let workgroups = self.params.num_boids.div_ceil(64);
+
+        let mut pass = ctx
+            .encoder
+            .begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("boids_compute_pass"),
+                timestamp_writes: None,
+            });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &bind_groups[bg_index], &[]);
+        pass.dispatch_workgroups(workgroups, 1, 1);
+        drop(pass);
+
+        self.frame_index += 1;
+    }
+
+    fn render(&mut self, ctx: &mut RenderContext) {
+        let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("boids_render_pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: ctx.surface_view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.02,
+                        g: 0.02,
+                        b: 0.06,
+                        a: 1.0,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+
+        pass.set_bind_group(0, self.scene.as_ref().unwrap().bind_group(), &[]);
+        self.renderer.as_ref().unwrap().render(&mut pass);
+    }
+
+    fn gui(&mut self, egui_ctx: &mikage::egui::Context) {
+        mikage::egui::SidePanel::left("boids_panel")
+            .default_width(220.0)
+            .show(egui_ctx, |ui| {
+                ui.heading("Boids");
+                ui.label(format!("Entities: {}", self.params.num_boids));
+                ui.separator();
+
+                ui.horizontal(|ui| {
+                    if ui
+                        .button(if self.paused { "Resume" } else { "Pause" })
+                        .clicked()
+                    {
+                        self.paused = !self.paused;
+                    }
+                    if ui.button("Reset").clicked() {
+                        self.reset_requested = true;
+                    }
+                });
+
+                ui.separator();
+                ui.label("Separation");
+                ui.add(
+                    mikage::egui::Slider::new(&mut self.params.separation_radius, 0.1..=5.0)
+                        .text("radius"),
+                );
+                ui.add(
+                    mikage::egui::Slider::new(&mut self.params.separation_strength, 0.0..=10.0)
+                        .text("strength"),
+                );
+
+                ui.separator();
+                ui.label("Alignment");
+                ui.add(
+                    mikage::egui::Slider::new(&mut self.params.alignment_radius, 0.1..=10.0)
+                        .text("radius"),
+                );
+                ui.add(
+                    mikage::egui::Slider::new(&mut self.params.alignment_strength, 0.0..=5.0)
+                        .text("strength"),
+                );
+
+                ui.separator();
+                ui.label("Cohesion");
+                ui.add(
+                    mikage::egui::Slider::new(&mut self.params.cohesion_radius, 0.1..=10.0)
+                        .text("radius"),
+                );
+                ui.add(
+                    mikage::egui::Slider::new(&mut self.params.cohesion_strength, 0.0..=5.0)
+                        .text("strength"),
+                );
+
+                ui.separator();
+                ui.label("Speed");
+                ui.add(
+                    mikage::egui::Slider::new(&mut self.params.max_speed, 1.0..=20.0).text("max"),
+                );
+                ui.add(
+                    mikage::egui::Slider::new(&mut self.params.min_speed, 0.0..=5.0).text("min"),
+                );
+
+                ui.separator();
+                ui.add(
+                    mikage::egui::Slider::new(&mut self.params.boid_scale, 0.05..=1.0)
+                        .text("scale"),
+                );
+                ui.add(mikage::egui::Slider::new(&mut self.fov_degrees, 30.0..=360.0).text("FOV"));
+            });
+    }
+
+    fn resize(&mut self, _ctx: &GpuContext, _new_size: PhysicalSize<u32>) {}
+}
+
+fn main() {
+    let mut camera = Camera2d::default();
+    camera.zoom = 0.02;
+    camera.damping = 0.85;
+
+    mikage::run(
+        BoidsApp {
+            renderer: None,
+            scene: None,
+            compute_pipeline: None,
+            boid_buffers: None,
+            params_buffer: None,
+            compute_bind_group_layout: None,
+            compute_bind_groups: None,
+            frame_index: 0,
+            params: BoidParams::default(),
+            fov_degrees: 240.0,
+            paused: false,
+            reset_requested: false,
+        },
+        RunConfig {
+            title: "mikage - GPU boids (10k)".to_string(),
+            camera: Box::new(camera),
+            ..Default::default()
+        },
+    );
+}

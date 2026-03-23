@@ -78,8 +78,8 @@ pub use app::{App, ComputeContext, RenderContext, UpdateContext};
 pub use camera::{Camera, Camera2d, CameraController, OrbitCamera};
 pub use context::GpuContext;
 pub use helpers::{
-    CubeMesh, DEPTH_FORMAT, IcoSphereMesh, PlaneMesh, QuadMesh2d, RegularPolygonMesh,
-    SceneBinding, SceneUniform, create_depth_texture,
+    CubeMesh, DEPTH_FORMAT, IcoSphereMesh, PlaneMesh, QuadMesh2d, RegularPolygonMesh, SceneBinding,
+    SceneUniform, create_depth_texture,
 };
 pub use input::InputState;
 pub use instance_renderer::{
