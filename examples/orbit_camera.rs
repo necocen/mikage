@@ -1,49 +1,27 @@
 use mikage::{
-    App, DEPTH_FORMAT, GpuContext, IcoSphereMesh, OrbitCamera, RenderContext, RunConfig,
-    SceneBinding, ShaderProcessor, UpdateContext, create_depth_texture,
+    App, DEPTH_FORMAT, FrameContext, GpuContext, IcoSphereMesh, MeshBuffers, OrbitCamera,
+    POSITION_NORMAL_LAYOUT, RunConfig, SceneBinding, ShaderProcessor, UpdateContext,
+    create_depth_texture,
 };
-use wgpu::util::DeviceExt;
 use winit::dpi::PhysicalSize;
 
 struct OrbitCameraApp {
-    render_pipeline: Option<wgpu::RenderPipeline>,
-    vertex_buffer: Option<wgpu::Buffer>,
-    index_buffer: Option<wgpu::Buffer>,
-    index_count: u32,
-    scene: Option<SceneBinding>,
-    depth_view: Option<wgpu::TextureView>,
+    render_pipeline: wgpu::RenderPipeline,
+    mesh: MeshBuffers,
+    scene: SceneBinding,
+    depth_view: wgpu::TextureView,
     time: f64,
 }
 
-impl App for OrbitCameraApp {
-    fn init(&mut self, ctx: &GpuContext, size: PhysicalSize<u32>) {
-        // Generate IcoSphere mesh
-        let mesh = IcoSphereMesh::generate(2);
-
-        // Interleave positions and normals into vertex buffer
-        let mut vertex_data: Vec<f32> = Vec::with_capacity(mesh.positions.len() * 6);
-        for i in 0..mesh.positions.len() {
-            vertex_data.extend_from_slice(&mesh.positions[i]);
-            vertex_data.extend_from_slice(&mesh.normals[i]);
-        }
-
-        let vertex_buffer = ctx
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("vertex_buffer"),
-                contents: bytemuck::cast_slice(&vertex_data),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
-
-        let index_buffer = ctx
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("index_buffer"),
-                contents: bytemuck::cast_slice(&mesh.indices),
-                usage: wgpu::BufferUsages::INDEX,
-            });
-
-        self.index_count = mesh.indices.len() as u32;
+impl OrbitCameraApp {
+    fn new(ctx: &GpuContext, size: PhysicalSize<u32>) -> Self {
+        let sphere = IcoSphereMesh::generate(2);
+        let mesh = MeshBuffers::from_position_normal(
+            &ctx.device,
+            &sphere.positions,
+            &sphere.normals,
+            &sphere.indices,
+        );
 
         let scene = SceneBinding::new(&ctx.device);
 
@@ -78,22 +56,7 @@ impl App for OrbitCameraApp {
                 vertex: wgpu::VertexState {
                     module: &shader,
                     entry_point: Some("vs_main"),
-                    buffers: &[wgpu::VertexBufferLayout {
-                        array_stride: 24, // 6 * f32
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &[
-                            wgpu::VertexAttribute {
-                                format: wgpu::VertexFormat::Float32x3,
-                                offset: 0,
-                                shader_location: 0,
-                            },
-                            wgpu::VertexAttribute {
-                                format: wgpu::VertexFormat::Float32x3,
-                                offset: 12,
-                                shader_location: 1,
-                            },
-                        ],
-                    }],
+                    buffers: &[POSITION_NORMAL_LAYOUT],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -127,23 +90,25 @@ impl App for OrbitCameraApp {
         // Depth texture
         let (_, depth_view) = create_depth_texture(&ctx.device, size, DEPTH_FORMAT);
 
-        self.render_pipeline = Some(render_pipeline);
-        self.vertex_buffer = Some(vertex_buffer);
-        self.index_buffer = Some(index_buffer);
-        self.scene = Some(scene);
-        self.depth_view = Some(depth_view);
+        Self {
+            render_pipeline,
+            mesh,
+            scene,
+            depth_view,
+            time: 0.0,
+        }
     }
+}
 
+impl App for OrbitCameraApp {
     fn update(&mut self, ctx: &mut UpdateContext) {
         self.time = ctx.elapsed;
         let aspect = ctx.window_size.width as f32 / ctx.window_size.height.max(1) as f32;
         self.scene
-            .as_ref()
-            .unwrap()
             .update_from_camera(&ctx.gpu.queue, &*ctx.camera, aspect);
     }
 
-    fn render(&mut self, ctx: &mut RenderContext) {
+    fn encode(&mut self, ctx: &mut FrameContext) {
         let mut render_pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("main_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -161,7 +126,7 @@ impl App for OrbitCameraApp {
                 },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: self.depth_view.as_ref().unwrap(),
+                view: &self.depth_view,
                 depth_ops: Some(wgpu::Operations {
                     load: wgpu::LoadOp::Clear(1.0),
                     store: wgpu::StoreOp::Store,
@@ -172,14 +137,11 @@ impl App for OrbitCameraApp {
             occlusion_query_set: None,
         });
 
-        render_pass.set_pipeline(self.render_pipeline.as_ref().unwrap());
-        render_pass.set_bind_group(0, self.scene.as_ref().unwrap().bind_group(), &[]);
-        render_pass.set_vertex_buffer(0, self.vertex_buffer.as_ref().unwrap().slice(..));
-        render_pass.set_index_buffer(
-            self.index_buffer.as_ref().unwrap().slice(..),
-            wgpu::IndexFormat::Uint32,
-        );
-        render_pass.draw_indexed(0..self.index_count, 0, 0..1);
+        render_pass.set_pipeline(&self.render_pipeline);
+        render_pass.set_bind_group(0, self.scene.bind_group(), &[]);
+        render_pass.set_vertex_buffer(0, self.mesh.vertex_buffer.slice(..));
+        render_pass.set_index_buffer(self.mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        render_pass.draw_indexed(0..self.mesh.index_count, 0, 0..1);
     }
 
     fn gui(&mut self, egui_ctx: &mikage::egui::Context) {
@@ -195,7 +157,7 @@ impl App for OrbitCameraApp {
 
     fn resize(&mut self, ctx: &GpuContext, new_size: PhysicalSize<u32>) {
         let (_, depth_view) = create_depth_texture(&ctx.device, new_size, DEPTH_FORMAT);
-        self.depth_view = Some(depth_view);
+        self.depth_view = depth_view;
     }
 }
 
@@ -236,15 +198,7 @@ fn main() {
     camera.damping = 0.85;
 
     mikage::run(
-        OrbitCameraApp {
-            render_pipeline: None,
-            vertex_buffer: None,
-            index_buffer: None,
-            index_count: 0,
-            scene: None,
-            depth_view: None,
-            time: 0.0,
-        },
+        OrbitCameraApp::new,
         RunConfig {
             title: "mikage - orbit camera".to_string(),
             camera: Box::new(camera),

@@ -17,8 +17,8 @@ pub use orbit::OrbitCamera;
 
 /// Read-only camera interface: view and projection matrices.
 ///
-/// This trait is exposed to [`App::render`](crate::App::render) via
-/// [`RenderContext::camera`](crate::RenderContext::camera).
+/// This trait is exposed to [`App::encode`](crate::App::encode) via
+/// [`FrameContext::camera`](crate::FrameContext::camera).
 pub trait Camera: Send + Sync {
     /// Returns the view matrix (world-to-camera transform).
     fn view_matrix(&self) -> glam::Mat4;

@@ -1,10 +1,14 @@
-use crate::camera::Camera;
+use std::marker::PhantomData;
+
+use bytemuck::Pod;
 use wgpu::util::DeviceExt;
 use winit::dpi::PhysicalSize;
 
+use crate::camera::Camera;
+
 /// Creates a depth texture and its view.
 ///
-/// Typically called in [`App::init`](crate::App::init) and
+/// Typically called in the factory closure and
 /// [`App::resize`](crate::App::resize). Use [`DEPTH_FORMAT`] as the format.
 pub fn create_depth_texture(
     device: &wgpu::Device,
@@ -369,6 +373,230 @@ impl RegularPolygonMesh {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Helper 1: BGL entry constructors
+// ---------------------------------------------------------------------------
+
+/// Creates a `BindGroupLayoutEntry` for a storage buffer.
+///
+/// Sets `has_dynamic_offset: false` and `min_binding_size: None`.
+/// For entries that need dynamic offset or min_binding_size, use raw wgpu.
+pub fn storage_buffer_entry(
+    binding: u32,
+    visibility: wgpu::ShaderStages,
+    read_only: bool,
+) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    }
+}
+
+/// Creates a `BindGroupLayoutEntry` for a uniform buffer.
+///
+/// Sets `has_dynamic_offset: false` and `min_binding_size: None`.
+/// For entries that need dynamic offset or min_binding_size, use raw wgpu.
+pub fn uniform_buffer_entry(
+    binding: u32,
+    visibility: wgpu::ShaderStages,
+) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helper 2: UniformBuffer<T>
+// ---------------------------------------------------------------------------
+
+/// A typed wrapper around a wgpu uniform buffer.
+///
+/// Provides `new` (create + init) and `write` (queue upload) without
+/// manual `bytemuck::bytes_of` calls.
+///
+/// **WGSL std140 layout is the caller's responsibility** — ensure the
+/// Rust struct matches the shader's expected alignment and padding.
+pub struct UniformBuffer<T: Pod> {
+    buffer: wgpu::Buffer,
+    _marker: PhantomData<T>,
+}
+
+impl<T: Pod> UniformBuffer<T> {
+    /// Creates a new uniform buffer initialized with `initial`.
+    ///
+    /// Usage flags: `UNIFORM | COPY_DST`.
+    pub fn new(device: &wgpu::Device, label: &str, initial: &T) -> Self {
+        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(label),
+            contents: bytemuck::bytes_of(initial),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        Self {
+            buffer,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Writes `data` to the buffer via `queue.write_buffer`.
+    pub fn write(&self, queue: &wgpu::Queue, data: &T) {
+        queue.write_buffer(&self.buffer, 0, bytemuck::bytes_of(data));
+    }
+
+    /// Returns a reference to the underlying `wgpu::Buffer`.
+    pub fn buffer(&self) -> &wgpu::Buffer {
+        &self.buffer
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helper 3: create_storage_buffer_init
+// ---------------------------------------------------------------------------
+
+/// Creates a storage buffer initialized with `data`.
+///
+/// Usage flags: `STORAGE | COPY_DST`.
+/// For uninitialised buffers or additional usage flags, use raw wgpu.
+pub fn create_storage_buffer_init<T: Pod>(
+    device: &wgpu::Device,
+    label: &str,
+    data: &[T],
+) -> wgpu::Buffer {
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some(label),
+        contents: bytemuck::cast_slice(data),
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Helper: create_compute_pipeline
+// ---------------------------------------------------------------------------
+
+/// Creates a compute pipeline from WGSL source in one call.
+///
+/// Bundles shader module creation, pipeline layout, and pipeline construction.
+/// Uses default `compilation_options` and no pipeline cache.
+///
+/// For pipelines that share a shader module across multiple entry points,
+/// or need non-default compilation options, use raw wgpu.
+pub fn create_compute_pipeline(
+    device: &wgpu::Device,
+    label: &str,
+    wgsl_source: &str,
+    bind_group_layouts: &[&wgpu::BindGroupLayout],
+    entry_point: &str,
+) -> wgpu::ComputePipeline {
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(label),
+        source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some(label),
+        bind_group_layouts,
+        push_constant_ranges: &[],
+    });
+    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some(label),
+        layout: Some(&layout),
+        module: &module,
+        entry_point: Some(entry_point),
+        compilation_options: Default::default(),
+        cache: None,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Helper 4: MeshBuffers
+// ---------------------------------------------------------------------------
+
+/// Interleaved position+normal vertex buffer, index buffer, and index count.
+///
+/// Use [`from_position_normal`](MeshBuffers::from_position_normal) to create
+/// from separate position/normal slices (the common mesh data layout in mikage).
+pub struct MeshBuffers {
+    pub vertex_buffer: wgpu::Buffer,
+    pub index_buffer: wgpu::Buffer,
+    pub index_count: u32,
+}
+
+impl MeshBuffers {
+    /// Creates mesh GPU buffers by interleaving `positions` and `normals`.
+    ///
+    /// Each vertex is stored as `[f32; 3] position + [f32; 3] normal` (24 bytes).
+    /// Use [`POSITION_NORMAL_LAYOUT`] for the corresponding `VertexBufferLayout`.
+    pub fn from_position_normal(
+        device: &wgpu::Device,
+        positions: &[[f32; 3]],
+        normals: &[[f32; 3]],
+        indices: &[u32],
+    ) -> Self {
+        assert_eq!(
+            positions.len(),
+            normals.len(),
+            "positions and normals must have the same length"
+        );
+
+        let mut vertex_data: Vec<f32> = Vec::with_capacity(positions.len() * 6);
+        for i in 0..positions.len() {
+            vertex_data.extend_from_slice(&positions[i]);
+            vertex_data.extend_from_slice(&normals[i]);
+        }
+
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("mesh_vertex_buffer"),
+            contents: bytemuck::cast_slice(&vertex_data),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("mesh_index_buffer"),
+            contents: bytemuck::cast_slice(indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+
+        Self {
+            vertex_buffer,
+            index_buffer,
+            index_count: indices.len() as u32,
+        }
+    }
+}
+
+/// Vertex buffer layout for interleaved position (Float32x3) + normal (Float32x3).
+///
+/// - `location 0`: position
+/// - `location 1`: normal
+/// - stride: 24 bytes
+pub const POSITION_NORMAL_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
+    array_stride: 24,
+    step_mode: wgpu::VertexStepMode::Vertex,
+    attributes: &[
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x3,
+            offset: 0,
+            shader_location: 0,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x3,
+            offset: 12,
+            shader_location: 1,
+        },
+    ],
+};
 
 impl IcoSphereMesh {
     /// Generates an icosphere with the given subdivision level.

@@ -1,5 +1,4 @@
-use mikage::{App, GpuContext, RenderContext, RunConfig, UpdateContext};
-use winit::dpi::PhysicalSize;
+use mikage::{App, FrameContext, RunConfig, UpdateContext};
 
 struct EguiDemoApp {
     counter: i32,
@@ -8,11 +7,9 @@ struct EguiDemoApp {
 }
 
 impl App for EguiDemoApp {
-    fn init(&mut self, _ctx: &GpuContext, _size: PhysicalSize<u32>) {}
-
     fn update(&mut self, _ctx: &mut UpdateContext) {}
 
-    fn render(&mut self, ctx: &mut RenderContext) {
+    fn encode(&mut self, ctx: &mut FrameContext) {
         let _pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("clear_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -55,13 +52,11 @@ impl App for EguiDemoApp {
             ui.label(format!("Hello, {}!", self.name));
         });
     }
-
-    fn resize(&mut self, _ctx: &GpuContext, _new_size: PhysicalSize<u32>) {}
 }
 
 fn main() {
     mikage::run(
-        EguiDemoApp {
+        |_ctx, _size| EguiDemoApp {
             counter: 0,
             name: "World".to_string(),
             slider_value: 42.0,

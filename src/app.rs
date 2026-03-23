@@ -4,37 +4,21 @@ use crate::camera::{Camera, CameraController};
 use crate::context::GpuContext;
 use crate::input::InputState;
 
-/// Context for encoding render passes.
+/// Context for encoding GPU command passes (compute and render).
 ///
-/// Passed to [`App::render`]. Create a render pass on `encoder` and
-/// draw to `surface_view`.
-pub struct RenderContext<'a> {
-    /// The wgpu device.
-    pub device: &'a wgpu::Device,
-    /// The wgpu queue. Useful for `queue.write_buffer()` if needed.
-    pub queue: &'a wgpu::Queue,
-    /// Command encoder. Record render passes here.
+/// Passed to [`App::encode`]. Encode compute passes and/or render passes on `encoder`.
+/// Draw to `surface_view` for rendering. Access device/queue via `gpu.device` / `gpu.queue`.
+pub struct FrameContext<'a> {
+    /// GPU context. Access `gpu.device` and `gpu.queue`.
+    pub gpu: &'a GpuContext,
+    /// Command encoder. Record compute and render passes here.
     pub encoder: &'a mut wgpu::CommandEncoder,
     /// The surface texture view for this frame. Use as the color attachment target.
     pub surface_view: &'a wgpu::TextureView,
-    /// Texture format for render pipelines. Same as [`GpuContext::render_format()`](crate::GpuContext::render_format).
-    pub render_format: wgpu::TextureFormat,
     /// Current window size in pixels.
     pub window_size: PhysicalSize<u32>,
     /// The active camera (read-only). Use for view/projection matrices.
     pub camera: &'a dyn Camera,
-}
-
-/// Context for encoding compute passes.
-///
-/// Passed to [`App::compute`]. Create compute passes on `encoder`.
-pub struct ComputeContext<'a> {
-    /// The wgpu device.
-    pub device: &'a wgpu::Device,
-    /// The wgpu queue.
-    pub queue: &'a wgpu::Queue,
-    /// Command encoder. Record compute passes here.
-    pub encoder: &'a mut wgpu::CommandEncoder,
 }
 
 /// Context for per-frame logic updates.
@@ -58,27 +42,19 @@ pub struct UpdateContext<'a> {
 /// The core application trait.
 ///
 /// Implement this trait to build an application on mikage.
-/// Pass your type to [`run`](crate::run) to start the event loop.
+/// Create your app in a factory closure and pass it to [`run`](crate::run).
 ///
 /// # Lifecycle
 ///
 /// ```text
-/// init() → [update() → compute() → render() → gui()]* → resize() (on resize)
+/// factory closure → [update() → encode() → gui()]* → resize() (on resize)
 /// ```
 ///
-/// - [`init`](App::init): Called once after GPU initialization. Create pipelines, buffers, textures.
 /// - [`update`](App::update): Called every frame. Run simulation, process input, upload data.
-/// - [`compute`](App::compute): Called every frame before rendering. Encode GPU compute passes.
-/// - [`render`](App::render): Called every frame. Encode GPU render passes.
+/// - [`encode`](App::encode): Called every frame. Encode GPU compute and render passes.
 /// - [`gui`](App::gui): Called every frame. Build egui UI.
 /// - [`resize`](App::resize): Called on window resize. Recreate size-dependent resources.
 pub trait App: 'static {
-    /// Called once after GPU initialization.
-    ///
-    /// Create pipelines, buffers, textures, and other GPU resources here.
-    /// `size` is the initial window size in pixels.
-    fn init(&mut self, ctx: &GpuContext, size: PhysicalSize<u32>);
-
     /// Called every frame for logic updates.
     ///
     /// Use this for simulation, input handling, and uploading data to the GPU
@@ -86,16 +62,13 @@ pub trait App: 'static {
     /// reference through `ctx.camera`.
     fn update(&mut self, ctx: &mut UpdateContext);
 
-    /// Called every frame to encode compute passes, before [`render`](App::render).
+    /// Called every frame to encode GPU command passes.
     ///
-    /// Override this if you use GPU compute shaders. The default does nothing.
-    fn compute(&mut self, _ctx: &mut ComputeContext) {}
-
-    /// Called every frame to encode render passes.
-    ///
-    /// Draw to `ctx.surface_view`. The framework renders egui on top after
-    /// [`gui`](App::gui), so you don't need to handle egui rendering here.
-    fn render(&mut self, ctx: &mut RenderContext);
+    /// Encode compute passes and render passes here. Draw to `ctx.surface_view`.
+    /// Access device/queue via `ctx.gpu.device` / `ctx.gpu.queue`.
+    /// The framework renders egui on top after [`gui`](App::gui), so you don't
+    /// need to handle egui rendering here.
+    fn encode(&mut self, ctx: &mut FrameContext);
 
     /// Called every frame to build egui UI.
     ///
@@ -106,7 +79,8 @@ pub trait App: 'static {
     /// Called when the window is resized.
     ///
     /// Recreate size-dependent resources here (e.g., depth textures).
-    fn resize(&mut self, ctx: &GpuContext, new_size: PhysicalSize<u32>);
+    /// The default does nothing.
+    fn resize(&mut self, _ctx: &GpuContext, _new_size: PhysicalSize<u32>) {}
 
     /// Called for window events not handled internally by the framework.
     ///

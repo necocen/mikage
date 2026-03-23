@@ -5,7 +5,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
-use crate::app::{App, ComputeContext, RenderContext, UpdateContext};
+use crate::app::{App, FrameContext, UpdateContext};
 use crate::camera::{CameraController, OrbitCamera};
 use crate::context::GpuContext;
 use crate::egui_integration::EguiIntegration;
@@ -68,16 +68,19 @@ impl Default for RunConfig {
 
 /// Starts the application.
 ///
-/// Creates a window, initializes the GPU, and enters the event loop.
-/// Blocks on native; non-blocking on WASM.
+/// Creates a window, initializes the GPU, calls the factory closure to create the app,
+/// and enters the event loop. Blocks on native; non-blocking on WASM.
 #[cfg(not(target_family = "wasm"))]
-pub fn run<A: App>(app: A, config: RunConfig) {
+pub fn run<A: App>(
+    init: impl FnOnce(&GpuContext, PhysicalSize<u32>) -> A + 'static,
+    config: RunConfig,
+) {
     if config.init_logging {
         crate::logging::init_logging();
     }
 
     let event_loop = EventLoop::new().expect("Failed to create event loop");
-    let mut handler = AppHandler::new(app, config);
+    let mut handler = AppHandler::new(Box::new(init), config);
     event_loop.run_app(&mut handler).expect("Event loop error");
 }
 
@@ -86,13 +89,16 @@ pub fn run<A: App>(app: A, config: RunConfig) {
 /// Uses `EventLoop::spawn_app` for non-blocking execution.
 /// GPU initialization runs asynchronously; rendering starts when ready.
 #[cfg(target_family = "wasm")]
-pub fn run<A: App>(app: A, config: RunConfig) {
+pub fn run<A: App>(
+    init: impl FnOnce(&GpuContext, PhysicalSize<u32>) -> A + 'static,
+    config: RunConfig,
+) {
     if config.init_logging {
         crate::logging::init_logging();
     }
 
     let event_loop = EventLoop::new().expect("Failed to create event loop");
-    let handler = AppHandler::new(app, config);
+    let handler = AppHandler::new(Box::new(init), config);
     use winit::platform::web::EventLoopExtWebSys;
     event_loop.spawn_app(handler);
 }
@@ -110,8 +116,11 @@ struct RunState {
 
 // --- AppHandler ---
 
+type InitFn<A> = Box<dyn FnOnce(&GpuContext, PhysicalSize<u32>) -> A>;
+
 struct AppHandler<A: App> {
-    app: A,
+    app: Option<A>,
+    init_fn: Option<InitFn<A>>,
     config: Option<RunConfig>,
     state: Option<RunState>,
     /// WASM: async GPU 初期化の完了を受け取るための共有スロット
@@ -128,9 +137,10 @@ struct PendingGpuInit {
 }
 
 impl<A: App> AppHandler<A> {
-    fn new(app: A, config: RunConfig) -> Self {
+    fn new(init_fn: InitFn<A>, config: RunConfig) -> Self {
         Self {
-            app,
+            app: None,
+            init_fn: Some(init_fn),
             config: Some(config),
             state: None,
             #[cfg(target_family = "wasm")]
@@ -150,7 +160,8 @@ impl<A: App> AppHandler<A> {
         let size = gpu.window_size();
 
         tracing::info!("App init with size: {}x{}", size.width, size.height);
-        self.app.init(&gpu, size);
+        let init_fn = self.init_fn.take().expect("init_fn already consumed");
+        self.app = Some(init_fn(&gpu, size));
 
         self.state = Some(RunState {
             window,
@@ -322,14 +333,20 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                             &state.window,
                         ),
                     );
-                    self.app.resize(&state.gpu, new_size);
+                    if let Some(app) = self.app.as_mut() {
+                        app.resize(&state.gpu, new_size);
+                    }
                 }
             }
             WindowEvent::RedrawRequested => {
-                render_frame(&mut self.app, state);
+                if let Some(app) = self.app.as_mut() {
+                    render_frame(app, state);
+                }
             }
             ref other => {
-                self.app.on_window_event(other);
+                if let Some(app) = self.app.as_mut() {
+                    app.on_window_event(other);
+                }
             }
         }
     }
@@ -394,28 +411,16 @@ fn render_frame<A: App>(app: &mut A, state: &mut RunState) {
             label: Some("mikage_frame_encoder"),
         });
 
-    // Compute pass
+    // Encode (compute + render)
     {
-        let mut compute_ctx = ComputeContext {
-            device: &state.gpu.device,
-            queue: &state.gpu.queue,
-            encoder: &mut encoder,
-        };
-        app.compute(&mut compute_ctx);
-    }
-
-    // Render pass
-    {
-        let mut render_ctx = RenderContext {
-            device: &state.gpu.device,
-            queue: &state.gpu.queue,
+        let mut frame_ctx = FrameContext {
+            gpu: &state.gpu,
             encoder: &mut encoder,
             surface_view: &surface_view,
-            render_format: state.gpu.render_format(),
             window_size: size,
             camera: state.camera.as_ref() as &dyn crate::camera::Camera,
         };
-        app.render(&mut render_ctx);
+        app.encode(&mut frame_ctx);
     }
 
     // egui: UI 構築 + 描画

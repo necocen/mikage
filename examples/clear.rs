@@ -1,20 +1,15 @@
-use mikage::{App, GpuContext, RenderContext, RunConfig, UpdateContext};
-use winit::dpi::PhysicalSize;
+use mikage::{App, FrameContext, RunConfig, UpdateContext};
 
 struct ClearApp {
     time: f64,
 }
 
 impl App for ClearApp {
-    fn init(&mut self, _ctx: &GpuContext, _size: PhysicalSize<u32>) {
-        tracing::info!("ClearApp initialized");
-    }
-
     fn update(&mut self, ctx: &mut UpdateContext) {
         self.time = ctx.elapsed;
     }
 
-    fn render(&mut self, ctx: &mut RenderContext) {
+    fn encode(&mut self, ctx: &mut FrameContext) {
         // Cycle through colors over time
         let t = self.time as f32;
         let r = (t * 0.3).sin() * 0.5 + 0.5;
@@ -42,15 +37,11 @@ impl App for ClearApp {
             occlusion_query_set: None,
         });
     }
-
-    fn resize(&mut self, _ctx: &GpuContext, new_size: PhysicalSize<u32>) {
-        tracing::info!("Resized to {}x{}", new_size.width, new_size.height);
-    }
 }
 
 fn main() {
     mikage::run(
-        ClearApp { time: 0.0 },
+        |_ctx, _size| ClearApp { time: 0.0 },
         RunConfig {
             title: "mikage - clear example".to_string(),
             ..Default::default()

@@ -6,8 +6,8 @@
 
 use bytemuck::{Pod, Zeroable};
 use mikage::{
-    App, Camera2d, GpuContext, InstanceRenderer, InstanceRendererConfig, InstanceVertex,
-    RegularPolygonMesh, RenderContext, RunConfig, SceneBinding, ShaderProcessor, UpdateContext,
+    App, Camera2d, FrameContext, GpuContext, InstanceRenderer, InstanceRendererConfig,
+    InstanceVertex, RegularPolygonMesh, RunConfig, SceneBinding, ShaderProcessor, UpdateContext,
 };
 use winit::dpi::PhysicalSize;
 
@@ -35,13 +35,13 @@ impl InstanceVertex for RotatedInstance {
 const SHADER_SOURCE: &str = include_str!("shaders/rotated_instancing.wgsl");
 
 struct CustomInstanceApp {
-    renderer: Option<InstanceRenderer<RotatedInstance>>,
-    scene: Option<SceneBinding>,
+    renderer: InstanceRenderer<RotatedInstance>,
+    scene: SceneBinding,
     time: f64,
 }
 
-impl App for CustomInstanceApp {
-    fn init(&mut self, ctx: &GpuContext, _size: PhysicalSize<u32>) {
+impl CustomInstanceApp {
+    fn new(ctx: &GpuContext, _size: PhysicalSize<u32>) -> Self {
         let scene = SceneBinding::new(&ctx.device);
 
         // Resolve shader imports
@@ -67,16 +67,21 @@ impl App for CustomInstanceApp {
             },
         );
 
-        self.renderer = Some(renderer);
-        self.scene = Some(scene);
+        Self {
+            renderer,
+            scene,
+            time: 0.0,
+        }
     }
+}
 
+impl App for CustomInstanceApp {
     fn update(&mut self, ctx: &mut UpdateContext) {
         self.time = ctx.elapsed;
 
         let aspect = ctx.window_size.width as f32 / ctx.window_size.height.max(1) as f32;
-        let scene = self.scene.as_ref().unwrap();
-        scene.update_from_camera(&ctx.gpu.queue, &*ctx.camera, aspect);
+        self.scene
+            .update_from_camera(&ctx.gpu.queue, &*ctx.camera, aspect);
 
         let vp = ctx.camera.view_projection_matrix(aspect);
         let t = self.time as f32;
@@ -110,14 +115,11 @@ impl App for CustomInstanceApp {
             }
         }
 
-        self.renderer.as_mut().unwrap().update_instances(
-            &ctx.gpu.device,
-            &ctx.gpu.queue,
-            &instances,
-        );
+        self.renderer
+            .update_instances(&ctx.gpu.device, &ctx.gpu.queue, &instances);
     }
 
-    fn render(&mut self, ctx: &mut RenderContext) {
+    fn encode(&mut self, ctx: &mut FrameContext) {
         let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("custom_instance_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -139,8 +141,8 @@ impl App for CustomInstanceApp {
             occlusion_query_set: None,
         });
 
-        pass.set_bind_group(0, self.scene.as_ref().unwrap().bind_group(), &[]);
-        self.renderer.as_ref().unwrap().render(&mut pass);
+        pass.set_bind_group(0, self.scene.bind_group(), &[]);
+        self.renderer.render(&mut pass);
     }
 
     fn gui(&mut self, egui_ctx: &mikage::egui::Context) {
@@ -152,8 +154,6 @@ impl App for CustomInstanceApp {
             ui.label("Left drag: pan | Scroll: zoom");
         });
     }
-
-    fn resize(&mut self, _ctx: &GpuContext, _new_size: PhysicalSize<u32>) {}
 }
 
 fn main() {
@@ -162,11 +162,7 @@ fn main() {
     camera.damping = 0.85;
 
     mikage::run(
-        CustomInstanceApp {
-            renderer: None,
-            scene: None,
-            time: 0.0,
-        },
+        CustomInstanceApp::new,
         RunConfig {
             title: "mikage - custom instance vertex".to_string(),
             camera: Box::new(camera),

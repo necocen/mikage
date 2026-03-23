@@ -53,8 +53,8 @@
 use std::marker::PhantomData;
 
 use bytemuck::{Pod, Zeroable};
-use wgpu::util::DeviceExt;
 
+use crate::helpers::{MeshBuffers, POSITION_NORMAL_LAYOUT};
 use crate::shader_processor::mikage_shader_processor;
 
 const SHADER_SOURCE: &str = include_str!("../assets/shaders/instancing.wgsl");
@@ -206,30 +206,7 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
         shader_source: &str,
         config: InstanceRendererConfig,
     ) -> Self {
-        assert_eq!(
-            positions.len(),
-            normals.len(),
-            "positions and normals must have the same length"
-        );
-
-        // Interleave position + normal
-        let mut vertex_data: Vec<f32> = Vec::with_capacity(positions.len() * 6);
-        for i in 0..positions.len() {
-            vertex_data.extend_from_slice(&positions[i]);
-            vertex_data.extend_from_slice(&normals[i]);
-        }
-
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("instance_vertex_buffer"),
-            contents: bytemuck::cast_slice(&vertex_data),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("instance_index_buffer"),
-            contents: bytemuck::cast_slice(indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
+        let mesh = MeshBuffers::from_position_normal(device, positions, normals, indices);
 
         let instance_stride = std::mem::size_of::<V>() as u64;
         let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -251,24 +228,6 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
             bind_group_layouts: &[scene_bind_group_layout],
             push_constant_ranges: &[],
         });
-
-        // Vertex buffer layout: position(float32x3) + normal(float32x3) = 24 bytes
-        let mesh_buffer_layout = wgpu::VertexBufferLayout {
-            array_stride: 24,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x3,
-                    offset: 0,
-                    shader_location: 0,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x3,
-                    offset: 12,
-                    shader_location: 1,
-                },
-            ],
-        };
 
         // Instance buffer layout from the vertex type
         let instance_attributes = V::vertex_attributes();
@@ -297,7 +256,7 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
                 module: &shader_module,
                 entry_point: Some(config.vertex_entry),
                 compilation_options: Default::default(),
-                buffers: &[mesh_buffer_layout, instance_buffer_layout],
+                buffers: &[POSITION_NORMAL_LAYOUT, instance_buffer_layout],
             },
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -330,9 +289,9 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
 
         Self {
             pipeline,
-            vertex_buffer,
-            index_buffer,
-            index_count: indices.len() as u32,
+            vertex_buffer: mesh.vertex_buffer,
+            index_buffer: mesh.index_buffer,
+            index_count: mesh.index_count,
             instance_buffer,
             instance_capacity: INITIAL_INSTANCE_CAPACITY,
             instance_count: 0,

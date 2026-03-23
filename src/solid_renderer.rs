@@ -22,6 +22,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec4};
 use wgpu::util::DeviceExt;
 
+use crate::helpers::{MeshBuffers, POSITION_NORMAL_LAYOUT, uniform_buffer_entry};
 use crate::shader_processor::mikage_shader_processor;
 
 const SHADER_SOURCE: &str = include_str!("../assets/shaders/solid.wgsl");
@@ -91,16 +92,10 @@ impl SolidRenderer {
         let model_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("solid_model_bind_group_layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
+                entries: &[uniform_buffer_entry(
+                    0,
+                    wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                )],
             });
 
         let resolved_source = mikage_shader_processor()
@@ -117,24 +112,6 @@ impl SolidRenderer {
             push_constant_ranges: &[],
         });
 
-        // Vertex buffer layout: position(float32x3) + normal(float32x3) = 24 bytes
-        let vertex_buffer_layout = wgpu::VertexBufferLayout {
-            array_stride: 24,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x3,
-                    offset: 0,
-                    shader_location: 0,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x3,
-                    offset: 12,
-                    shader_location: 1,
-                },
-            ],
-        };
-
         // Opaque pipeline (lit fragment, depth write, back-face culling)
         let opaque_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("solid_opaque_pipeline"),
@@ -143,7 +120,7 @@ impl SolidRenderer {
                 module: &shader_module,
                 entry_point: Some("vertex"),
                 compilation_options: Default::default(),
-                buffers: std::slice::from_ref(&vertex_buffer_layout),
+                buffers: &[POSITION_NORMAL_LAYOUT],
             },
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -188,7 +165,7 @@ impl SolidRenderer {
                 module: &shader_module,
                 entry_point: Some("vertex"),
                 compilation_options: Default::default(),
-                buffers: &[vertex_buffer_layout],
+                buffers: &[POSITION_NORMAL_LAYOUT],
             },
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -249,30 +226,7 @@ impl SolidRenderer {
         normals: &[[f32; 3]],
         indices: &[u32],
     ) -> SolidObjectId {
-        assert_eq!(
-            positions.len(),
-            normals.len(),
-            "positions and normals must have the same length"
-        );
-
-        // Interleave position + normal
-        let mut vertex_data: Vec<f32> = Vec::with_capacity(positions.len() * 6);
-        for i in 0..positions.len() {
-            vertex_data.extend_from_slice(&positions[i]);
-            vertex_data.extend_from_slice(&normals[i]);
-        }
-
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("solid_vertex_buffer"),
-            contents: bytemuck::cast_slice(&vertex_data),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("solid_index_buffer"),
-            contents: bytemuck::cast_slice(indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
+        let mesh = MeshBuffers::from_position_normal(device, positions, normals, indices);
 
         let uniform = ModelUniform::new(Mat4::IDENTITY, Vec4::ONE);
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -292,9 +246,9 @@ impl SolidRenderer {
 
         let id = SolidObjectId(self.objects.len());
         self.objects.push(ObjectData {
-            vertex_buffer,
-            index_buffer,
-            index_count: indices.len() as u32,
+            vertex_buffer: mesh.vertex_buffer,
+            index_buffer: mesh.index_buffer,
+            index_count: mesh.index_count,
             uniform_buffer,
             bind_group,
             alpha: 1.0,

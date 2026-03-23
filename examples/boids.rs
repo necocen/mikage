@@ -5,11 +5,11 @@
 
 use bytemuck::{Pod, Zeroable};
 use mikage::{
-    App, Camera2d, ComputeContext, GpuContext, InstanceRenderer, InstanceRendererConfig,
-    InstanceVertex, RegularPolygonMesh, RenderContext, RunConfig, SceneBinding, ShaderProcessor,
-    UpdateContext,
+    App, Camera2d, FrameContext, GpuContext, InstanceRenderer, InstanceRendererConfig,
+    InstanceVertex, RegularPolygonMesh, RunConfig, SceneBinding, ShaderProcessor, UniformBuffer,
+    UpdateContext, create_compute_pipeline, create_storage_buffer_init, storage_buffer_entry,
+    uniform_buffer_entry,
 };
-use wgpu::util::DeviceExt;
 use winit::dpi::PhysicalSize;
 
 // ---------------------------------------------------------------------------
@@ -121,13 +121,14 @@ const RENDER_SHADER: &str = include_str!("shaders/boids_render.wgsl");
 const COMPUTE_SHADER: &str = include_str!("shaders/boids_compute.wgsl");
 
 struct BoidsApp {
-    renderer: Option<InstanceRenderer<RotatedInstance>>,
-    scene: Option<SceneBinding>,
-    compute_pipeline: Option<wgpu::ComputePipeline>,
-    boid_buffers: Option<[wgpu::Buffer; 2]>,
-    params_buffer: Option<wgpu::Buffer>,
-    compute_bind_group_layout: Option<wgpu::BindGroupLayout>,
-    compute_bind_groups: Option<[wgpu::BindGroup; 2]>,
+    renderer: InstanceRenderer<RotatedInstance>,
+    scene: SceneBinding,
+    compute_pipeline: wgpu::ComputePipeline,
+    boid_buffers: [wgpu::Buffer; 2],
+    params_buffer: UniformBuffer<BoidParams>,
+    #[allow(dead_code)] // retained for potential bind group rebuilds
+    compute_bind_group_layout: wgpu::BindGroupLayout,
+    compute_bind_groups: [wgpu::BindGroup; 2],
     frame_index: u32,
 
     params: BoidParams,
@@ -137,12 +138,98 @@ struct BoidsApp {
 }
 
 impl BoidsApp {
-    fn rebuild_compute_bind_groups(&mut self, device: &wgpu::Device) {
-        let layout = self.compute_bind_group_layout.as_ref().unwrap();
-        let bufs = self.boid_buffers.as_ref().unwrap();
-        let params_buf = self.params_buffer.as_ref().unwrap();
-        let instance_buf = self.renderer.as_ref().unwrap().instance_buffer();
+    fn new(ctx: &GpuContext, _size: PhysicalSize<u32>) -> Self {
+        let device = &ctx.device;
+        let params = BoidParams::default();
 
+        let scene = SceneBinding::new(device);
+
+        // Render shader (resolve imports)
+        let mut sp = ShaderProcessor::new();
+        sp.register("mikage::scene_types", mikage::SCENE_TYPES_WGSL);
+        let resolved_render = sp.resolve(RENDER_SHADER).expect("render shader");
+
+        // Triangle mesh (pointing right = +X)
+        let mesh = RegularPolygonMesh::generate(3);
+        let mut renderer = InstanceRenderer::<RotatedInstance>::with_shader(
+            device,
+            ctx.render_format(),
+            scene.layout(),
+            &mesh.positions,
+            &mesh.normals,
+            &mesh.indices,
+            &resolved_render,
+            InstanceRendererConfig {
+                vertex_entry: "vertex",
+                fragment_entry: "fragment",
+                depth: false,
+                sample_count: 1,
+            },
+        );
+        renderer.ensure_capacity(device, params.num_boids);
+        renderer.set_instance_count(params.num_boids);
+
+        // Boid state buffers (double-buffered)
+        let initial = generate_initial_boids(params.num_boids, params.world_size);
+        let boid_buffers = [0, 1]
+            .map(|i| create_storage_buffer_init(device, &format!("boid_state_{i}"), &initial));
+
+        // Params uniform buffer
+        let params_buffer = UniformBuffer::new(device, "boid_params", &params);
+
+        // Compute pipeline
+        let cs = wgpu::ShaderStages::COMPUTE;
+        let compute_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("boids_compute_bgl"),
+                entries: &[
+                    storage_buffer_entry(0, cs, true),  // boids_in
+                    storage_buffer_entry(1, cs, false), // boids_out
+                    storage_buffer_entry(2, cs, false), // instances
+                    uniform_buffer_entry(3, cs),        // params
+                ],
+            });
+
+        let compute_pipeline = create_compute_pipeline(
+            device,
+            "boids_compute",
+            COMPUTE_SHADER,
+            &[&compute_bind_group_layout],
+            "update_boids",
+        );
+
+        // Build compute bind groups
+        let compute_bind_groups = Self::build_compute_bind_groups(
+            device,
+            &compute_bind_group_layout,
+            &boid_buffers,
+            params_buffer.buffer(),
+            renderer.instance_buffer(),
+        );
+
+        Self {
+            renderer,
+            scene,
+            compute_pipeline,
+            boid_buffers,
+            params_buffer,
+            compute_bind_group_layout,
+            compute_bind_groups,
+            frame_index: 0,
+            params,
+            fov_degrees: 240.0,
+            paused: false,
+            reset_requested: false,
+        }
+    }
+
+    fn build_compute_bind_groups(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        bufs: &[wgpu::Buffer; 2],
+        params_buf: &wgpu::Buffer,
+        instance_buf: &wgpu::Buffer,
+    ) -> [wgpu::BindGroup; 2] {
         let make_bg = |label: &str, buf_in: &wgpu::Buffer, buf_out: &wgpu::Buffer| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some(label),
@@ -170,148 +257,18 @@ impl BoidsApp {
 
         let bg0 = make_bg("boids_bg_a2b", &bufs[0], &bufs[1]);
         let bg1 = make_bg("boids_bg_b2a", &bufs[1], &bufs[0]);
-        self.compute_bind_groups = Some([bg0, bg1]);
+        [bg0, bg1]
     }
 }
 
 impl App for BoidsApp {
-    fn init(&mut self, ctx: &GpuContext, _size: PhysicalSize<u32>) {
-        let device = &ctx.device;
-
-        let scene = SceneBinding::new(device);
-
-        // Render shader (resolve imports)
-        let mut sp = ShaderProcessor::new();
-        sp.register("mikage::scene_types", mikage::SCENE_TYPES_WGSL);
-        let resolved_render = sp.resolve(RENDER_SHADER).expect("render shader");
-
-        // Triangle mesh (pointing right = +X)
-        let mesh = RegularPolygonMesh::generate(3);
-        let mut renderer = InstanceRenderer::<RotatedInstance>::with_shader(
-            device,
-            ctx.render_format(),
-            scene.layout(),
-            &mesh.positions,
-            &mesh.normals,
-            &mesh.indices,
-            &resolved_render,
-            InstanceRendererConfig {
-                vertex_entry: "vertex",
-                fragment_entry: "fragment",
-                depth: false,
-                sample_count: 1,
-            },
-        );
-        renderer.ensure_capacity(device, self.params.num_boids);
-        renderer.set_instance_count(self.params.num_boids);
-
-        // Boid state buffers (double-buffered)
-        let initial = generate_initial_boids(self.params.num_boids, self.params.world_size);
-        let boid_buffers = [0, 1].map(|i| {
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some(&format!("boid_state_{i}")),
-                contents: bytemuck::cast_slice(&initial),
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            })
-        });
-
-        // Params uniform buffer
-        let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("boid_params"),
-            contents: bytemuck::bytes_of(&self.params),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-
-        // Compute pipeline
-        let compute_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("boids_compute_bgl"),
-                entries: &[
-                    // binding 0: boids_in (read-only storage)
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    // binding 1: boids_out (read-write storage)
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: false },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    // binding 2: instances (read-write storage)
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: false },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    // binding 3: params (uniform)
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
-            });
-
-        let compute_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("boids_compute_pipeline_layout"),
-                bind_group_layouts: &[&compute_bind_group_layout],
-                push_constant_ranges: &[],
-            });
-
-        let compute_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("boids_compute_shader"),
-            source: wgpu::ShaderSource::Wgsl(COMPUTE_SHADER.into()),
-        });
-
-        let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("boids_compute_pipeline"),
-            layout: Some(&compute_pipeline_layout),
-            module: &compute_module,
-            entry_point: Some("update_boids"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
-
-        self.renderer = Some(renderer);
-        self.scene = Some(scene);
-        self.compute_pipeline = Some(compute_pipeline);
-        self.boid_buffers = Some(boid_buffers);
-        self.params_buffer = Some(params_buffer);
-        self.compute_bind_group_layout = Some(compute_bind_group_layout);
-
-        self.rebuild_compute_bind_groups(device);
-    }
-
     fn update(&mut self, ctx: &mut UpdateContext) {
         // Handle reset
         if self.reset_requested {
             self.reset_requested = false;
             let initial = generate_initial_boids(self.params.num_boids, self.params.world_size);
             let data = bytemuck::cast_slice(&initial);
-            for buf in self.boid_buffers.as_ref().unwrap() {
+            for buf in &self.boid_buffers {
                 ctx.gpu.queue.write_buffer(buf, 0, data);
             }
             self.frame_index = 0;
@@ -319,8 +276,6 @@ impl App for BoidsApp {
 
         let aspect = ctx.window_size.width as f32 / ctx.window_size.height.max(1) as f32;
         self.scene
-            .as_ref()
-            .unwrap()
             .update_from_camera(&ctx.gpu.queue, &*ctx.camera, aspect);
 
         // Sync FOV degrees → cosine
@@ -328,39 +283,30 @@ impl App for BoidsApp {
 
         // Cap dt to prevent instability
         self.params.dt = ctx.dt.min(1.0 / 30.0);
-        ctx.gpu.queue.write_buffer(
-            self.params_buffer.as_ref().unwrap(),
-            0,
-            bytemuck::bytes_of(&self.params),
-        );
+        self.params_buffer.write(&ctx.gpu.queue, &self.params);
     }
 
-    fn compute(&mut self, ctx: &mut ComputeContext) {
-        if self.paused {
-            return;
+    fn encode(&mut self, ctx: &mut FrameContext) {
+        // Compute pass
+        if !self.paused {
+            let bg_index = (self.frame_index % 2) as usize;
+            let workgroups = self.params.num_boids.div_ceil(64);
+
+            let mut pass = ctx
+                .encoder
+                .begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("boids_compute_pass"),
+                    timestamp_writes: None,
+                });
+            pass.set_pipeline(&self.compute_pipeline);
+            pass.set_bind_group(0, &self.compute_bind_groups[bg_index], &[]);
+            pass.dispatch_workgroups(workgroups, 1, 1);
+            drop(pass);
+
+            self.frame_index += 1;
         }
 
-        let pipeline = self.compute_pipeline.as_ref().unwrap();
-        let bind_groups = self.compute_bind_groups.as_ref().unwrap();
-        let bg_index = (self.frame_index % 2) as usize;
-
-        let workgroups = self.params.num_boids.div_ceil(64);
-
-        let mut pass = ctx
-            .encoder
-            .begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("boids_compute_pass"),
-                timestamp_writes: None,
-            });
-        pass.set_pipeline(pipeline);
-        pass.set_bind_group(0, &bind_groups[bg_index], &[]);
-        pass.dispatch_workgroups(workgroups, 1, 1);
-        drop(pass);
-
-        self.frame_index += 1;
-    }
-
-    fn render(&mut self, ctx: &mut RenderContext) {
+        // Render pass
         let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("boids_render_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -382,8 +328,8 @@ impl App for BoidsApp {
             occlusion_query_set: None,
         });
 
-        pass.set_bind_group(0, self.scene.as_ref().unwrap().bind_group(), &[]);
-        self.renderer.as_ref().unwrap().render(&mut pass);
+        pass.set_bind_group(0, self.scene.bind_group(), &[]);
+        self.renderer.render(&mut pass);
     }
 
     fn gui(&mut self, egui_ctx: &mikage::egui::Context) {
@@ -456,8 +402,6 @@ impl App for BoidsApp {
                 ui.add(mikage::egui::Slider::new(&mut self.fov_degrees, 30.0..=360.0).text("FOV"));
             });
     }
-
-    fn resize(&mut self, _ctx: &GpuContext, _new_size: PhysicalSize<u32>) {}
 }
 
 fn main() {
@@ -466,20 +410,7 @@ fn main() {
     camera.damping = 0.85;
 
     mikage::run(
-        BoidsApp {
-            renderer: None,
-            scene: None,
-            compute_pipeline: None,
-            boid_buffers: None,
-            params_buffer: None,
-            compute_bind_group_layout: None,
-            compute_bind_groups: None,
-            frame_index: 0,
-            params: BoidParams::default(),
-            fov_degrees: 240.0,
-            paused: false,
-            reset_requested: false,
-        },
+        BoidsApp::new,
         RunConfig {
             title: "mikage - GPU boids (10k)".to_string(),
             camera: Box::new(camera),

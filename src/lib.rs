@@ -9,19 +9,16 @@
 //! Implement the [`App`] trait and launch with [`run`]:
 //!
 //! ```no_run
-//! use mikage::{App, GpuContext, RenderContext, RunConfig, UpdateContext};
-//! use winit::dpi::PhysicalSize;
+//! use mikage::{App, FrameContext, RunConfig, UpdateContext};
 //!
 //! struct MyApp;
 //!
 //! impl App for MyApp {
-//!     fn init(&mut self, _ctx: &GpuContext, _size: PhysicalSize<u32>) {}
 //!     fn update(&mut self, _ctx: &mut UpdateContext) {}
-//!     fn render(&mut self, _ctx: &mut RenderContext) {}
-//!     fn resize(&mut self, _ctx: &GpuContext, _new_size: PhysicalSize<u32>) {}
+//!     fn encode(&mut self, _ctx: &mut FrameContext) {}
 //! }
 //!
-//! mikage::run(MyApp, RunConfig::default());
+//! mikage::run(|_ctx, _size| MyApp, RunConfig::default());
 //! ```
 //!
 //! ## Frame Loop
@@ -32,19 +29,18 @@
 //! 2. Forward events to egui (automatic input lock)
 //! 3. Forward mouse/scroll to camera
 //! 4. [`App::update`] — logic, data uploads
-//! 5. [`App::compute`] — GPU compute passes
-//! 6. [`App::render`] — GPU render passes
-//! 7. [`App::gui`] — egui UI construction and rendering
-//! 8. Submit command buffer and present
+//! 5. [`App::encode`] — GPU compute and render passes
+//! 6. [`App::gui`] — egui UI construction and rendering
+//! 7. Submit command buffer and present
 //!
 //! ## Features
 //!
 //! - **Raw wgpu access**: The framework manages the surface; you create your own pipelines and buffers.
-//! - **Compute shaders**: Encode compute passes in [`App::compute`], which runs before rendering.
+//! - **Compute shaders**: Encode compute passes in [`App::encode`], before render passes.
 //! - **egui integration**: Build UI in [`App::gui`]. Input lock between egui and camera is automatic.
 //! - **Camera system**: [`Camera`] trait with a built-in [`OrbitCamera`] implementation.
 //! - **Multi-platform**: Native (Metal/Vulkan/DX12) and WASM (WebGPU).
-//! - **Helpers**: [`SceneBinding`], [`SceneUniform`], [`IcoSphereMesh`], [`CubeMesh`], [`create_depth_texture`], and more.
+//! - **Helpers**: [`SceneBinding`], [`SceneUniform`], [`UniformBuffer`], [`MeshBuffers`], [`create_storage_buffer_init`], [`storage_buffer_entry`], [`uniform_buffer_entry`], [`create_depth_texture`], and mesh generators.
 //! - **Shader imports**: [`ShaderProcessor`] resolves `#import` directives in WGSL shaders.
 //! - **Instanced rendering**: [`InstanceRenderer`] with generic [`InstanceVertex`] support for custom per-instance data layouts.
 //!
@@ -58,6 +54,7 @@
 //! | `instancing_2d` | 2D hex grid with [`InstanceData`] (pan/zoom) |
 //! | `instancing_3d` | 3D sphere grid with wave animation |
 //! | `custom_instance` | Custom [`InstanceVertex`] with per-instance 2D rotation |
+//! | `boids` | GPU compute flocking (10k boids) with compute-to-instance pipeline |
 //!
 //! Run with `cargo run -p mikage --example <name>`.
 
@@ -74,12 +71,14 @@ pub mod shader_processor;
 pub mod solid_renderer;
 mod time;
 
-pub use app::{App, ComputeContext, RenderContext, UpdateContext};
+pub use app::{App, FrameContext, UpdateContext};
 pub use camera::{Camera, Camera2d, CameraController, OrbitCamera};
 pub use context::GpuContext;
 pub use helpers::{
-    CubeMesh, DEPTH_FORMAT, IcoSphereMesh, PlaneMesh, QuadMesh2d, RegularPolygonMesh, SceneBinding,
-    SceneUniform, create_depth_texture,
+    CubeMesh, DEPTH_FORMAT, IcoSphereMesh, MeshBuffers, POSITION_NORMAL_LAYOUT, PlaneMesh,
+    QuadMesh2d, RegularPolygonMesh, SceneBinding, SceneUniform, UniformBuffer,
+    create_compute_pipeline, create_depth_texture, create_storage_buffer_init,
+    storage_buffer_entry, uniform_buffer_entry,
 };
 pub use input::InputState;
 pub use instance_renderer::{

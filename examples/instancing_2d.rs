@@ -1,16 +1,16 @@
 use mikage::{
-    App, Camera2d, GpuContext, InstanceData, InstanceRenderer, InstanceRendererConfig,
-    RegularPolygonMesh, RenderContext, RunConfig, SceneBinding, UpdateContext,
+    App, Camera2d, FrameContext, GpuContext, InstanceData, InstanceRenderer,
+    InstanceRendererConfig, RegularPolygonMesh, RunConfig, SceneBinding, UpdateContext,
 };
 use winit::dpi::PhysicalSize;
 
 struct Instancing2dApp {
-    renderer: Option<InstanceRenderer>,
-    scene: Option<SceneBinding>,
+    renderer: InstanceRenderer,
+    scene: SceneBinding,
 }
 
-impl App for Instancing2dApp {
-    fn init(&mut self, ctx: &GpuContext, _size: PhysicalSize<u32>) {
+impl Instancing2dApp {
+    fn new(ctx: &GpuContext, _size: PhysicalSize<u32>) -> Self {
         let scene = SceneBinding::new(&ctx.device);
 
         let hex = RegularPolygonMesh::generate(6);
@@ -24,14 +24,15 @@ impl App for Instancing2dApp {
             InstanceRendererConfig::default_2d(),
         );
 
-        self.renderer = Some(renderer);
-        self.scene = Some(scene);
+        Self { renderer, scene }
     }
+}
 
+impl App for Instancing2dApp {
     fn update(&mut self, ctx: &mut UpdateContext) {
         let aspect = ctx.window_size.width as f32 / ctx.window_size.height.max(1) as f32;
-        let scene = self.scene.as_ref().unwrap();
-        scene.update_from_camera(&ctx.gpu.queue, &*ctx.camera, aspect);
+        self.scene
+            .update_from_camera(&ctx.gpu.queue, &*ctx.camera, aspect);
 
         let vp = ctx.camera.view_projection_matrix(aspect);
 
@@ -71,14 +72,11 @@ impl App for Instancing2dApp {
             }
         }
 
-        self.renderer.as_mut().unwrap().update_instances(
-            &ctx.gpu.device,
-            &ctx.gpu.queue,
-            &instances,
-        );
+        self.renderer
+            .update_instances(&ctx.gpu.device, &ctx.gpu.queue, &instances);
     }
 
-    fn render(&mut self, ctx: &mut RenderContext) {
+    fn encode(&mut self, ctx: &mut FrameContext) {
         let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("instancing_2d_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -100,8 +98,8 @@ impl App for Instancing2dApp {
             occlusion_query_set: None,
         });
 
-        pass.set_bind_group(0, self.scene.as_ref().unwrap().bind_group(), &[]);
-        self.renderer.as_ref().unwrap().render(&mut pass);
+        pass.set_bind_group(0, self.scene.bind_group(), &[]);
+        self.renderer.render(&mut pass);
     }
 
     fn gui(&mut self, egui_ctx: &mikage::egui::Context) {
@@ -111,8 +109,6 @@ impl App for Instancing2dApp {
             ui.label("Scroll: zoom");
         });
     }
-
-    fn resize(&mut self, _ctx: &GpuContext, _new_size: PhysicalSize<u32>) {}
 }
 
 fn main() {
@@ -121,10 +117,7 @@ fn main() {
     camera.damping = 0.85;
 
     mikage::run(
-        Instancing2dApp {
-            renderer: None,
-            scene: None,
-        },
+        Instancing2dApp::new,
         RunConfig {
             title: "mikage - 2D instancing".to_string(),
             camera: Box::new(camera),

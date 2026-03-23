@@ -9,7 +9,7 @@ Provides GPU rendering, compute shaders, and egui UI integration for both Native
 - **Raw wgpu access** — The framework manages the window and surface; you manage everything else.
 - **egui integration** — Build UI in `gui()`. Input lock between egui and camera is automatic.
 - **Camera system** — `Camera` trait (read-only) + `CameraController` trait (input handling). Built-in `OrbitCamera` and `Camera2d`.
-- **Compute shaders** — Encode compute passes in `compute()`, which runs before rendering.
+- **Compute shaders** — Encode compute passes in `encode()`, before render passes.
 - **SolidRenderer** — Opaque (lit) and transparent (unlit) pipelines for solid-colored meshes.
 - **InstanceRenderer** — GPU-instanced rendering with generic per-instance vertex data via `InstanceVertex` trait.
 - **ShaderProcessor** — Lightweight WGSL preprocessor with `#import` resolution, recursive dependency handling, and circular import detection.
@@ -19,16 +19,14 @@ Provides GPU rendering, compute shaders, and egui UI integration for both Native
 ## Quick Start
 
 ```rust
-use mikage::{App, GpuContext, RenderContext, RunConfig, UpdateContext};
-use winit::dpi::PhysicalSize;
+use mikage::{App, FrameContext, RunConfig, UpdateContext};
 
 struct MyApp;
 
 impl App for MyApp {
-    fn init(&mut self, _ctx: &GpuContext, _size: PhysicalSize<u32>) {}
     fn update(&mut self, _ctx: &mut UpdateContext) {}
 
-    fn render(&mut self, ctx: &mut RenderContext) {
+    fn encode(&mut self, ctx: &mut FrameContext) {
         let _pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("clear"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -45,12 +43,10 @@ impl App for MyApp {
             occlusion_query_set: None,
         });
     }
-
-    fn resize(&mut self, _ctx: &GpuContext, _new_size: PhysicalSize<u32>) {}
 }
 
 fn main() {
-    mikage::run(MyApp, RunConfig::default());
+    mikage::run(|_ctx, _size| MyApp, RunConfig::default());
 }
 ```
 
@@ -58,20 +54,29 @@ fn main() {
 
 | Method | When called | Required |
 |--------|------------|----------|
-| `init()` | Once, after GPU init | Yes |
 | `update()` | Every frame (logic) | Yes |
-| `compute()` | Every frame (before render) | No |
-| `render()` | Every frame (drawing) | Yes |
+| `encode()` | Every frame (compute + render) | Yes |
 | `gui()` | Every frame (egui UI) | No |
-| `resize()` | On window resize | Yes |
+| `resize()` | On window resize | No |
 | `on_window_event()` | On unhandled window events (file drops, focus, etc.) | No |
+
+## run()
+
+```rust
+mikage::run(
+    |ctx, size| MyApp::new(ctx, size),  // factory closure (called after GPU init)
+    RunConfig::default(),
+);
+```
+
+GPU resources can be created directly in the factory closure — no `Option<T>` needed.
 
 ## Frame Loop
 
 ```
 winit events → InputState → egui input
-→ Camera update → App::update() → App::compute()
-→ App::render() → App::gui() → egui render
+→ Camera update → App::update()
+→ App::encode() → App::gui() → egui render
 → submit → present
 ```
 
@@ -84,12 +89,11 @@ winit events → InputState → egui input
 - `input: &InputState` — keyboard / mouse state
 - `camera: &mut dyn CameraController` — mutable camera controller
 
-### `ComputeContext`
-- `device`, `queue`, `encoder` — encode compute passes
-
-### `RenderContext`
-- `device`, `queue`, `encoder` — encode render passes
+### `FrameContext`
+- `gpu: &GpuContext` — device / queue (`gpu.device`, `gpu.queue`)
+- `encoder` — encode compute and render passes
 - `surface_view` — render target
+- `window_size` — current window size
 - `camera: &dyn Camera` — read-only camera
 
 ## RunConfig
@@ -106,12 +110,31 @@ winit events → InputState → egui input
 
 ## Helpers
 
+### wgpu boilerplate reducers
+
+| Name | Purpose |
+|------|---------|
+| `storage_buffer_entry(binding, visibility, read_only)` | 1-line `BindGroupLayoutEntry` for storage buffers |
+| `uniform_buffer_entry(binding, visibility)` | 1-line `BindGroupLayoutEntry` for uniform buffers |
+| `UniformBuffer<T: Pod>` | Typed uniform buffer with `new` / `write` / `buffer()` |
+| `create_storage_buffer_init(device, label, data)` | Create `STORAGE \| COPY_DST` buffer from `&[T]` |
+| `MeshBuffers::from_position_normal(...)` | Interleave positions+normals into vertex/index buffers |
+| `POSITION_NORMAL_LAYOUT` | `VertexBufferLayout` for interleaved `Float32x3` position + normal (stride 24) |
+| `create_compute_pipeline(device, label, wgsl, bgls, entry)` | Create compute pipeline from WGSL source in one call |
+
+### Scene & depth
+
 | Name | Purpose |
 |------|---------|
 | `SceneBinding` | Bundles SceneUniform buffer + bind group layout + bind group |
 | `SceneUniform` | View-projection + camera position + lighting uniform struct |
 | `create_depth_texture()` | Create depth texture + view |
 | `DEPTH_FORMAT` | `Depth32Float` constant |
+
+### Mesh generators
+
+| Name | Purpose |
+|------|---------|
 | `IcoSphereMesh::generate(n)` | Generate icosphere mesh with n subdivisions |
 | `CubeMesh::generate()` | Generate unit cube mesh with per-face normals |
 | `PlaneMesh::generate()` | Generate unit plane mesh (XZ plane, +Y normal) |
@@ -153,6 +176,80 @@ let renderer = InstanceRenderer::<TileInstance>::with_shader(
 );
 ```
 
+## Compute Shaders
+
+Encode GPU compute passes in `encode()`, before render passes.
+
+### Setup
+
+```rust
+use mikage::{
+    create_compute_pipeline, create_storage_buffer_init,
+    storage_buffer_entry, uniform_buffer_entry, UniformBuffer,
+};
+
+// In the factory closure / constructor:
+
+// 1. Create buffers
+let data_buffer = create_storage_buffer_init(&device, "my_data", &initial_data);
+let params = UniformBuffer::new(&device, "params", &my_params);
+
+// 2. Create bind group layout + pipeline (one call)
+let cs = wgpu::ShaderStages::COMPUTE;
+let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    label: Some("compute_bgl"),
+    entries: &[
+        storage_buffer_entry(0, cs, false),  // read-write storage
+        uniform_buffer_entry(1, cs),         // uniform params
+    ],
+});
+
+let pipeline = create_compute_pipeline(
+    &device,
+    "my_compute",
+    include_str!("shaders/compute.wgsl"),
+    &[&bgl],
+    "main",
+);
+
+// 3. Create bind group (raw wgpu — binding indices are shader contracts)
+let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    label: Some("compute_bg"),
+    layout: &bgl,
+    entries: &[
+        wgpu::BindGroupEntry { binding: 0, resource: data_buffer.as_entire_binding() },
+        wgpu::BindGroupEntry { binding: 1, resource: params.buffer().as_entire_binding() },
+    ],
+});
+```
+
+### Dispatch
+
+```rust
+fn encode(&mut self, ctx: &mut FrameContext) {
+    // Update params
+    self.params_buffer.write(&ctx.gpu.queue, &self.params);
+
+    // Compute pass
+    let mut cpass = ctx.encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+        label: Some("my_compute_pass"),
+        timestamp_writes: None,
+    });
+    cpass.set_pipeline(&self.pipeline);
+    cpass.set_bind_group(0, &self.bind_group, &[]);
+    cpass.dispatch_workgroups(self.num_elements.div_ceil(64), 1, 1);
+    drop(cpass);
+
+    // Render pass
+    let mut rpass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        // ...
+    });
+    // ...
+}
+```
+
+See `examples/boids.rs` for a full example with double-buffered storage and compute-to-instance rendering.
+
 ## Shader Processor
 
 Lightweight WGSL preprocessor that resolves `#import` directives:
@@ -179,7 +276,7 @@ In WGSL files:
 
 The camera system is split into two traits:
 
-- **`Camera`** — Read-only interface: `view_matrix()`, `projection_matrix()`, `position()`. Exposed in `RenderContext`.
+- **`Camera`** — Read-only interface: `view_matrix()`, `projection_matrix()`, `position()`. Exposed in `FrameContext`.
 - **`CameraController`** — Extends `Camera` with input handling (`on_mouse_drag`, `on_scroll`, `update`). Exposed in `UpdateContext`.
 
 Built-in implementations:
@@ -198,11 +295,6 @@ trunk build                   # build
 trunk serve --open=false      # local dev server
 ```
 
-Required headers (set in `Trunk.toml`):
-```toml
-[serve]
-headers = { Cross-Origin-Opener-Policy = "same-origin", Cross-Origin-Embedder-Policy = "require-corp" }
-```
 
 Uses WebGPU backend. GPU initialization is asynchronous on WASM.
 
@@ -215,6 +307,7 @@ cargo run -p mikage --example orbit_camera       # IcoSphere + orbit camera + eg
 cargo run -p mikage --example instancing_2d      # 2D hex grid (Camera2d + pan/zoom)
 cargo run -p mikage --example instancing_3d      # 3D sphere grid with wave animation
 cargo run -p mikage --example custom_instance    # Custom InstanceVertex with 2D rotation
+cargo run -p mikage --example boids              # GPU compute flocking (10k boids)
 ```
 
 ## Dependencies
