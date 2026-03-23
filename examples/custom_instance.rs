@@ -32,7 +32,7 @@ impl InstanceVertex for RotatedInstance {
     }
 }
 
-const SHADER_SOURCE: &str = include_str!("../assets/shaders/rotated_instancing.wgsl");
+const SHADER_SOURCE: &str = include_str!("shaders/rotated_instancing.wgsl");
 
 struct CustomInstanceApp {
     renderer: Option<InstanceRenderer<RotatedInstance>>,
