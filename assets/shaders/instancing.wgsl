@@ -8,6 +8,7 @@
 // - fragment_unlit: direct color pass-through (for 2D)
 
 #import mikage::scene_types
+#import mikage::lighting
 @group(0) @binding(0) var<uniform> scene: SceneUniform;
 
 struct Vertex {
@@ -39,10 +40,8 @@ fn vertex(v: Vertex) -> VertexOut {
 @fragment
 fn fragment_lit(in: VertexOut) -> @location(0) vec4<f32> {
     let n = normalize(in.world_normal);
-    let diffuse = max(dot(n, scene.light_dir.xyz), 0.0);
-    let lit = scene.ambient.x + diffuse * (1.0 - scene.ambient.x);
-
-    return vec4<f32>(in.color.rgb * lit, in.color.a);
+    let lit_color = lambert(in.color.rgb, n, scene.light_dir.xyz, scene.ambient.x);
+    return vec4<f32>(lit_color, in.color.a);
 }
 
 @fragment

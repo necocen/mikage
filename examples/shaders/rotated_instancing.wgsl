@@ -4,6 +4,8 @@
 // Color is computed from the rotation angle in the fragment shader.
 
 #import mikage::scene_types
+#import mikage::math
+#import mikage::color_utils
 @group(0) @binding(0) var<uniform> scene: SceneUniform;
 
 struct Vertex {
@@ -22,13 +24,7 @@ fn vertex(v: Vertex) -> VertexOut {
     let angle = v.i_pos_angle_scale.z;
     let scale = v.i_pos_angle_scale.w;
 
-    // 2D rotation matrix
-    let c = cos(angle);
-    let s = sin(angle);
-    let rotated = vec2<f32>(
-        v.position.x * c - v.position.y * s,
-        v.position.x * s + v.position.y * c,
-    ) * scale;
+    let rotated = rotate2d(v.position.xy, angle) * scale;
 
     let world_pos = vec3<f32>(
         rotated.x + v.i_pos_angle_scale.x,
@@ -36,13 +32,7 @@ fn vertex(v: Vertex) -> VertexOut {
         0.0,
     );
 
-    // HSV-like color from angle
-    let hue = angle * 0.5;
-    let color = vec3<f32>(
-        sin(hue) * 0.35 + 0.65,
-        sin(hue + 2.094) * 0.35 + 0.65,
-        sin(hue + 4.189) * 0.35 + 0.65,
-    );
+    let color = hsv2rgb((angle * 0.5) % TAU, 0.7, 1.0);
 
     var out: VertexOut;
     out.clip_position = scene.view_proj * vec4<f32>(world_pos, 1.0);

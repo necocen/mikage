@@ -24,8 +24,7 @@ impl DemoApp {
 
         let scene = SceneBinding::new(&ctx.device);
 
-        let mut sp = ShaderProcessor::new();
-        sp.register("mikage::scene_types", mikage::SCENE_TYPES_WGSL);
+        let sp = ShaderProcessor::new();
         let resolved = sp
             .resolve(SHADER)
             .expect("failed to resolve demo shader imports");

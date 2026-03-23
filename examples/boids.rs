@@ -145,8 +145,7 @@ impl BoidsApp {
         let tile_scenes: [SceneBinding; 9] = std::array::from_fn(|_| SceneBinding::new(device));
 
         // Render shader (resolve imports)
-        let mut sp = ShaderProcessor::new();
-        sp.register("mikage::scene_types", mikage::SCENE_TYPES_WGSL);
+        let sp = ShaderProcessor::new();
         let resolved_render = sp.resolve(RENDER_SHADER).expect("render shader");
 
         // Triangle mesh (pointing right = +X)

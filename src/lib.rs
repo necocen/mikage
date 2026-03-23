@@ -85,7 +85,9 @@ pub use instance_renderer::{
     InstanceData, InstanceRenderer, InstanceRendererConfig, InstanceVertex,
 };
 pub use runner::{RunConfig, run};
-pub use shader_processor::{SCENE_TYPES_WGSL, ShaderError, ShaderProcessor};
+pub use shader_processor::{
+    COLOR_UTILS_WGSL, LIGHTING_WGSL, MATH_WGSL, SCENE_TYPES_WGSL, ShaderError, ShaderProcessor,
+};
 pub use solid_renderer::{ModelUniform, SolidObjectId, SolidRenderer};
 
 /// Re-exported for building UI in [`App::gui`].

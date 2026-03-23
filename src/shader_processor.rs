@@ -10,6 +10,15 @@ use std::fmt;
 /// WGSL source for the shared `SceneUniform` struct.
 pub const SCENE_TYPES_WGSL: &str = include_str!("../assets/shaders/scene_types.wgsl");
 
+/// WGSL source for math constants and utilities (PI, TAU, rotate2d, clamp_magnitude).
+pub const MATH_WGSL: &str = include_str!("../assets/shaders/math.wgsl");
+
+/// WGSL source for color space conversion utilities (HSV, HSL, sRGB).
+pub const COLOR_UTILS_WGSL: &str = include_str!("../assets/shaders/color_utils.wgsl");
+
+/// WGSL source for basic lighting utilities (Lambert diffuse).
+pub const LIGHTING_WGSL: &str = include_str!("../assets/shaders/lighting.wgsl");
+
 /// Errors that can occur during shader import resolution.
 #[derive(Debug, Clone)]
 pub enum ShaderError {
@@ -48,11 +57,16 @@ impl Default for ShaderProcessor {
 }
 
 impl ShaderProcessor {
-    /// Creates a new, empty `ShaderProcessor`.
+    /// Creates a new `ShaderProcessor` with built-in `mikage::*` modules pre-registered.
     pub fn new() -> Self {
-        Self {
+        let mut sp = Self {
             modules: HashMap::new(),
-        }
+        };
+        sp.register("mikage::scene_types", SCENE_TYPES_WGSL);
+        sp.register("mikage::math", MATH_WGSL);
+        sp.register("mikage::color_utils", COLOR_UTILS_WGSL);
+        sp.register("mikage::lighting", LIGHTING_WGSL);
+        sp
     }
 
     /// Registers a named module. Chainable.
@@ -203,9 +217,7 @@ impl ShaderProcessor {
 
 /// Returns a [`ShaderProcessor`] with built-in mikage modules pre-registered.
 pub(crate) fn mikage_shader_processor() -> ShaderProcessor {
-    let mut sp = ShaderProcessor::new();
-    sp.register("mikage::scene_types", SCENE_TYPES_WGSL);
-    sp
+    ShaderProcessor::new()
 }
 
 #[cfg(test)]

@@ -45,8 +45,7 @@ impl CustomInstanceApp {
         let scene = SceneBinding::new(&ctx.device);
 
         // Resolve shader imports
-        let mut sp = ShaderProcessor::new();
-        sp.register("mikage::scene_types", mikage::SCENE_TYPES_WGSL);
+        let sp = ShaderProcessor::new();
         let resolved = sp.resolve(SHADER_SOURCE).expect("failed to resolve shader");
 
         // Pentagon mesh

@@ -3,6 +3,7 @@
 // Transparent objects are unlit (color passed through directly).
 
 #import mikage::scene_types
+#import mikage::lighting
 @group(0) @binding(0) var<uniform> scene: SceneUniform;
 
 struct ModelUniform {
@@ -36,10 +37,8 @@ fn vertex(v: VertexInput) -> VertexOutput {
 @fragment
 fn fragment_lit(in: VertexOutput) -> @location(0) vec4<f32> {
     let n = normalize(in.world_normal);
-    let diffuse = max(dot(n, scene.light_dir.xyz), 0.0);
-    let lit = scene.ambient.x + diffuse * (1.0 - scene.ambient.x);
-
-    return vec4<f32>(model_data.color.rgb * lit, model_data.color.a);
+    let lit_color = lambert(model_data.color.rgb, n, scene.light_dir.xyz, scene.ambient.x);
+    return vec4<f32>(lit_color, model_data.color.a);
 }
 
 // Unlit fragment for transparent objects

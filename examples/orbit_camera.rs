@@ -26,8 +26,7 @@ impl OrbitCameraApp {
         let scene = SceneBinding::new(&ctx.device);
 
         // Shader
-        let mut sp = ShaderProcessor::new();
-        sp.register("mikage::scene_types", mikage::SCENE_TYPES_WGSL);
+        let sp = ShaderProcessor::new();
         let resolved = sp
             .resolve(SPHERE_SHADER)
             .expect("failed to resolve sphere shader imports");
