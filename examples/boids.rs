@@ -6,9 +6,9 @@
 use bytemuck::{Pod, Zeroable};
 use mikage::{
     App, Camera2d, FrameContext, GpuContext, InstanceRenderer, InstanceRendererConfig,
-    InstanceVertex, RegularPolygonMesh, RunConfig, SceneBinding, ShaderProcessor, UniformBuffer,
-    UpdateContext, create_compute_pipeline, create_storage_buffer_init, storage_buffer_entry,
-    uniform_buffer_entry,
+    InstanceVertex, RegularPolygonMesh, RunConfig, SceneBinding, SceneUniform, ShaderProcessor,
+    UniformBuffer, UpdateContext, create_compute_pipeline, create_storage_buffer_init,
+    storage_buffer_entry, uniform_buffer_entry,
 };
 use winit::dpi::PhysicalSize;
 
@@ -16,7 +16,7 @@ use winit::dpi::PhysicalSize;
 // Data structures
 // ---------------------------------------------------------------------------
 
-const NUM_BOIDS: u32 = 10_000;
+const NUM_BOIDS: u32 = 20_000;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -57,9 +57,9 @@ impl Default for BoidParams {
             cohesion_strength: 0.5,
             max_speed: 5.0,
             min_speed: 1.0,
-            world_size: 150.0,
+            world_size: 300.0,
             boid_scale: 0.3,
-            fov_cosine: -0.5, // ~240°
+            fov_cosine: 0.0, // 180°
             _pad: [0.0; 3],
         }
     }
@@ -122,7 +122,7 @@ const COMPUTE_SHADER: &str = include_str!("shaders/boids_compute.wgsl");
 
 struct BoidsApp {
     renderer: InstanceRenderer<RotatedInstance>,
-    scene: SceneBinding,
+    tile_scenes: [SceneBinding; 9],
     compute_pipeline: wgpu::ComputePipeline,
     boid_buffers: [wgpu::Buffer; 2],
     params_buffer: UniformBuffer<BoidParams>,
@@ -142,7 +142,7 @@ impl BoidsApp {
         let device = &ctx.device;
         let params = BoidParams::default();
 
-        let scene = SceneBinding::new(device);
+        let tile_scenes: [SceneBinding; 9] = std::array::from_fn(|_| SceneBinding::new(device));
 
         // Render shader (resolve imports)
         let mut sp = ShaderProcessor::new();
@@ -154,7 +154,7 @@ impl BoidsApp {
         let mut renderer = InstanceRenderer::<RotatedInstance>::with_shader(
             device,
             ctx.render_format(),
-            scene.layout(),
+            tile_scenes[0].layout(),
             &mesh.positions,
             &mesh.normals,
             &mesh.indices,
@@ -209,7 +209,7 @@ impl BoidsApp {
 
         Self {
             renderer,
-            scene,
+            tile_scenes,
             compute_pipeline,
             boid_buffers,
             params_buffer,
@@ -217,7 +217,7 @@ impl BoidsApp {
             compute_bind_groups,
             frame_index: 0,
             params,
-            fov_degrees: 240.0,
+            fov_degrees: 180.0,
             paused: false,
             reset_requested: false,
         }
@@ -274,9 +274,28 @@ impl App for BoidsApp {
             self.frame_index = 0;
         }
 
+        // Update 3x3 tile scene bindings centered on the camera position
         let aspect = ctx.window_size.width as f32 / ctx.window_size.height.max(1) as f32;
-        self.scene
-            .update_from_camera(&ctx.gpu.queue, &*ctx.camera, aspect);
+        let vp = ctx.camera.view_projection_matrix(aspect);
+        let camera_pos = ctx.camera.position();
+        let tile_size = self.params.world_size * 2.0;
+
+        // Find the base tile the camera is currently in
+        let base_tx = (camera_pos.x / tile_size).round() as i32;
+        let base_ty = (camera_pos.y / tile_size).round() as i32;
+
+        let mut idx = 0;
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                let tx = base_tx + dx;
+                let ty = base_ty + dy;
+                let offset = glam::Vec3::new(tx as f32 * tile_size, ty as f32 * tile_size, 0.0);
+                let vp_tile = vp * glam::Mat4::from_translation(offset);
+                let uniform = SceneUniform::new(vp_tile, camera_pos);
+                self.tile_scenes[idx].update(&ctx.gpu.queue, &uniform);
+                idx += 1;
+            }
+        }
 
         // Sync FOV degrees → cosine
         self.params.fov_cosine = (self.fov_degrees.to_radians() / 2.0).cos();
@@ -328,8 +347,11 @@ impl App for BoidsApp {
             occlusion_query_set: None,
         });
 
-        pass.set_bind_group(0, self.scene.bind_group(), &[]);
-        self.renderer.render(&mut pass);
+        // Render 3x3 tiles for seamless periodic boundaries
+        for tile_scene in &self.tile_scenes {
+            pass.set_bind_group(0, tile_scene.bind_group(), &[]);
+            self.renderer.render(&mut pass);
+        }
     }
 
     fn gui(&mut self, egui_ctx: &mikage::egui::Context) {
@@ -412,7 +434,7 @@ fn main() {
     mikage::run(
         BoidsApp::new,
         RunConfig {
-            title: "mikage - GPU boids (10k)".to_string(),
+            title: "mikage - GPU boids (20k)".to_string(),
             camera: Box::new(camera),
             ..Default::default()
         },
