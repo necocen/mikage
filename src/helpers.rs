@@ -1,3 +1,5 @@
+use crate::camera::Camera;
+use wgpu::util::DeviceExt;
 use winit::dpi::PhysicalSize;
 
 /// Creates a depth texture and its view.
@@ -90,6 +92,100 @@ impl SceneUniform {
             light_dir: [dir.x, dir.y, dir.z, 0.0],
             ambient: [ambient, 0.0, 0.0, 0.0],
         }
+    }
+}
+
+/// Bundles a [`SceneUniform`] buffer, bind group layout, and bind group.
+///
+/// Eliminates the boilerplate of creating these three resources separately.
+/// The layout is compatible with `@group(0) @binding(0) var<uniform> scene: SceneUniform`.
+///
+/// # Example
+///
+/// ```ignore
+/// let scene = SceneBinding::new(&device);
+///
+/// // Pass the layout to renderers:
+/// let renderer = InstanceRenderer::new(&device, fmt, scene.layout(), ...);
+///
+/// // Update each frame:
+/// scene.update_from_camera(&queue, &camera, aspect);
+///
+/// // Bind in render pass:
+/// pass.set_bind_group(0, scene.bind_group(), &[]);
+/// ```
+pub struct SceneBinding {
+    layout: wgpu::BindGroupLayout,
+    buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+}
+
+impl SceneBinding {
+    /// Creates a new `SceneBinding` with an identity view-projection matrix.
+    pub fn new(device: &wgpu::Device) -> Self {
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("scene_bind_group_layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
+        let uniform = SceneUniform::new(glam::Mat4::IDENTITY, glam::Vec3::ZERO);
+        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("scene_uniform_buffer"),
+            contents: bytemuck::bytes_of(&uniform),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("scene_bind_group"),
+            layout: &layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        });
+
+        Self {
+            layout,
+            buffer,
+            bind_group,
+        }
+    }
+
+    /// Returns the bind group layout for pipeline construction.
+    pub fn layout(&self) -> &wgpu::BindGroupLayout {
+        &self.layout
+    }
+
+    /// Returns the bind group for use in render passes.
+    pub fn bind_group(&self) -> &wgpu::BindGroup {
+        &self.bind_group
+    }
+
+    /// Writes a [`SceneUniform`] to the GPU buffer.
+    pub fn update(&self, queue: &wgpu::Queue, uniform: &SceneUniform) {
+        queue.write_buffer(&self.buffer, 0, bytemuck::bytes_of(uniform));
+    }
+
+    /// Convenience: computes the view-projection matrix from a camera and writes
+    /// a [`SceneUniform`] with default lighting.
+    pub fn update_from_camera(
+        &self,
+        queue: &wgpu::Queue,
+        camera: &(impl Camera + ?Sized),
+        aspect: f32,
+    ) {
+        let vp = camera.view_projection_matrix(aspect);
+        let uniform = SceneUniform::new(vp, camera.position());
+        self.update(queue, &uniform);
     }
 }
 

@@ -8,9 +8,11 @@ Provides GPU rendering, compute shaders, and egui UI integration for both Native
 
 - **Raw wgpu access** — The framework manages the window and surface; you manage everything else.
 - **egui integration** — Build UI in `gui()`. Input lock between egui and camera is automatic.
-- **Camera system** — `Camera` trait (read-only) + `CameraController` trait (input handling). Built-in `OrbitCamera` implements both.
+- **Camera system** — `Camera` trait (read-only) + `CameraController` trait (input handling). Built-in `OrbitCamera` and `Camera2d`.
 - **Compute shaders** — Encode compute passes in `compute()`, which runs before rendering.
 - **SolidRenderer** — Opaque (lit) and transparent (unlit) pipelines for solid-colored meshes.
+- **InstanceRenderer** — GPU-instanced rendering with generic per-instance vertex data via `InstanceVertex` trait.
+- **ShaderProcessor** — Lightweight WGSL preprocessor with `#import` resolution, recursive dependency handling, and circular import detection.
 - **Multi-platform** — Native (Metal / Vulkan / DX12) and WASM (WebGPU).
 - **tracing** — `RUST_LOG` on native, `tracing-web` (browser console) on WASM.
 
@@ -106,13 +108,72 @@ winit events → InputState → egui input
 
 | Name | Purpose |
 |------|---------|
+| `SceneBinding` | Bundles SceneUniform buffer + bind group layout + bind group |
+| `SceneUniform` | View-projection + camera position + lighting uniform struct |
 | `create_depth_texture()` | Create depth texture + view |
 | `DEPTH_FORMAT` | `Depth32Float` constant |
-| `SceneUniform` | View-projection + camera position + lighting uniform struct |
 | `IcoSphereMesh::generate(n)` | Generate icosphere mesh with n subdivisions |
 | `CubeMesh::generate()` | Generate unit cube mesh with per-face normals |
 | `PlaneMesh::generate()` | Generate unit plane mesh (XZ plane, +Y normal) |
-| `SolidRenderer` | Opaque (lit) and transparent (unlit) mesh renderer using SceneUniform |
+| `QuadMesh2d::generate()` | Generate unit quad mesh (XY plane, +Z normal) |
+| `RegularPolygonMesh::generate(n)` | Generate regular n-sided polygon mesh |
+
+## Renderers
+
+### SolidRenderer
+
+Renders solid-colored meshes with per-object model matrix and RGBA color. Objects with alpha >= 1.0 use the lit (Lambert diffuse) pipeline; alpha < 1.0 uses the unlit pipeline.
+
+### InstanceRenderer
+
+Renders many copies of a single mesh with per-instance data. Generic over the `InstanceVertex` trait — use the built-in `InstanceData` (position + scale + color, 32 bytes) or define your own layout:
+
+```rust
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct TileInstance {
+    pos_angle_scale: [f32; 4], // xy=position, z=angle, w=scale
+}
+
+impl InstanceVertex for TileInstance {
+    fn vertex_attributes() -> Vec<wgpu::VertexAttribute> {
+        vec![wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x4,
+            offset: 0,
+            shader_location: 2,
+        }]
+    }
+}
+
+// Use with a custom shader:
+let renderer = InstanceRenderer::<TileInstance>::with_shader(
+    &device, format, scene.layout(),
+    &mesh.positions, &mesh.normals, &mesh.indices,
+    &resolved_shader, config,
+);
+```
+
+## Shader Processor
+
+Lightweight WGSL preprocessor that resolves `#import` directives:
+
+```rust
+let mut sp = ShaderProcessor::new();
+sp.register("mikage::scene_types", mikage::SCENE_TYPES_WGSL);
+sp.register("my_app::utils", include_str!("shaders/utils.wgsl"));
+let resolved = sp.resolve(include_str!("shaders/main.wgsl"))?;
+```
+
+In WGSL files:
+```wgsl
+#import mikage::scene_types
+@group(0) @binding(0) var<uniform> scene: SceneUniform;
+```
+
+- Modules are hoisted to the top of the output in dependency order
+- Each module is expanded exactly once (deduplication)
+- Recursive imports and circular dependency detection
+- `#import module::{Item1, Item2}` syntax accepted (imports full module)
 
 ## Camera
 
@@ -121,13 +182,12 @@ The camera system is split into two traits:
 - **`Camera`** — Read-only interface: `view_matrix()`, `projection_matrix()`, `position()`. Exposed in `RenderContext`.
 - **`CameraController`** — Extends `Camera` with input handling (`on_mouse_drag`, `on_scroll`, `update`). Exposed in `UpdateContext`.
 
-`OrbitCamera` is the built-in implementation:
+Built-in implementations:
 
-| Input | Action |
-|-------|--------|
-| Left drag | Orbit (rotate) |
-| Right drag | Pan (translate target) |
-| Scroll | Zoom (adjust distance) |
+| Camera | Use case | Controls |
+|--------|----------|----------|
+| `OrbitCamera` | 3D | Left drag: orbit, Right drag: pan, Scroll: zoom |
+| `Camera2d` | 2D | Left drag: pan, Scroll: zoom |
 
 Implement `CameraController` for a custom camera and pass it via `RunConfig::camera`.
 
@@ -149,9 +209,12 @@ Uses WebGPU backend. GPU initialization is asynchronous on WASM.
 ## Examples
 
 ```bash
-cargo run -p mikage --example clear          # Color-cycling clear screen
-cargo run -p mikage --example egui_demo      # egui window demo
-cargo run -p mikage --example orbit_camera   # IcoSphere + orbit camera + egui
+cargo run -p mikage --example clear              # Color-cycling clear screen
+cargo run -p mikage --example egui_demo          # egui window demo
+cargo run -p mikage --example orbit_camera       # IcoSphere + orbit camera + egui
+cargo run -p mikage --example instancing_2d      # 2D hex grid (Camera2d + pan/zoom)
+cargo run -p mikage --example instancing_3d      # 3D sphere grid with wave animation
+cargo run -p mikage --example custom_instance    # Custom InstanceVertex with 2D rotation
 ```
 
 ## Dependencies

@@ -1,57 +1,23 @@
 use mikage::{
     App, Camera2d, GpuContext, InstanceData, InstanceRenderer, InstanceRendererConfig,
-    RegularPolygonMesh, RenderContext, RunConfig, SceneUniform, UpdateContext,
+    RegularPolygonMesh, RenderContext, RunConfig, SceneBinding, UpdateContext,
 };
-use wgpu::util::DeviceExt;
 use winit::dpi::PhysicalSize;
 
 struct Instancing2dApp {
     renderer: Option<InstanceRenderer>,
-    scene_buffer: Option<wgpu::Buffer>,
-    scene_bind_group: Option<wgpu::BindGroup>,
+    scene: Option<SceneBinding>,
 }
 
 impl App for Instancing2dApp {
     fn init(&mut self, ctx: &GpuContext, _size: PhysicalSize<u32>) {
-        let scene_bgl = ctx
-            .device
-            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("scene_bgl"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-            });
-
-        let scene_uniform = SceneUniform::new(glam::Mat4::IDENTITY, glam::Vec3::ZERO);
-        let scene_buffer = ctx
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("scene_buffer"),
-                contents: bytemuck::bytes_of(&scene_uniform),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            });
-
-        let scene_bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("scene_bind_group"),
-            layout: &scene_bgl,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: scene_buffer.as_entire_binding(),
-            }],
-        });
+        let scene = SceneBinding::new(&ctx.device);
 
         let hex = RegularPolygonMesh::generate(6);
         let renderer = InstanceRenderer::new(
             &ctx.device,
             ctx.render_format(),
-            &scene_bgl,
+            scene.layout(),
             &hex.positions,
             &hex.normals,
             &hex.indices,
@@ -59,19 +25,15 @@ impl App for Instancing2dApp {
         );
 
         self.renderer = Some(renderer);
-        self.scene_buffer = Some(scene_buffer);
-        self.scene_bind_group = Some(scene_bind_group);
+        self.scene = Some(scene);
     }
 
     fn update(&mut self, ctx: &mut UpdateContext) {
         let aspect = ctx.window_size.width as f32 / ctx.window_size.height.max(1) as f32;
+        let scene = self.scene.as_ref().unwrap();
+        scene.update_from_camera(&ctx.gpu.queue, &*ctx.camera, aspect);
+
         let vp = ctx.camera.view_projection_matrix(aspect);
-        let scene_uniform = SceneUniform::new(vp, ctx.camera.position());
-        ctx.gpu.queue.write_buffer(
-            self.scene_buffer.as_ref().unwrap(),
-            0,
-            bytemuck::bytes_of(&scene_uniform),
-        );
 
         // Compute world-space viewport bounds from inverse VP matrix
         let inv_vp = vp.inverse();
@@ -138,7 +100,7 @@ impl App for Instancing2dApp {
             occlusion_query_set: None,
         });
 
-        pass.set_bind_group(0, self.scene_bind_group.as_ref().unwrap(), &[]);
+        pass.set_bind_group(0, self.scene.as_ref().unwrap().bind_group(), &[]);
         self.renderer.as_ref().unwrap().render(&mut pass);
     }
 
@@ -161,8 +123,7 @@ fn main() {
     mikage::run(
         Instancing2dApp {
             renderer: None,
-            scene_buffer: None,
-            scene_bind_group: None,
+            scene: None,
         },
         RunConfig {
             title: "mikage - 2D instancing".to_string(),

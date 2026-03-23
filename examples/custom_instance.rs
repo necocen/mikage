@@ -7,9 +7,8 @@
 use bytemuck::{Pod, Zeroable};
 use mikage::{
     App, Camera2d, GpuContext, InstanceRenderer, InstanceRendererConfig, InstanceVertex,
-    RegularPolygonMesh, RenderContext, RunConfig, SceneUniform, ShaderProcessor, UpdateContext,
+    RegularPolygonMesh, RenderContext, RunConfig, SceneBinding, ShaderProcessor, UpdateContext,
 };
-use wgpu::util::DeviceExt;
 use winit::dpi::PhysicalSize;
 
 /// Custom per-instance data: position + rotation + scale (16 bytes).
@@ -37,44 +36,13 @@ const SHADER_SOURCE: &str = include_str!("../assets/shaders/rotated_instancing.w
 
 struct CustomInstanceApp {
     renderer: Option<InstanceRenderer<RotatedInstance>>,
-    scene_buffer: Option<wgpu::Buffer>,
-    scene_bind_group: Option<wgpu::BindGroup>,
+    scene: Option<SceneBinding>,
     time: f64,
 }
 
 impl App for CustomInstanceApp {
     fn init(&mut self, ctx: &GpuContext, _size: PhysicalSize<u32>) {
-        let device = &ctx.device;
-
-        let scene_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("scene_bgl"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
-
-        let scene_uniform = SceneUniform::new(glam::Mat4::IDENTITY, glam::Vec3::ZERO);
-        let scene_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("scene_buffer"),
-            contents: bytemuck::bytes_of(&scene_uniform),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-
-        let scene_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("scene_bind_group"),
-            layout: &scene_bgl,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: scene_buffer.as_entire_binding(),
-            }],
-        });
+        let scene = SceneBinding::new(&ctx.device);
 
         // Resolve shader imports
         let mut sp = ShaderProcessor::new();
@@ -84,9 +52,9 @@ impl App for CustomInstanceApp {
         // Pentagon mesh
         let mesh = RegularPolygonMesh::generate(5);
         let renderer = InstanceRenderer::<RotatedInstance>::with_shader(
-            device,
+            &ctx.device,
             ctx.render_format(),
-            &scene_bgl,
+            scene.layout(),
             &mesh.positions,
             &mesh.normals,
             &mesh.indices,
@@ -100,22 +68,17 @@ impl App for CustomInstanceApp {
         );
 
         self.renderer = Some(renderer);
-        self.scene_buffer = Some(scene_buffer);
-        self.scene_bind_group = Some(scene_bind_group);
+        self.scene = Some(scene);
     }
 
     fn update(&mut self, ctx: &mut UpdateContext) {
         self.time = ctx.elapsed;
 
         let aspect = ctx.window_size.width as f32 / ctx.window_size.height.max(1) as f32;
-        let vp = ctx.camera.view_projection_matrix(aspect);
-        let scene_uniform = SceneUniform::new(vp, ctx.camera.position());
-        ctx.gpu.queue.write_buffer(
-            self.scene_buffer.as_ref().unwrap(),
-            0,
-            bytemuck::bytes_of(&scene_uniform),
-        );
+        let scene = self.scene.as_ref().unwrap();
+        scene.update_from_camera(&ctx.gpu.queue, &*ctx.camera, aspect);
 
+        let vp = ctx.camera.view_projection_matrix(aspect);
         let t = self.time as f32;
         let spacing = 2.8;
         let scale = 1.0;
@@ -176,7 +139,7 @@ impl App for CustomInstanceApp {
             occlusion_query_set: None,
         });
 
-        pass.set_bind_group(0, self.scene_bind_group.as_ref().unwrap(), &[]);
+        pass.set_bind_group(0, self.scene.as_ref().unwrap().bind_group(), &[]);
         self.renderer.as_ref().unwrap().render(&mut pass);
     }
 
@@ -201,8 +164,7 @@ fn main() {
     mikage::run(
         CustomInstanceApp {
             renderer: None,
-            scene_buffer: None,
-            scene_bind_group: None,
+            scene: None,
             time: 0.0,
         },
         RunConfig {

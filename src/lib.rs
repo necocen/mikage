@@ -44,7 +44,22 @@
 //! - **egui integration**: Build UI in [`App::gui`]. Input lock between egui and camera is automatic.
 //! - **Camera system**: [`Camera`] trait with a built-in [`OrbitCamera`] implementation.
 //! - **Multi-platform**: Native (Metal/Vulkan/DX12) and WASM (WebGPU).
-//! - **Helpers**: [`SceneUniform`], [`IcoSphereMesh`], [`CubeMesh`], [`create_depth_texture`], and more.
+//! - **Helpers**: [`SceneBinding`], [`SceneUniform`], [`IcoSphereMesh`], [`CubeMesh`], [`create_depth_texture`], and more.
+//! - **Shader imports**: [`ShaderProcessor`] resolves `#import` directives in WGSL shaders.
+//! - **Instanced rendering**: [`InstanceRenderer`] with generic [`InstanceVertex`] support for custom per-instance data layouts.
+//!
+//! ## Examples
+//!
+//! | Example | Description |
+//! |---------|-------------|
+//! | `clear` | Minimal app: animated clear color |
+//! | `egui_demo` | egui integration: windows, sliders, buttons |
+//! | `orbit_camera` | 3D orbit camera with a lit sphere |
+//! | `instancing_2d` | 2D hex grid with [`InstanceData`] (pan/zoom) |
+//! | `instancing_3d` | 3D sphere grid with wave animation |
+//! | `custom_instance` | Custom [`InstanceVertex`] with per-instance 2D rotation |
+//!
+//! Run with `cargo run -p mikage --example <name>`.
 
 pub mod app;
 pub mod camera;
@@ -63,8 +78,8 @@ pub use app::{App, ComputeContext, RenderContext, UpdateContext};
 pub use camera::{Camera, Camera2d, CameraController, OrbitCamera};
 pub use context::GpuContext;
 pub use helpers::{
-    CubeMesh, DEPTH_FORMAT, IcoSphereMesh, PlaneMesh, QuadMesh2d, RegularPolygonMesh, SceneUniform,
-    create_depth_texture,
+    CubeMesh, DEPTH_FORMAT, IcoSphereMesh, PlaneMesh, QuadMesh2d, RegularPolygonMesh,
+    SceneBinding, SceneUniform, create_depth_texture,
 };
 pub use input::InputState;
 pub use instance_renderer::{

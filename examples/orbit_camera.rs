@@ -1,6 +1,6 @@
 use mikage::{
     App, DEPTH_FORMAT, GpuContext, IcoSphereMesh, OrbitCamera, RenderContext, RunConfig,
-    SceneUniform, ShaderProcessor, UpdateContext, create_depth_texture,
+    SceneBinding, ShaderProcessor, UpdateContext, create_depth_texture,
 };
 use wgpu::util::DeviceExt;
 use winit::dpi::PhysicalSize;
@@ -10,8 +10,7 @@ struct OrbitCameraApp {
     vertex_buffer: Option<wgpu::Buffer>,
     index_buffer: Option<wgpu::Buffer>,
     index_count: u32,
-    view_uniform_buffer: Option<wgpu::Buffer>,
-    view_bind_group: Option<wgpu::BindGroup>,
+    scene: Option<SceneBinding>,
     depth_view: Option<wgpu::TextureView>,
     time: f64,
 }
@@ -46,41 +45,7 @@ impl App for OrbitCameraApp {
 
         self.index_count = mesh.indices.len() as u32;
 
-        // View uniform buffer
-        let view_uniform = SceneUniform::new(glam::Mat4::IDENTITY, glam::Vec3::ZERO);
-        let view_uniform_buffer =
-            ctx.device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("view_uniform_buffer"),
-                    contents: bytemuck::bytes_of(&view_uniform),
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                });
-
-        // Bind group layout & bind group
-        let bind_group_layout =
-            ctx.device
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("view_bind_group_layout"),
-                    entries: &[wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    }],
-                });
-
-        let view_bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("view_bind_group"),
-            layout: &bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: view_uniform_buffer.as_entire_binding(),
-            }],
-        });
+        let scene = SceneBinding::new(&ctx.device);
 
         // Shader
         let mut sp = ShaderProcessor::new();
@@ -100,7 +65,7 @@ impl App for OrbitCameraApp {
             .device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("pipeline_layout"),
-                bind_group_layouts: &[&bind_group_layout],
+                bind_group_layouts: &[scene.layout()],
                 push_constant_ranges: &[],
             });
 
@@ -165,23 +130,17 @@ impl App for OrbitCameraApp {
         self.render_pipeline = Some(render_pipeline);
         self.vertex_buffer = Some(vertex_buffer);
         self.index_buffer = Some(index_buffer);
-        self.view_uniform_buffer = Some(view_uniform_buffer);
-        self.view_bind_group = Some(view_bind_group);
+        self.scene = Some(scene);
         self.depth_view = Some(depth_view);
     }
 
     fn update(&mut self, ctx: &mut UpdateContext) {
         self.time = ctx.elapsed;
-
-        // Update view uniform
         let aspect = ctx.window_size.width as f32 / ctx.window_size.height.max(1) as f32;
-        let vp = ctx.camera.view_projection_matrix(aspect);
-        let view_uniform = SceneUniform::new(vp, ctx.camera.position());
-        ctx.gpu.queue.write_buffer(
-            self.view_uniform_buffer.as_ref().unwrap(),
-            0,
-            bytemuck::bytes_of(&view_uniform),
-        );
+        self.scene
+            .as_ref()
+            .unwrap()
+            .update_from_camera(&ctx.gpu.queue, &*ctx.camera, aspect);
     }
 
     fn render(&mut self, ctx: &mut RenderContext) {
@@ -214,7 +173,7 @@ impl App for OrbitCameraApp {
         });
 
         render_pass.set_pipeline(self.render_pipeline.as_ref().unwrap());
-        render_pass.set_bind_group(0, self.view_bind_group.as_ref().unwrap(), &[]);
+        render_pass.set_bind_group(0, self.scene.as_ref().unwrap().bind_group(), &[]);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.as_ref().unwrap().slice(..));
         render_pass.set_index_buffer(
             self.index_buffer.as_ref().unwrap().slice(..),
@@ -282,8 +241,7 @@ fn main() {
             vertex_buffer: None,
             index_buffer: None,
             index_count: 0,
-            view_uniform_buffer: None,
-            view_bind_group: None,
+            scene: None,
             depth_view: None,
             time: 0.0,
         },
