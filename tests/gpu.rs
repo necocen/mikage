@@ -10,8 +10,10 @@ use mikage::wgpu;
 use mikage::{
     CubeMesh, DEPTH_FORMAT, IcoSphereMesh, InstanceData, InstanceRenderer, InstanceRendererConfig,
     PlaneMesh, QuadMesh2d, RegularPolygonMesh, SceneBinding, SceneUniform, ShaderProcessor,
-    SolidRenderer, UniformBuffer, create_storage_buffer_init,
+    SolidRenderer, UniformBuffer, create_compute_pipeline, create_storage_buffer_init,
+    storage_buffer_entry,
 };
+use wgpu::util::DeviceExt;
 
 // ---------------------------------------------------------------------------
 // Headless GPU setup
@@ -985,5 +987,102 @@ fn snapshot_solid_transparent() {
             SNAP_TOLERANCE,
             SNAP_MATCH,
         );
+    });
+}
+
+// ===========================================================================
+// 6. Compute shader integration test
+// ===========================================================================
+
+#[test]
+fn compute_double_values() {
+    gpu_test!(|gpu: GpuTest| {
+        let sp = ShaderProcessor::new();
+        let shader_src = sp
+            .resolve(
+                r#"
+#import mikage::math
+
+@group(0) @binding(0) var<storage, read_write> data: array<f32>;
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let i = id.x;
+    if i < arrayLength(&data) {
+        data[i] = data[i] * 2.0;
+    }
+}
+"#,
+            )
+            .unwrap();
+
+        let n = 256u32;
+        let input: Vec<f32> = (0..n).map(|i| i as f32).collect();
+
+        let data_buf = gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("data"),
+                contents: bytemuck::cast_slice(&input),
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::COPY_SRC,
+            });
+
+        let bgl = gpu
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: None,
+                entries: &[storage_buffer_entry(0, wgpu::ShaderStages::COMPUTE, false)],
+            });
+
+        let pipeline = create_compute_pipeline(&gpu.device, "double", &shader_src, &[&bgl], "main");
+
+        let bg = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: data_buf.as_entire_binding(),
+            }],
+        });
+
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.dispatch_workgroups(n.div_ceil(64), 1, 1);
+        }
+
+        // Copy result to a staging buffer for readback
+        let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback"),
+            size: (n as u64) * 4,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_buffer_to_buffer(&data_buf, 0, &staging, 0, (n as u64) * 4);
+        gpu.queue.submit([encoder.finish()]);
+
+        let slice = staging.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+        gpu.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .ok();
+        rx.recv().unwrap().unwrap();
+
+        let result: Vec<f32> = bytemuck::cast_slice(&slice.get_mapped_range()).to_vec();
+        for (i, &val) in result.iter().enumerate() {
+            let expected = i as f32 * 2.0;
+            assert!(
+                (val - expected).abs() < 1e-5,
+                "data[{i}] = {val}, expected {expected}"
+            );
+        }
     });
 }
