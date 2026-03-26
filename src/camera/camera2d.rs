@@ -153,3 +153,167 @@ impl InteractiveCamera for Camera2d {
         self.enabled
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::camera::Camera;
+    use glam::{Mat4, Vec2, Vec3};
+
+    macro_rules! assert_approx {
+        ($a:expr, $b:expr) => {
+            assert!(
+                ($a - $b).abs() < 1e-5,
+                "{} ≠ {} (diff={})",
+                $a,
+                $b,
+                ($a - $b).abs()
+            );
+        };
+    }
+
+    #[test]
+    fn default_values() {
+        let cam = Camera2d::default();
+        assert_eq!(cam.position, Vec2::ZERO);
+        assert_approx!(cam.zoom, 1.0);
+        assert_approx!(cam.near, -1.0);
+        assert_approx!(cam.far, 1.0);
+        assert!(cam.enabled);
+        assert_approx!(cam.damping, 0.0);
+    }
+
+    #[test]
+    fn position_returns_vec3() {
+        let mut cam = Camera2d::default();
+        cam.position = Vec2::new(3.0, 4.0);
+        assert_eq!(cam.position(), Vec3::new(3.0, 4.0, 0.0));
+    }
+
+    #[test]
+    fn view_matrix_is_translation() {
+        let mut cam = Camera2d::default();
+        cam.position = Vec2::new(3.0, 4.0);
+        let expected = Mat4::from_translation(-cam.position.extend(0.0));
+        assert_eq!(cam.view_matrix(), expected);
+    }
+
+    #[test]
+    fn projection_matrix_orthographic() {
+        let cam = Camera2d::default(); // zoom=1.0
+        let aspect = 2.0_f32;
+        let expected = Mat4::orthographic_rh(-2.0, 2.0, -1.0, 1.0, -1.0, 1.0);
+        assert_eq!(cam.projection_matrix(aspect), expected);
+    }
+
+    #[test]
+    fn view_projection_composition() {
+        let mut cam = Camera2d::default();
+        cam.position = Vec2::new(1.0, 2.0);
+        let aspect = 1.5_f32;
+        let expected = cam.projection_matrix(aspect) * cam.view_matrix();
+        assert_eq!(cam.view_projection_matrix(aspect), expected);
+    }
+
+    #[test]
+    fn viewport_bounds_default() {
+        let cam = Camera2d::default(); // position=0, zoom=1
+        let (min, max) = cam.viewport_bounds(1.0);
+        assert_approx!(min.x, -1.0);
+        assert_approx!(min.y, -1.0);
+        assert_approx!(max.x, 1.0);
+        assert_approx!(max.y, 1.0);
+    }
+
+    #[test]
+    fn viewport_bounds_with_zoom() {
+        let mut cam = Camera2d::default();
+        cam.zoom = 2.0;
+        let (min, max) = cam.viewport_bounds(1.0);
+        assert_approx!(min.x, -0.5);
+        assert_approx!(min.y, -0.5);
+        assert_approx!(max.x, 0.5);
+        assert_approx!(max.y, 0.5);
+    }
+
+    #[test]
+    fn viewport_bounds_with_offset() {
+        let mut cam = Camera2d::default();
+        cam.position = Vec2::new(5.0, 3.0);
+        cam.zoom = 1.0;
+        let (min, max) = cam.viewport_bounds(1.0);
+        assert_approx!(min.x, 4.0);
+        assert_approx!(min.y, 2.0);
+        assert_approx!(max.x, 6.0);
+        assert_approx!(max.y, 4.0);
+    }
+
+    #[test]
+    fn viewport_bounds_aspect_ratio() {
+        let cam = Camera2d::default(); // position=0, zoom=1
+        let (min, max) = cam.viewport_bounds(2.0);
+        assert_approx!(min.x, -2.0);
+        assert_approx!(min.y, -1.0);
+        assert_approx!(max.x, 2.0);
+        assert_approx!(max.y, 1.0);
+    }
+
+    #[test]
+    fn pan_drag_moves_position() {
+        let mut cam = Camera2d::default();
+        let before = cam.position;
+        cam.on_mouse_drag(100.0, 50.0, true, false, false);
+        // Pan inverts: dx>0 → position.x decreases, dy>0 → position.y increases
+        assert!(cam.position.x < before.x);
+        assert!(cam.position.y > before.y);
+    }
+
+    #[test]
+    fn scroll_changes_zoom() {
+        let mut cam = Camera2d::default();
+        let initial_zoom = cam.zoom;
+        cam.on_scroll(1.0);
+        assert!(cam.zoom > initial_zoom);
+
+        // Scroll down repeatedly should clamp at min_zoom
+        for _ in 0..1000 {
+            cam.on_scroll(-100.0);
+        }
+        assert_approx!(cam.zoom, cam.min_zoom);
+    }
+
+    #[test]
+    fn disabled_ignores_input() {
+        let mut cam = Camera2d::default();
+        cam.enabled = false;
+        let pos_before = cam.position;
+        let zoom_before = cam.zoom;
+        cam.on_mouse_drag(100.0, 50.0, true, false, false);
+        cam.on_scroll(1.0);
+        assert_eq!(cam.position, pos_before);
+        assert_approx!(cam.zoom, zoom_before);
+    }
+
+    #[test]
+    fn damping_decays_velocity() {
+        let mut cam = Camera2d::default();
+        cam.damping = 0.9;
+
+        // Perform a drag to set velocity
+        cam.on_mouse_drag(100.0, 0.0, true, false, false);
+        cam.on_drag_end();
+
+        assert!(cam.velocity.length_squared() > 0.0);
+
+        // Simulate several update ticks; velocity should decay each time
+        let mut prev_speed = cam.velocity.length();
+        for _ in 0..100 {
+            cam.update(1.0 / 60.0);
+            let speed = cam.velocity.length();
+            assert!(speed < prev_speed);
+            prev_speed = speed;
+        }
+        // After many iterations velocity should be very small
+        assert!(cam.velocity.length() < 1e-4);
+    }
+}

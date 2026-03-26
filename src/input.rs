@@ -120,3 +120,172 @@ impl InputState {
         self.keys_pressed.contains(&key)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use winit::dpi::PhysicalPosition;
+    use winit::event::KeyEvent;
+    use winit::event::{
+        DeviceId, ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
+    };
+    use winit::keyboard::{KeyCode, NativeKey, PhysicalKey};
+
+    fn key_event(code: KeyCode, state: ElementState) -> WindowEvent {
+        // KeyEvent has a pub(crate) platform_specific field, so we cannot construct it directly.
+        // We create a zeroed one via unsafe and set the public fields.
+        let mut ke: KeyEvent = unsafe { std::mem::zeroed() };
+        ke.physical_key = PhysicalKey::Code(code);
+        ke.logical_key = winit::keyboard::Key::Unidentified(NativeKey::Unidentified);
+        ke.text = None;
+        ke.location = winit::keyboard::KeyLocation::Standard;
+        ke.state = state;
+        ke.repeat = false;
+        WindowEvent::KeyboardInput {
+            device_id: DeviceId::dummy(),
+            event: ke,
+            is_synthetic: false,
+        }
+    }
+
+    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: DeviceId::dummy(),
+            position: PhysicalPosition::new(x, y),
+        }
+    }
+
+    fn mouse_button(button: MouseButton, state: ElementState) -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: DeviceId::dummy(),
+            state,
+            button,
+        }
+    }
+
+    fn mouse_scroll_line(y: f32) -> WindowEvent {
+        WindowEvent::MouseWheel {
+            device_id: DeviceId::dummy(),
+            delta: MouseScrollDelta::LineDelta(0.0, y),
+            phase: TouchPhase::Moved,
+        }
+    }
+
+    #[test]
+    fn initial_state() {
+        let state = InputState::default();
+        assert!(state.keys_down.is_empty());
+        assert!(state.keys_pressed.is_empty());
+        assert!(state.keys_released.is_empty());
+        assert_eq!(state.mouse_position, (0.0, 0.0));
+        assert_eq!(state.mouse_delta, (0.0, 0.0));
+        assert_eq!(state.scroll_delta, 0.0);
+        assert!(!state.mouse_buttons_down.left);
+        assert!(!state.mouse_buttons_down.right);
+        assert!(!state.mouse_buttons_down.middle);
+    }
+
+    #[test]
+    fn key_press_tracked() {
+        let mut state = InputState::default();
+        state.handle_event(&key_event(KeyCode::KeyW, ElementState::Pressed));
+        assert!(state.is_key_down(KeyCode::KeyW));
+        assert!(state.is_key_pressed(KeyCode::KeyW));
+    }
+
+    #[test]
+    fn key_release_tracked() {
+        let mut state = InputState::default();
+        state.handle_event(&key_event(KeyCode::KeyW, ElementState::Pressed));
+        state.handle_event(&key_event(KeyCode::KeyW, ElementState::Released));
+        assert!(!state.is_key_down(KeyCode::KeyW));
+        assert!(state.keys_released.contains(&KeyCode::KeyW));
+    }
+
+    #[test]
+    fn repeated_press_not_double_counted() {
+        let mut state = InputState::default();
+        state.handle_event(&key_event(KeyCode::KeyW, ElementState::Pressed));
+        assert!(state.keys_pressed.contains(&KeyCode::KeyW));
+        // Second press without release — keys_down.insert returns false, so
+        // keys_pressed is NOT called again. The key should still be in keys_pressed
+        // from the first press, and keys_down should contain it exactly once.
+        state.handle_event(&key_event(KeyCode::KeyW, ElementState::Pressed));
+        assert!(state.is_key_down(KeyCode::KeyW));
+        assert!(state.keys_pressed.contains(&KeyCode::KeyW));
+        assert_eq!(state.keys_down.len(), 1);
+    }
+
+    #[test]
+    fn begin_frame_clears_transient() {
+        let mut state = InputState::default();
+        state.handle_event(&key_event(KeyCode::KeyW, ElementState::Pressed));
+        state.begin_frame();
+        assert!(state.keys_pressed.is_empty());
+        assert!(state.is_key_down(KeyCode::KeyW));
+        assert_eq!(state.mouse_delta, (0.0, 0.0));
+        assert_eq!(state.scroll_delta, 0.0);
+    }
+
+    #[test]
+    fn mouse_position_updated() {
+        let mut state = InputState::default();
+        state.handle_event(&cursor_moved(100.0, 200.0));
+        assert_eq!(state.mouse_position, (100.0, 200.0));
+    }
+
+    #[test]
+    fn mouse_delta_calculated() {
+        let mut state = InputState::default();
+        state.handle_event(&cursor_moved(100.0, 200.0));
+        state.handle_event(&cursor_moved(110.0, 220.0));
+        assert_eq!(state.mouse_delta, (10.0, 20.0));
+    }
+
+    #[test]
+    fn mouse_delta_resets_on_begin_frame() {
+        let mut state = InputState::default();
+        state.handle_event(&cursor_moved(100.0, 200.0));
+        state.handle_event(&cursor_moved(110.0, 220.0));
+        state.begin_frame();
+        assert_eq!(state.mouse_delta, (0.0, 0.0));
+    }
+
+    #[test]
+    fn mouse_button_press_and_release() {
+        let mut state = InputState::default();
+        state.handle_event(&mouse_button(MouseButton::Left, ElementState::Pressed));
+        assert!(state.mouse_buttons_down.left);
+        assert!(state.mouse_buttons_pressed.left);
+        state.handle_event(&mouse_button(MouseButton::Left, ElementState::Released));
+        assert!(!state.mouse_buttons_down.left);
+        assert!(state.mouse_buttons_released.left);
+    }
+
+    #[test]
+    fn scroll_line_delta() {
+        let mut state = InputState::default();
+        state.handle_event(&mouse_scroll_line(3.0));
+        assert_eq!(state.scroll_delta, 3.0);
+    }
+
+    #[test]
+    fn scroll_pixel_delta() {
+        let mut state = InputState::default();
+        let event = WindowEvent::MouseWheel {
+            device_id: DeviceId::dummy(),
+            delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, 150.0)),
+            phase: TouchPhase::Moved,
+        };
+        state.handle_event(&event);
+        assert_eq!(state.scroll_delta, 150.0 / 50.0);
+    }
+
+    #[test]
+    fn scroll_accumulates() {
+        let mut state = InputState::default();
+        state.handle_event(&mouse_scroll_line(2.0));
+        state.handle_event(&mouse_scroll_line(3.0));
+        assert_eq!(state.scroll_delta, 5.0);
+    }
+}

@@ -598,3 +598,61 @@ fn render_frame<A: App>(app: &mut A, state: &mut RunState<A::Camera>) {
     // その次の render_frame() の app.update() で見えるようにする。
     state.input.begin_frame();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_values() {
+        let config = RunConfig::default();
+        assert_eq!(config.title, "mikage");
+        assert_eq!(config.width, 1280);
+        assert_eq!(config.height, 720);
+        assert_eq!(config.sample_count, 1);
+        assert!(config.init_logging);
+        assert!(config.canvas.is_none());
+        assert_eq!(config.present_mode, wgpu::PresentMode::AutoVsync);
+    }
+
+    #[test]
+    fn new_sets_title() {
+        let config = RunConfig::new("Test App");
+        assert_eq!(config.title, "Test App");
+        assert_eq!(config.width, 1280);
+        assert_eq!(config.height, 720);
+        assert_eq!(config.sample_count, 1);
+        assert!(config.init_logging);
+        assert!(config.canvas.is_none());
+        assert_eq!(config.present_mode, wgpu::PresentMode::AutoVsync);
+    }
+
+    #[test]
+    fn with_title_builder() {
+        let config = RunConfig::new("A").with_title("B");
+        assert_eq!(config.title, "B");
+    }
+
+    #[test]
+    fn with_size_builder() {
+        let config = RunConfig::new("X").with_size(1920, 1080);
+        assert_eq!(config.width, 1920);
+        assert_eq!(config.height, 1080);
+    }
+
+    #[test]
+    fn with_camera_changes_type() {
+        let config = RunConfig::new("X").with_camera(crate::camera::camera2d::Camera2d::default());
+        assert_eq!(config.title, "X");
+        // Verify the camera field exists and is accessible
+        let _camera: &crate::camera::camera2d::Camera2d = &config.camera;
+    }
+
+    #[test]
+    fn with_defaults_preserves_defaults() {
+        let config = RunConfig::with_defaults(crate::camera::camera2d::Camera2d::default());
+        assert_eq!(config.title, "mikage");
+        assert_eq!(config.width, 1280);
+        assert_eq!(config.height, 720);
+    }
+}

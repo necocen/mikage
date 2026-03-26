@@ -351,3 +351,131 @@ pub const POSITION_NORMAL_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::Vert
         },
     ],
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cube_counts() {
+        let mesh = CubeMesh::generate();
+        assert_eq!(mesh.positions.len(), 24);
+        assert_eq!(mesh.normals.len(), 24);
+        assert_eq!(mesh.indices.len(), 36);
+    }
+
+    #[test]
+    fn cube_normals_unit_length() {
+        let mesh = CubeMesh::generate();
+        for n in &mesh.normals {
+            let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            assert!((len - 1.0).abs() < 1e-5, "normal length {len} is not unit");
+        }
+    }
+
+    #[test]
+    fn cube_positions_in_range() {
+        let mesh = CubeMesh::generate();
+        for p in &mesh.positions {
+            for &c in p {
+                assert!(
+                    (-0.5..=0.5).contains(&c),
+                    "position component {c} out of [-0.5, 0.5]"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn plane_counts() {
+        let mesh = PlaneMesh::generate();
+        assert_eq!(mesh.positions.len(), 4);
+        assert_eq!(mesh.normals.len(), 4);
+        assert_eq!(mesh.indices.len(), 6);
+    }
+
+    #[test]
+    fn plane_normals_are_up() {
+        let mesh = PlaneMesh::generate();
+        for n in &mesh.normals {
+            assert_eq!(*n, [0.0, 1.0, 0.0]);
+        }
+    }
+
+    #[test]
+    fn icosphere_0_counts() {
+        let mesh = IcoSphereMesh::generate(0);
+        assert_eq!(mesh.positions.len(), 12);
+        assert_eq!(mesh.indices.len(), 60);
+    }
+
+    #[test]
+    fn icosphere_1_counts() {
+        let mesh = IcoSphereMesh::generate(1);
+        assert_eq!(mesh.positions.len(), 42);
+        assert_eq!(mesh.indices.len(), 240);
+    }
+
+    #[test]
+    fn icosphere_positions_unit_length() {
+        for subdivisions in [0, 2] {
+            let mesh = IcoSphereMesh::generate(subdivisions);
+            for p in &mesh.positions {
+                let len = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+                assert!(
+                    (len - 1.0).abs() < 1e-5,
+                    "icosphere({subdivisions}) position length {len} is not unit"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn quad2d_counts() {
+        let mesh = QuadMesh2d::generate();
+        assert_eq!(mesh.positions.len(), 4);
+        assert_eq!(mesh.normals.len(), 4);
+        assert_eq!(mesh.indices.len(), 6);
+    }
+
+    #[test]
+    fn quad2d_z_is_zero() {
+        let mesh = QuadMesh2d::generate();
+        for p in &mesh.positions {
+            assert_eq!(p[2], 0.0, "Z component should be 0.0, got {}", p[2]);
+        }
+    }
+
+    #[test]
+    fn regular_polygon_triangle() {
+        let mesh = RegularPolygonMesh::generate(3);
+        assert_eq!(mesh.positions.len(), 4); // center + 3
+        assert_eq!(mesh.indices.len(), 9);
+    }
+
+    #[test]
+    fn regular_polygon_hexagon() {
+        let mesh = RegularPolygonMesh::generate(6);
+        assert_eq!(mesh.positions.len(), 7);
+        assert_eq!(mesh.indices.len(), 18);
+    }
+
+    #[test]
+    fn regular_polygon_unit_circle() {
+        let mesh = RegularPolygonMesh::generate(6);
+        // Skip index 0 (center vertex), check outer vertices
+        for p in &mesh.positions[1..] {
+            let len = (p[0] * p[0] + p[1] * p[1]).sqrt();
+            assert!(
+                (len - 1.0).abs() < 1e-5,
+                "outer vertex XY length {len} is not unit"
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn regular_polygon_panics_below_3() {
+        RegularPolygonMesh::generate(2);
+    }
+}

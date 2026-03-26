@@ -306,3 +306,25 @@ impl SolidRenderer {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glam::{Mat4, Vec3, Vec4};
+
+    #[test]
+    fn model_uniform_identity() {
+        let u = ModelUniform::new(Mat4::IDENTITY, Vec4::ONE);
+        assert_eq!(u.model, Mat4::IDENTITY.to_cols_array_2d());
+        assert_eq!(u.color, [1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn model_uniform_transform() {
+        let transform = Mat4::from_translation(Vec3::new(1.0, 2.0, 3.0));
+        let color = Vec4::new(0.5, 0.0, 1.0, 0.8);
+        let u = ModelUniform::new(transform, color);
+        assert_eq!(u.model, transform.to_cols_array_2d());
+        assert_eq!(u.color, [0.5, 0.0, 1.0, 0.8]);
+    }
+}

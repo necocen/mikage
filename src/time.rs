@@ -41,3 +41,33 @@ impl Default for FrameTime {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initial_state() {
+        let ft = FrameTime::new();
+        assert_eq!(ft.dt, 0.0);
+        assert_eq!(ft.elapsed, 0.0);
+        assert_eq!(ft.frame_count, 0);
+    }
+
+    #[test]
+    fn tick_increments_count() {
+        let mut ft = FrameTime::new();
+        ft.tick();
+        assert_eq!(ft.frame_count, 1);
+        ft.tick();
+        assert_eq!(ft.frame_count, 2);
+    }
+
+    #[test]
+    fn tick_elapsed_nonnegative() {
+        let mut ft = FrameTime::new();
+        ft.tick();
+        assert!(ft.dt >= 0.0);
+        assert!(ft.elapsed >= 0.0);
+    }
+}

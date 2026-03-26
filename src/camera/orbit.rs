@@ -176,3 +176,274 @@ impl InteractiveCamera for OrbitCamera {
         self.enabled
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::camera::Camera;
+    use glam::{Mat4, Vec3};
+    use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
+
+    macro_rules! assert_approx {
+        ($a:expr, $b:expr) => {
+            assert!(
+                ($a - $b).abs() < 1e-5,
+                "{} ≠ {} (diff={})",
+                $a,
+                $b,
+                ($a - $b).abs()
+            );
+        };
+    }
+
+    #[test]
+    fn default_values() {
+        let cam = OrbitCamera::default();
+        assert_approx!(cam.distance, 5.0);
+        assert_approx!(cam.yaw, 0.0);
+        assert_approx!(cam.pitch, 0.3);
+        assert_approx!(cam.fov_y, FRAC_PI_4);
+        assert!(
+            (cam.target - Vec3::ZERO).length() < 1e-5,
+            "target should be ZERO"
+        );
+        assert!(cam.enabled);
+    }
+
+    #[test]
+    fn position_at_default() {
+        let cam = OrbitCamera::default();
+        let pos = cam.position();
+        let expected = Vec3::new(0.0, 5.0 * 0.3_f32.sin(), 5.0 * 0.3_f32.cos());
+        assert!(
+            (pos - expected).length() < 1e-5,
+            "position {pos} ≠ expected {expected}"
+        );
+    }
+
+    #[test]
+    fn position_at_yaw_pi_half() {
+        let mut cam = OrbitCamera::default();
+        cam.yaw = FRAC_PI_2;
+        let pos = cam.position();
+        let expected_x = cam.distance * cam.pitch.cos();
+        let expected_y = cam.distance * cam.pitch.sin();
+        assert_approx!(pos.x, expected_x);
+        assert_approx!(pos.y, expected_y);
+        assert!(pos.z.abs() < 1e-5, "z should be ≈0, got {}", pos.z);
+    }
+
+    #[test]
+    fn position_with_nonzero_target() {
+        let mut cam = OrbitCamera::default();
+        cam.target = Vec3::new(1.0, 2.0, 3.0);
+        let pos = cam.position();
+
+        // Spherical offset from compute_position with yaw=0, pitch=0.3, distance=5
+        let offset = Vec3::new(
+            cam.distance * cam.pitch.cos() * cam.yaw.sin(),
+            cam.distance * cam.pitch.sin(),
+            cam.distance * cam.pitch.cos() * cam.yaw.cos(),
+        );
+        let expected = cam.target + offset;
+        assert!(
+            (pos - expected).length() < 1e-5,
+            "position {pos} ≠ expected {expected}"
+        );
+    }
+
+    #[test]
+    fn view_matrix_looks_at_target() {
+        let cam = OrbitCamera::default();
+        let view = cam.view_matrix();
+        let expected = Mat4::look_at_rh(cam.position(), cam.target, Vec3::Y);
+        let a = view.to_cols_array();
+        let b = expected.to_cols_array();
+        for i in 0..16 {
+            assert_approx!(a[i], b[i]);
+        }
+    }
+
+    #[test]
+    fn projection_matrix_perspective() {
+        let cam = OrbitCamera::default();
+        let aspect = 1.5_f32;
+        let proj = cam.projection_matrix(aspect);
+        let expected = Mat4::perspective_rh(cam.fov_y, aspect, cam.near, cam.far);
+        let a = proj.to_cols_array();
+        let b = expected.to_cols_array();
+        for i in 0..16 {
+            assert_approx!(a[i], b[i]);
+        }
+    }
+
+    #[test]
+    fn view_projection_composition() {
+        let cam = OrbitCamera::default();
+        let aspect = 1.5_f32;
+        let vp = cam.view_projection_matrix(aspect);
+        let expected = cam.projection_matrix(aspect) * cam.view_matrix();
+        let a = vp.to_cols_array();
+        let b = expected.to_cols_array();
+        for i in 0..16 {
+            assert_approx!(a[i], b[i]);
+        }
+    }
+
+    #[test]
+    fn orbit_drag_updates_yaw_pitch() {
+        let mut cam = OrbitCamera::default();
+        let yaw_before = cam.yaw;
+        let pitch_before = cam.pitch;
+        let speed = cam.orbit_speed;
+
+        cam.on_mouse_drag(100.0, 50.0, true, false, false);
+
+        assert_approx!(cam.yaw, yaw_before + (-100.0 * speed));
+        assert_approx!(cam.pitch, pitch_before + (50.0 * speed));
+    }
+
+    #[test]
+    fn pitch_clamped_on_drag() {
+        // Clamp to max_pitch with large positive dy
+        let mut cam = OrbitCamera::default();
+        cam.on_mouse_drag(0.0, 100_000.0, true, false, false);
+        assert_approx!(cam.pitch, cam.max_pitch);
+
+        // Clamp to min_pitch with large negative dy
+        let mut cam = OrbitCamera::default();
+        cam.on_mouse_drag(0.0, -100_000.0, true, false, false);
+        assert_approx!(cam.pitch, cam.min_pitch);
+    }
+
+    #[test]
+    fn pan_drag_moves_target() {
+        let mut cam = OrbitCamera::default();
+        let target_before = cam.target;
+
+        cam.on_mouse_drag(10.0, 10.0, false, true, false);
+
+        assert!(
+            (cam.target - target_before).length() > 1e-6,
+            "target should have moved after pan drag"
+        );
+    }
+
+    #[test]
+    fn scroll_zooms_distance() {
+        let mut cam = OrbitCamera::default();
+        let d0 = cam.distance;
+
+        cam.on_scroll(1.0);
+        assert!(
+            cam.distance < d0,
+            "scroll +1 should zoom in (decrease distance)"
+        );
+
+        let d1 = cam.distance;
+        cam.on_scroll(-1.0);
+        assert!(
+            cam.distance > d1,
+            "scroll -1 should zoom out (increase distance)"
+        );
+    }
+
+    #[test]
+    fn scroll_distance_clamped() {
+        // Clamp at min_distance
+        let mut cam = OrbitCamera::default();
+        cam.distance = cam.min_distance + 0.01;
+        cam.on_scroll(100.0);
+        assert_approx!(cam.distance, cam.min_distance);
+
+        // Clamp at max_distance
+        let mut cam = OrbitCamera::default();
+        cam.distance = cam.max_distance - 0.01;
+        cam.on_scroll(-100.0);
+        assert_approx!(cam.distance, cam.max_distance);
+    }
+
+    #[test]
+    fn disabled_camera_ignores_input() {
+        let mut cam = OrbitCamera::default();
+        cam.set_enabled(false);
+
+        let yaw = cam.yaw;
+        let pitch = cam.pitch;
+        let distance = cam.distance;
+        let target = cam.target;
+
+        cam.on_mouse_drag(100.0, 100.0, true, false, false);
+        cam.on_scroll(5.0);
+
+        assert_approx!(cam.yaw, yaw);
+        assert_approx!(cam.pitch, pitch);
+        assert_approx!(cam.distance, distance);
+        assert!((cam.target - target).length() < 1e-5);
+    }
+
+    #[test]
+    fn damping_inertia_decays() {
+        let mut cam = OrbitCamera::default();
+        cam.damping = 0.9;
+
+        // Perform a drag to build velocity
+        cam.on_mouse_drag(100.0, 0.0, true, false, false);
+        let velocity_after_drag = cam.velocity_yaw;
+        assert!(
+            velocity_after_drag.abs() > 1e-6,
+            "should have velocity after drag"
+        );
+
+        cam.on_drag_end();
+        assert!(!cam.is_dragging);
+
+        // Accumulate yaw changes over several update frames
+        let yaw_after_drag = cam.yaw;
+        for _ in 0..5 {
+            cam.update(0.016);
+        }
+
+        // Yaw should have continued to change
+        assert!(
+            (cam.yaw - yaw_after_drag).abs() > 1e-6,
+            "yaw should keep changing due to inertia"
+        );
+
+        // Velocity should have decayed
+        assert!(
+            cam.velocity_yaw.abs() < velocity_after_drag.abs(),
+            "velocity should decay over time"
+        );
+    }
+
+    #[test]
+    fn no_damping_stops_immediately() {
+        let mut cam = OrbitCamera::default();
+        // damping is 0.0 by default
+
+        cam.on_mouse_drag(100.0, 50.0, true, false, false);
+        cam.on_drag_end();
+
+        let yaw_after = cam.yaw;
+        let pitch_after = cam.pitch;
+
+        cam.update(0.016);
+        cam.update(0.016);
+
+        assert_approx!(cam.yaw, yaw_after);
+        assert_approx!(cam.pitch, pitch_after);
+    }
+
+    #[test]
+    fn enabled_toggle() {
+        let mut cam = OrbitCamera::default();
+        assert!(cam.is_enabled());
+
+        cam.set_enabled(false);
+        assert!(!cam.is_enabled());
+
+        cam.set_enabled(true);
+        assert!(cam.is_enabled());
+    }
+}

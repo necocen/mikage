@@ -189,3 +189,58 @@ impl SceneBinding {
         self.update(queue, &uniform);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glam::{Mat4, Vec3};
+
+    macro_rules! assert_approx {
+        ($a:expr, $b:expr) => {
+            assert!(
+                ($a - $b).abs() < 1e-6,
+                "expected {} to be approximately {}, diff = {}",
+                $a,
+                $b,
+                ($a - $b).abs()
+            );
+        };
+    }
+
+    #[test]
+    fn new_default_lighting() {
+        let u = SceneUniform::new(Mat4::IDENTITY, Vec3::new(1.0, 2.0, 3.0));
+        let dir = Vec3::new(1.0, 2.0, 1.0).normalize();
+        assert_approx!(u.light_dir[0], dir.x);
+        assert_approx!(u.light_dir[1], dir.y);
+        assert_approx!(u.light_dir[2], dir.z);
+        assert_approx!(u.light_dir[3], 0.0);
+        assert_approx!(u.ambient[0], 0.3);
+        assert_approx!(u.camera_pos[0], 1.0);
+        assert_approx!(u.camera_pos[1], 2.0);
+        assert_approx!(u.camera_pos[2], 3.0);
+        assert_approx!(u.camera_pos[3], 1.0);
+    }
+
+    #[test]
+    fn with_light_custom() {
+        let u = SceneUniform::with_light(Mat4::IDENTITY, Vec3::ZERO, Vec3::new(0.0, 1.0, 0.0), 0.5);
+        assert_approx!(u.light_dir[0], 0.0);
+        assert_approx!(u.light_dir[1], 1.0);
+        assert_approx!(u.light_dir[2], 0.0);
+        assert_approx!(u.light_dir[3], 0.0);
+        assert_approx!(u.ambient[0], 0.5);
+    }
+
+    #[test]
+    fn camera_pos_w_is_one() {
+        for pos in [
+            Vec3::ZERO,
+            Vec3::new(100.0, -50.0, 0.3),
+            Vec3::new(-1.0, -2.0, -3.0),
+        ] {
+            let u = SceneUniform::new(Mat4::IDENTITY, pos);
+            assert_approx!(u.camera_pos[3], 1.0);
+        }
+    }
+}
