@@ -3,11 +3,14 @@
 //! These tests require a GPU (or software adapter). If no adapter is available,
 //! tests are skipped rather than failing.
 
+use std::path::Path;
+
+use image::{ImageBuffer, Rgba, RgbaImage};
 use mikage::wgpu;
 use mikage::{
     CubeMesh, DEPTH_FORMAT, IcoSphereMesh, InstanceData, InstanceRenderer, InstanceRendererConfig,
-    QuadMesh2d, RegularPolygonMesh, SceneBinding, SceneUniform, ShaderProcessor, SolidRenderer,
-    UniformBuffer, create_storage_buffer_init,
+    PlaneMesh, QuadMesh2d, RegularPolygonMesh, SceneBinding, SceneUniform, ShaderProcessor,
+    SolidRenderer, UniformBuffer, create_storage_buffer_init,
 };
 
 // ---------------------------------------------------------------------------
@@ -543,5 +546,444 @@ fn instance_renderer_update_and_regrow() {
             .collect();
         renderer.update_instances(&gpu.device, &gpu.queue, &large);
         assert!(renderer.instance_capacity() >= 2000);
+    });
+}
+
+// ===========================================================================
+// 4. Snapshot image comparison
+// ===========================================================================
+
+const SNAPSHOT_DIR: &str = "tests/snapshots";
+
+/// Compare rendered pixels against a reference PNG snapshot.
+///
+/// - `channel_tolerance`: max allowed difference per RGBA channel (e.g., 2)
+/// - `min_match_percent`: minimum percentage of matching pixels (e.g., 99.0)
+///
+/// If the reference file doesn't exist, the current render is saved as the
+/// new reference and the test passes (first-run behavior).
+/// On mismatch, saves `<name>_actual.png` next to the reference for debugging.
+fn assert_snapshot(
+    name: &str,
+    pixels: &[u8],
+    w: u32,
+    h: u32,
+    channel_tolerance: u8,
+    min_match_percent: f64,
+) {
+    let snapshot_dir = Path::new(SNAPSHOT_DIR);
+    std::fs::create_dir_all(snapshot_dir).expect("failed to create snapshot dir");
+
+    let ref_path = snapshot_dir.join(format!("{name}.png"));
+    let actual_img: RgbaImage =
+        ImageBuffer::from_raw(w, h, pixels.to_vec()).expect("pixel data size mismatch");
+
+    if !ref_path.exists() {
+        actual_img
+            .save(&ref_path)
+            .expect("failed to save reference");
+        eprintln!(
+            "snapshot: created new reference '{}' ({}x{})",
+            ref_path.display(),
+            w,
+            h
+        );
+        return;
+    }
+
+    let ref_img = image::open(&ref_path)
+        .unwrap_or_else(|e| panic!("failed to load reference '{}': {e}", ref_path.display()))
+        .to_rgba8();
+
+    assert_eq!(
+        (ref_img.width(), ref_img.height()),
+        (w, h),
+        "snapshot '{}': size mismatch (reference {}x{}, actual {}x{})",
+        name,
+        ref_img.width(),
+        ref_img.height(),
+        w,
+        h,
+    );
+
+    let total_pixels = (w * h) as usize;
+    let mut matching = 0usize;
+    for (actual_px, ref_px) in actual_img.pixels().zip(ref_img.pixels()) {
+        let ok = actual_px
+            .0
+            .iter()
+            .zip(ref_px.0.iter())
+            .all(|(&a, &r)| a.abs_diff(r) <= channel_tolerance);
+        if ok {
+            matching += 1;
+        }
+    }
+
+    let match_percent = matching as f64 / total_pixels as f64 * 100.0;
+
+    if match_percent < min_match_percent {
+        let actual_path = snapshot_dir.join(format!("{name}_actual.png"));
+        actual_img
+            .save(&actual_path)
+            .expect("failed to save actual image");
+
+        // Also save a diff image for debugging
+        let mut diff_img = RgbaImage::new(w, h);
+        for (x, y, diff_px) in diff_img.enumerate_pixels_mut() {
+            let a = actual_img.get_pixel(x, y);
+            let r = ref_img.get_pixel(x, y);
+            let ok =
+                a.0.iter()
+                    .zip(r.0.iter())
+                    .all(|(&av, &rv)| av.abs_diff(rv) <= channel_tolerance);
+            *diff_px = if ok {
+                Rgba([0, 0, 0, 255])
+            } else {
+                Rgba([255, 0, 0, 255])
+            };
+        }
+        let diff_path = snapshot_dir.join(format!("{name}_diff.png"));
+        diff_img
+            .save(&diff_path)
+            .expect("failed to save diff image");
+
+        panic!(
+            "snapshot '{}': match {:.1}% < {:.1}% threshold ({} / {} pixels)\n  \
+             reference: {}\n  actual:    {}\n  diff:      {}",
+            name,
+            match_percent,
+            min_match_percent,
+            matching,
+            total_pixels,
+            ref_path.display(),
+            actual_path.display(),
+            diff_path.display(),
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Render helpers for snapshot tests
+// ---------------------------------------------------------------------------
+
+/// Render with SolidRenderer and return pixels.
+fn render_solid(
+    gpu: &GpuTest,
+    w: u32,
+    h: u32,
+    setup: impl FnOnce(&mut SolidRenderer, &SceneBinding, &wgpu::Device, &wgpu::Queue),
+) -> Vec<u8> {
+    let scene = SceneBinding::new(&gpu.device);
+    let mut solid = SolidRenderer::new(&gpu.device, RENDER_FORMAT, scene.layout());
+    setup(&mut solid, &scene, &gpu.device, &gpu.queue);
+
+    let (tex, color_view) = create_color_texture(&gpu.device, w, h);
+    let depth_view = create_depth_texture(&gpu.device, w, h);
+
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("solid_snapshot"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &color_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            ..Default::default()
+        });
+        pass.set_bind_group(0, scene.bind_group(), &[]);
+        solid.render(&mut pass);
+    }
+    gpu.queue.submit([encoder.finish()]);
+    readback_texture(&gpu.device, &gpu.queue, &tex, w, h)
+}
+
+/// Render with InstanceRenderer (2D, no depth) and return pixels.
+fn render_instances_2d(
+    gpu: &GpuTest,
+    w: u32,
+    h: u32,
+    positions: &[[f32; 3]],
+    normals: &[[f32; 3]],
+    indices: &[u32],
+    instances: &[InstanceData],
+    scene_uniform: &SceneUniform,
+) -> Vec<u8> {
+    let scene = SceneBinding::new(&gpu.device);
+    scene.update(&gpu.queue, scene_uniform);
+
+    let mut renderer = InstanceRenderer::new(
+        &gpu.device,
+        RENDER_FORMAT,
+        scene.layout(),
+        positions,
+        normals,
+        indices,
+        InstanceRendererConfig::default_2d(),
+    );
+    renderer.update_instances(&gpu.device, &gpu.queue, instances);
+
+    let (tex, color_view) = create_color_texture(&gpu.device, w, h);
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("instance_snapshot"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &color_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            ..Default::default()
+        });
+        pass.set_bind_group(0, scene.bind_group(), &[]);
+        renderer.render(&mut pass);
+    }
+    gpu.queue.submit([encoder.finish()]);
+    readback_texture(&gpu.device, &gpu.queue, &tex, w, h)
+}
+
+// ===========================================================================
+// 5. Mesh snapshot tests
+// ===========================================================================
+
+const SNAP_SIZE: u32 = 128;
+const SNAP_TOLERANCE: u8 = 3;
+const SNAP_MATCH: f64 = 98.0;
+
+#[test]
+fn snapshot_solid_cube() {
+    gpu_test!(|gpu: GpuTest| {
+        let pixels = render_solid(&gpu, SNAP_SIZE, SNAP_SIZE, |solid, scene, device, queue| {
+            // Perspective camera looking at origin
+            let view = glam::Mat4::look_at_rh(
+                glam::Vec3::new(2.0, 2.0, 2.0),
+                glam::Vec3::ZERO,
+                glam::Vec3::Y,
+            );
+            let proj = glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 100.0);
+            let uniform = SceneUniform::new(proj * view, glam::Vec3::new(2.0, 2.0, 2.0));
+            scene.update(queue, &uniform);
+
+            let cube = CubeMesh::generate();
+            let id = solid.add_object(device, &cube.positions, &cube.normals, &cube.indices);
+            solid.update_object(
+                queue,
+                id,
+                glam::Mat4::IDENTITY,
+                glam::Vec4::new(1.0, 0.0, 0.0, 1.0),
+            );
+        });
+        assert_snapshot(
+            "solid_cube",
+            &pixels,
+            SNAP_SIZE,
+            SNAP_SIZE,
+            SNAP_TOLERANCE,
+            SNAP_MATCH,
+        );
+    });
+}
+
+#[test]
+fn snapshot_solid_sphere() {
+    gpu_test!(|gpu: GpuTest| {
+        let pixels = render_solid(&gpu, SNAP_SIZE, SNAP_SIZE, |solid, scene, device, queue| {
+            let view = glam::Mat4::look_at_rh(
+                glam::Vec3::new(0.0, 0.0, 3.0),
+                glam::Vec3::ZERO,
+                glam::Vec3::Y,
+            );
+            let proj = glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 100.0);
+            let uniform = SceneUniform::new(proj * view, glam::Vec3::new(0.0, 0.0, 3.0));
+            scene.update(queue, &uniform);
+
+            let sphere = IcoSphereMesh::generate(2);
+            let id = solid.add_object(device, &sphere.positions, &sphere.normals, &sphere.indices);
+            solid.update_object(
+                queue,
+                id,
+                glam::Mat4::IDENTITY,
+                glam::Vec4::new(0.2, 0.6, 1.0, 1.0),
+            );
+        });
+        assert_snapshot(
+            "solid_sphere",
+            &pixels,
+            SNAP_SIZE,
+            SNAP_SIZE,
+            SNAP_TOLERANCE,
+            SNAP_MATCH,
+        );
+    });
+}
+
+#[test]
+fn snapshot_solid_plane() {
+    gpu_test!(|gpu: GpuTest| {
+        let pixels = render_solid(&gpu, SNAP_SIZE, SNAP_SIZE, |solid, scene, device, queue| {
+            let view = glam::Mat4::look_at_rh(
+                glam::Vec3::new(0.0, 2.0, 1.0),
+                glam::Vec3::ZERO,
+                glam::Vec3::Y,
+            );
+            let proj = glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 100.0);
+            let uniform = SceneUniform::new(proj * view, glam::Vec3::new(0.0, 2.0, 1.0));
+            scene.update(queue, &uniform);
+
+            let plane = PlaneMesh::generate();
+            let id = solid.add_object(device, &plane.positions, &plane.normals, &plane.indices);
+            solid.update_object(
+                queue,
+                id,
+                glam::Mat4::from_scale(glam::Vec3::splat(3.0)),
+                glam::Vec4::new(0.0, 0.8, 0.2, 1.0),
+            );
+        });
+        assert_snapshot(
+            "solid_plane",
+            &pixels,
+            SNAP_SIZE,
+            SNAP_SIZE,
+            SNAP_TOLERANCE,
+            SNAP_MATCH,
+        );
+    });
+}
+
+#[test]
+fn snapshot_instanced_hexagons() {
+    gpu_test!(|gpu: GpuTest| {
+        let hex = RegularPolygonMesh::generate(6);
+        let uniform = SceneUniform::new(glam::Mat4::IDENTITY, glam::Vec3::ZERO);
+
+        let instances = vec![
+            InstanceData {
+                pos_scale: [-0.5, -0.5, 0.0, 0.4],
+                color: [1.0, 0.0, 0.0, 1.0],
+            },
+            InstanceData {
+                pos_scale: [0.5, -0.5, 0.0, 0.4],
+                color: [0.0, 1.0, 0.0, 1.0],
+            },
+            InstanceData {
+                pos_scale: [0.0, 0.5, 0.0, 0.4],
+                color: [0.0, 0.0, 1.0, 1.0],
+            },
+        ];
+
+        let pixels = render_instances_2d(
+            &gpu,
+            SNAP_SIZE,
+            SNAP_SIZE,
+            &hex.positions,
+            &hex.normals,
+            &hex.indices,
+            &instances,
+            &uniform,
+        );
+        assert_snapshot(
+            "instanced_hexagons",
+            &pixels,
+            SNAP_SIZE,
+            SNAP_SIZE,
+            SNAP_TOLERANCE,
+            SNAP_MATCH,
+        );
+    });
+}
+
+#[test]
+fn snapshot_instanced_quad_grid() {
+    gpu_test!(|gpu: GpuTest| {
+        let quad = QuadMesh2d::generate();
+        let uniform = SceneUniform::new(glam::Mat4::IDENTITY, glam::Vec3::ZERO);
+
+        // 3x3 grid of colored quads
+        let mut instances = Vec::new();
+        for row in 0..3 {
+            for col in 0..3 {
+                let x = (col as f32 - 1.0) * 0.6;
+                let y = (row as f32 - 1.0) * 0.6;
+                let r = col as f32 / 2.0;
+                let g = row as f32 / 2.0;
+                instances.push(InstanceData {
+                    pos_scale: [x, y, 0.0, 0.25],
+                    color: [r, g, 0.5, 1.0],
+                });
+            }
+        }
+
+        let pixels = render_instances_2d(
+            &gpu,
+            SNAP_SIZE,
+            SNAP_SIZE,
+            &quad.positions,
+            &quad.normals,
+            &quad.indices,
+            &instances,
+            &uniform,
+        );
+        assert_snapshot(
+            "instanced_quad_grid",
+            &pixels,
+            SNAP_SIZE,
+            SNAP_SIZE,
+            SNAP_TOLERANCE,
+            SNAP_MATCH,
+        );
+    });
+}
+
+#[test]
+fn snapshot_solid_transparent() {
+    gpu_test!(|gpu: GpuTest| {
+        let pixels = render_solid(&gpu, SNAP_SIZE, SNAP_SIZE, |solid, scene, device, queue| {
+            let uniform = SceneUniform::new(glam::Mat4::IDENTITY, glam::Vec3::ZERO);
+            scene.update(queue, &uniform);
+
+            // Full-screen quad
+            let positions: Vec<[f32; 3]> = vec![
+                [-1.0, -1.0, 0.0],
+                [1.0, -1.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [-1.0, 1.0, 0.0],
+            ];
+            let normals: Vec<[f32; 3]> = vec![[0.0, 0.0, 1.0]; 4];
+            let indices: Vec<u32> = vec![0, 1, 2, 0, 2, 3];
+
+            let id = solid.add_object(device, &positions, &normals, &indices);
+            // Semi-transparent blue (uses unlit pipeline)
+            solid.update_object(
+                queue,
+                id,
+                glam::Mat4::IDENTITY,
+                glam::Vec4::new(0.0, 0.5, 1.0, 0.5),
+            );
+        });
+        assert_snapshot(
+            "solid_transparent",
+            &pixels,
+            SNAP_SIZE,
+            SNAP_SIZE,
+            SNAP_TOLERANCE,
+            SNAP_MATCH,
+        );
     });
 }
