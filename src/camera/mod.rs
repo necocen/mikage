@@ -1,10 +1,10 @@
 //! Camera system.
 //!
 //! Provides the [`Camera`] trait (read-only view/projection) and
-//! [`CameraController`] trait (input handling). The built-in [`OrbitCamera`]
+//! [`InteractiveCamera`] trait (input handling). The built-in [`OrbitCamera`]
 //! implements both.
 //!
-//! To use a custom camera, implement [`CameraController`] (which extends
+//! To use a custom camera, implement [`InteractiveCamera`] (which extends
 //! [`Camera`]) and pass it via [`RunConfig::camera`](crate::RunConfig::camera).
 //! If you only need a read-only camera (no framework-driven input), implement
 //! [`Camera`] alone and handle input yourself in [`App::update`](crate::App::update).
@@ -43,7 +43,7 @@ pub trait Camera: Send + Sync {
 ///
 /// Exposed to [`App::update`](crate::App::update) via
 /// [`UpdateContext::camera`](crate::UpdateContext::camera).
-pub trait CameraController: Camera {
+pub trait InteractiveCamera: Camera {
     /// Called on mouse drag. `dx`/`dy` are pixel deltas.
     fn on_mouse_drag(&mut self, dx: f64, dy: f64, left: bool, right: bool, middle: bool);
 

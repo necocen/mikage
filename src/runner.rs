@@ -6,7 +6,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::app::{App, FrameContext, UpdateContext};
-use crate::camera::{CameraController, OrbitCamera};
+use crate::camera::{InteractiveCamera, OrbitCamera};
 use crate::context::GpuContext;
 use crate::egui_integration::EguiIntegration;
 use crate::input::InputState;
@@ -16,22 +16,31 @@ use crate::time::FrameTime;
 ///
 /// Pass to [`run`] to start the application.
 ///
+/// The type parameter `C` is the [`InteractiveCamera`] type. It defaults to
+/// [`OrbitCamera`], so `RunConfig` without an explicit type parameter uses
+/// `OrbitCamera` and supports [`Default`].
+///
 /// # Example
 /// ```no_run
 /// use mikage::RunConfig;
 ///
+/// // OrbitCamera (default) — supports Default
 /// let config = RunConfig {
 ///     title: "My App".to_string(),
 ///     width: 1920,
 ///     height: 1080,
 ///     ..Default::default()
 /// };
+///
+/// // Other camera — use with_defaults or builder
+/// use mikage::Camera2d;
+/// let config = RunConfig::new("My 2D App").with_camera(Camera2d::default());
 /// ```
-pub struct RunConfig {
+pub struct RunConfig<C: InteractiveCamera = OrbitCamera> {
     pub title: String,
     pub width: u32,
     pub height: u32,
-    pub camera: Box<dyn CameraController>,
+    pub camera: C,
     /// Presentation mode. `AutoVsync` (default) enables vsync.
     /// Use `Immediate` or `Mailbox` to uncap the frame rate.
     pub present_mode: wgpu::PresentMode,
@@ -56,13 +65,13 @@ pub struct RunConfig {
     pub canvas: Option<String>,
 }
 
-impl Default for RunConfig {
+impl Default for RunConfig<OrbitCamera> {
     fn default() -> Self {
         Self {
             title: "mikage".to_string(),
             width: 1280,
             height: 720,
-            camera: Box::new(OrbitCamera::default()),
+            camera: OrbitCamera::default(),
             present_mode: wgpu::PresentMode::AutoVsync,
             wgpu_features: wgpu::Features::empty(),
             wgpu_limits: None,
@@ -73,6 +82,75 @@ impl Default for RunConfig {
     }
 }
 
+impl RunConfig<OrbitCamera> {
+    /// Creates a new config with the given title and default [`OrbitCamera`].
+    pub fn new(title: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            ..Default::default()
+        }
+    }
+}
+
+impl<C: InteractiveCamera> RunConfig<C> {
+    /// Creates a new config with the given camera and default values for everything else.
+    pub fn with_defaults(camera: C) -> Self {
+        Self {
+            title: "mikage".to_string(),
+            width: 1280,
+            height: 720,
+            camera,
+            present_mode: wgpu::PresentMode::AutoVsync,
+            wgpu_features: wgpu::Features::empty(),
+            wgpu_limits: None,
+            init_logging: true,
+            sample_count: 1,
+            canvas: None,
+        }
+    }
+
+    /// Replaces the camera, changing the type parameter.
+    pub fn with_camera<C2: InteractiveCamera>(self, camera: C2) -> RunConfig<C2> {
+        RunConfig {
+            title: self.title,
+            width: self.width,
+            height: self.height,
+            camera,
+            present_mode: self.present_mode,
+            wgpu_features: self.wgpu_features,
+            wgpu_limits: self.wgpu_limits,
+            init_logging: self.init_logging,
+            sample_count: self.sample_count,
+            canvas: self.canvas,
+        }
+    }
+
+    /// Sets the window title.
+    pub fn with_title(mut self, title: impl Into<String>) -> Self {
+        self.title = title.into();
+        self
+    }
+
+    /// Sets the window size (width and height).
+    pub fn with_size(mut self, width: u32, height: u32) -> Self {
+        self.width = width;
+        self.height = height;
+        self
+    }
+
+    /// Sets the presentation mode.
+    pub fn with_present_mode(mut self, mode: wgpu::PresentMode) -> Self {
+        self.present_mode = mode;
+        self
+    }
+
+    /// Sets the canvas CSS selector (WASM only).
+    pub fn with_canvas(mut self, selector: impl Into<String>) -> Self {
+        self.canvas = Some(selector.into());
+        self
+    }
+}
+
 /// Starts the application.
 ///
 /// Creates a window, initializes the GPU, calls the factory closure to create the app,
@@ -80,7 +158,7 @@ impl Default for RunConfig {
 #[cfg(not(target_family = "wasm"))]
 pub fn run<A: App>(
     init: impl FnOnce(&GpuContext, PhysicalSize<u32>) -> A + 'static,
-    config: RunConfig,
+    config: RunConfig<A::Camera>,
 ) {
     if config.init_logging {
         crate::logging::init_logging();
@@ -98,7 +176,7 @@ pub fn run<A: App>(
 #[cfg(target_family = "wasm")]
 pub fn run<A: App>(
     init: impl FnOnce(&GpuContext, PhysicalSize<u32>) -> A + 'static,
-    config: RunConfig,
+    config: RunConfig<A::Camera>,
 ) {
     if config.init_logging {
         crate::logging::init_logging();
@@ -112,12 +190,12 @@ pub fn run<A: App>(
 
 // --- 共通の RunState ---
 
-struct RunState {
+struct RunState<C: InteractiveCamera> {
     window: Arc<Window>,
     gpu: GpuContext,
     egui: EguiIntegration,
     input: InputState,
-    camera: Box<dyn CameraController>,
+    camera: C,
     frame_time: FrameTime,
     /// WASM: Resized イベントを render_frame の先頭まで遅延させる。
     /// 連続リサイズ中に毎イベント surface.configure() が走るのを防ぐ。
@@ -132,18 +210,18 @@ type InitFn<A> = Box<dyn FnOnce(&GpuContext, PhysicalSize<u32>) -> A>;
 struct AppHandler<A: App> {
     app: Option<A>,
     init_fn: Option<InitFn<A>>,
-    config: Option<RunConfig>,
-    state: Option<RunState>,
+    config: Option<RunConfig<A::Camera>>,
+    state: Option<RunState<A::Camera>>,
     /// WASM: async GPU 初期化の完了を受け取るための共有スロット
     #[cfg(target_family = "wasm")]
-    pending_gpu: Option<PendingGpuInit>,
+    pending_gpu: Option<PendingGpuInit<A::Camera>>,
 }
 
 /// WASM 用: async GPU 初期化の完了待ち
 #[cfg(target_family = "wasm")]
-struct PendingGpuInit {
+struct PendingGpuInit<C: InteractiveCamera> {
     window: Arc<Window>,
-    camera: Box<dyn CameraController>,
+    camera: C,
     slot: std::rc::Rc<std::cell::RefCell<Option<GpuContext>>>,
     /// GPU 初期化中に届いた最新の Resized イベントをバッファリングする。
     /// winit の ResizeObserver は非同期に発火するため、初期化完了前に
@@ -152,7 +230,7 @@ struct PendingGpuInit {
 }
 
 impl<A: App> AppHandler<A> {
-    fn new(init_fn: InitFn<A>, config: RunConfig) -> Self {
+    fn new(init_fn: InitFn<A>, config: RunConfig<A::Camera>) -> Self {
         Self {
             app: None,
             init_fn: Some(init_fn),
@@ -164,12 +242,7 @@ impl<A: App> AppHandler<A> {
     }
 
     /// GPU 初期化完了後の共通セットアップ
-    fn complete_init(
-        &mut self,
-        window: Arc<Window>,
-        gpu: GpuContext,
-        camera: Box<dyn CameraController>,
-    ) {
+    fn complete_init(&mut self, window: Arc<Window>, gpu: GpuContext, camera: A::Camera) {
         let egui = EguiIntegration::new(&window, &gpu);
         let size = gpu.window_size();
 
@@ -432,7 +505,7 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
 
 // --- レンダリング ---
 
-fn render_frame<A: App>(app: &mut A, state: &mut RunState) {
+fn render_frame<A: App>(app: &mut A, state: &mut RunState<A::Camera>) {
     state.frame_time.tick();
 
     // WASM: Resized イベントで蓄積されたリサイズをここで一括適用
@@ -456,7 +529,7 @@ fn render_frame<A: App>(app: &mut A, state: &mut RunState) {
             window_size: size,
             gpu: &state.gpu,
             input: &state.input,
-            camera: &mut *state.camera,
+            camera: &mut state.camera,
         };
         app.update(&mut update_ctx);
     }
@@ -499,7 +572,7 @@ fn render_frame<A: App>(app: &mut A, state: &mut RunState) {
             encoder: &mut encoder,
             surface_view: &surface_view,
             window_size: size,
-            camera: state.camera.as_ref() as &dyn crate::camera::Camera,
+            camera: &state.camera,
         };
         app.encode(&mut frame_ctx);
     }

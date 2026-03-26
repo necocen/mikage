@@ -1,6 +1,6 @@
 use glam::{Mat4, Vec2, Vec3};
 
-use super::{Camera, CameraController};
+use super::{Camera, InteractiveCamera};
 
 /// 2D orthographic camera with pan and zoom.
 ///
@@ -103,7 +103,7 @@ impl Camera for Camera2d {
     }
 }
 
-impl CameraController for Camera2d {
+impl InteractiveCamera for Camera2d {
     fn on_mouse_drag(&mut self, dx: f64, dy: f64, left: bool, _right: bool, _middle: bool) {
         if !self.enabled {
             return;

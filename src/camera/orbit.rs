@@ -1,6 +1,6 @@
 use glam::{Mat4, Vec3};
 
-use super::{Camera, CameraController};
+use super::{Camera, InteractiveCamera};
 
 /// 3D orbit camera that rotates around a target point.
 ///
@@ -112,7 +112,7 @@ impl Camera for OrbitCamera {
     }
 }
 
-impl CameraController for OrbitCamera {
+impl InteractiveCamera for OrbitCamera {
     fn on_mouse_drag(&mut self, dx: f64, dy: f64, left: bool, right: bool, middle: bool) {
         if !self.enabled {
             return;

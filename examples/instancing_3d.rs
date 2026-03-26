@@ -39,7 +39,9 @@ impl Instancing3dApp {
 }
 
 impl App for Instancing3dApp {
-    fn update(&mut self, ctx: &mut UpdateContext) {
+    type Camera = OrbitCamera;
+
+    fn update(&mut self, ctx: &mut UpdateContext<OrbitCamera>) {
         self.time = ctx.elapsed;
 
         let aspect = ctx.window_size.width as f32 / ctx.window_size.height.max(1) as f32;
@@ -80,7 +82,7 @@ impl App for Instancing3dApp {
             .update_instances(&ctx.gpu.device, &ctx.gpu.queue, &instances);
     }
 
-    fn encode(&mut self, ctx: &mut FrameContext) {
+    fn encode(&mut self, ctx: &mut FrameContext<OrbitCamera>) {
         let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("instancing_3d_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -138,7 +140,7 @@ fn main() {
         Instancing3dApp::new,
         RunConfig {
             title: "mikage - 3D instancing".to_string(),
-            camera: Box::new(camera),
+            camera,
             ..Default::default()
         },
     );

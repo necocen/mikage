@@ -1,5 +1,5 @@
 use mikage::{
-    App, Camera2d, FrameContext, GpuContext, InstanceData, InstanceRenderer,
+    App, Camera, Camera2d, FrameContext, GpuContext, InstanceData, InstanceRenderer,
     InstanceRendererConfig, RegularPolygonMesh, RunConfig, SceneBinding, UpdateContext,
 };
 use winit::dpi::PhysicalSize;
@@ -29,7 +29,9 @@ impl Instancing2dApp {
 }
 
 impl App for Instancing2dApp {
-    fn update(&mut self, ctx: &mut UpdateContext) {
+    type Camera = Camera2d;
+
+    fn update(&mut self, ctx: &mut UpdateContext<Camera2d>) {
         let aspect = ctx.window_size.width as f32 / ctx.window_size.height.max(1) as f32;
         self.scene
             .update_from_camera(&ctx.gpu.queue, &*ctx.camera, aspect);
@@ -76,7 +78,7 @@ impl App for Instancing2dApp {
             .update_instances(&ctx.gpu.device, &ctx.gpu.queue, &instances);
     }
 
-    fn encode(&mut self, ctx: &mut FrameContext) {
+    fn encode(&mut self, ctx: &mut FrameContext<Camera2d>) {
         let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("instancing_2d_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -120,8 +122,7 @@ fn main() {
         Instancing2dApp::new,
         RunConfig {
             title: "mikage - 2D instancing".to_string(),
-            camera: Box::new(camera),
-            ..Default::default()
+            ..RunConfig::with_defaults(camera)
         },
     );
 }

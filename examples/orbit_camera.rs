@@ -100,14 +100,16 @@ impl OrbitCameraApp {
 }
 
 impl App for OrbitCameraApp {
-    fn update(&mut self, ctx: &mut UpdateContext) {
+    type Camera = OrbitCamera;
+
+    fn update(&mut self, ctx: &mut UpdateContext<OrbitCamera>) {
         self.time = ctx.elapsed;
         let aspect = ctx.window_size.width as f32 / ctx.window_size.height.max(1) as f32;
         self.scene
             .update_from_camera(&ctx.gpu.queue, &*ctx.camera, aspect);
     }
 
-    fn encode(&mut self, ctx: &mut FrameContext) {
+    fn encode(&mut self, ctx: &mut FrameContext<OrbitCamera>) {
         let mut render_pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("main_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -200,7 +202,7 @@ fn main() {
         OrbitCameraApp::new,
         RunConfig {
             title: "mikage - orbit camera".to_string(),
-            camera: Box::new(camera),
+            camera,
             ..Default::default()
         },
     );

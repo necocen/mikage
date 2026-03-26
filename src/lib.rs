@@ -9,16 +9,17 @@
 //! Implement the [`App`] trait and launch with [`run`]:
 //!
 //! ```no_run
-//! use mikage::{App, FrameContext, RunConfig, UpdateContext};
+//! use mikage::{App, FrameContext, OrbitCamera, RunConfig, UpdateContext};
 //!
 //! struct MyApp;
 //!
 //! impl App for MyApp {
-//!     fn update(&mut self, _ctx: &mut UpdateContext) {}
-//!     fn encode(&mut self, _ctx: &mut FrameContext) {}
+//!     type Camera = OrbitCamera;
+//!     fn update(&mut self, _ctx: &mut UpdateContext<OrbitCamera>) {}
+//!     fn encode(&mut self, _ctx: &mut FrameContext<OrbitCamera>) {}
 //! }
 //!
-//! mikage::run(|_ctx, _size| MyApp, RunConfig::default());
+//! mikage::run(|_ctx, _size| MyApp, RunConfig::new("My App"));
 //! ```
 //!
 //! ## Frame Loop
@@ -72,7 +73,7 @@ pub mod solid_renderer;
 mod time;
 
 pub use app::{App, FrameContext, UpdateContext};
-pub use camera::{Camera, Camera2d, CameraController, OrbitCamera};
+pub use camera::{Camera, Camera2d, InteractiveCamera, OrbitCamera};
 pub use context::GpuContext;
 pub use helpers::{
     CubeMesh, DEPTH_FORMAT, IcoSphereMesh, MeshBuffers, POSITION_NORMAL_LAYOUT, PlaneMesh,

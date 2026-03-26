@@ -5,7 +5,7 @@
 
 use bytemuck::{Pod, Zeroable};
 use mikage::{
-    App, Camera2d, FrameContext, GpuContext, InstanceRenderer, InstanceRendererConfig,
+    App, Camera, Camera2d, FrameContext, GpuContext, InstanceRenderer, InstanceRendererConfig,
     InstanceVertex, RegularPolygonMesh, RunConfig, SceneBinding, SceneUniform, ShaderProcessor,
     UniformBuffer, UpdateContext, create_compute_pipeline, create_storage_buffer_init,
     storage_buffer_entry, uniform_buffer_entry,
@@ -261,7 +261,9 @@ impl BoidsApp {
 }
 
 impl App for BoidsApp {
-    fn update(&mut self, ctx: &mut UpdateContext) {
+    type Camera = Camera2d;
+
+    fn update(&mut self, ctx: &mut UpdateContext<Camera2d>) {
         // Handle reset
         if self.reset_requested {
             self.reset_requested = false;
@@ -304,7 +306,7 @@ impl App for BoidsApp {
         self.params_buffer.write(&ctx.gpu.queue, &self.params);
     }
 
-    fn encode(&mut self, ctx: &mut FrameContext) {
+    fn encode(&mut self, ctx: &mut FrameContext<Camera2d>) {
         // Compute pass
         if !self.paused {
             let bg_index = (self.frame_index % 2) as usize;
@@ -434,8 +436,7 @@ fn main() {
         BoidsApp::new,
         RunConfig {
             title: "mikage - GPU boids (20k)".to_string(),
-            camera: Box::new(camera),
-            ..Default::default()
+            ..RunConfig::with_defaults(camera)
         },
     );
 }

@@ -6,7 +6,7 @@
 
 use bytemuck::{Pod, Zeroable};
 use mikage::{
-    App, Camera2d, FrameContext, GpuContext, InstanceRenderer, InstanceRendererConfig,
+    App, Camera, Camera2d, FrameContext, GpuContext, InstanceRenderer, InstanceRendererConfig,
     InstanceVertex, RegularPolygonMesh, RunConfig, SceneBinding, ShaderProcessor, UpdateContext,
 };
 use winit::dpi::PhysicalSize;
@@ -75,7 +75,9 @@ impl CustomInstanceApp {
 }
 
 impl App for CustomInstanceApp {
-    fn update(&mut self, ctx: &mut UpdateContext) {
+    type Camera = Camera2d;
+
+    fn update(&mut self, ctx: &mut UpdateContext<Camera2d>) {
         self.time = ctx.elapsed;
 
         let aspect = ctx.window_size.width as f32 / ctx.window_size.height.max(1) as f32;
@@ -118,7 +120,7 @@ impl App for CustomInstanceApp {
             .update_instances(&ctx.gpu.device, &ctx.gpu.queue, &instances);
     }
 
-    fn encode(&mut self, ctx: &mut FrameContext) {
+    fn encode(&mut self, ctx: &mut FrameContext<Camera2d>) {
         let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("custom_instance_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -164,8 +166,7 @@ fn main() {
         CustomInstanceApp::new,
         RunConfig {
             title: "mikage - custom instance vertex".to_string(),
-            camera: Box::new(camera),
-            ..Default::default()
+            ..RunConfig::with_defaults(camera)
         },
     );
 }

@@ -1,4 +1,4 @@
-use mikage::{App, FrameContext, RunConfig, UpdateContext};
+use mikage::{App, FrameContext, OrbitCamera, RunConfig, UpdateContext};
 
 struct EguiDemoApp {
     counter: i32,
@@ -7,9 +7,11 @@ struct EguiDemoApp {
 }
 
 impl App for EguiDemoApp {
-    fn update(&mut self, _ctx: &mut UpdateContext) {}
+    type Camera = OrbitCamera;
 
-    fn encode(&mut self, ctx: &mut FrameContext) {
+    fn update(&mut self, _ctx: &mut UpdateContext<OrbitCamera>) {}
+
+    fn encode(&mut self, ctx: &mut FrameContext<OrbitCamera>) {
         let _pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("clear_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
