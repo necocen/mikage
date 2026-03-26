@@ -8,7 +8,7 @@ Provides GPU rendering, compute shaders, and egui UI integration for both Native
 
 - **Raw wgpu access** — The framework manages the window and surface; you manage everything else.
 - **egui integration** — Build UI in `gui()`. Input lock between egui and camera is automatic.
-- **Camera system** — `Camera` trait (read-only) + `CameraController` trait (input handling). Built-in `OrbitCamera` and `Camera2d`.
+- **Camera system** — `Camera` trait (read-only) + `InteractiveCamera` trait (input handling). Built-in `OrbitCamera` and `Camera2d`.
 - **Compute shaders** — Encode compute passes in `encode()`, before render passes.
 - **SolidRenderer** — Opaque (lit) and transparent (unlit) pipelines for solid-colored meshes.
 - **InstanceRenderer** — GPU-instanced rendering with generic per-instance vertex data via `InstanceVertex` trait.
@@ -19,14 +19,16 @@ Provides GPU rendering, compute shaders, and egui UI integration for both Native
 ## Quick Start
 
 ```rust
-use mikage::{App, FrameContext, RunConfig, UpdateContext};
+use mikage::{App, FrameContext, OrbitCamera, RunConfig, UpdateContext};
 
 struct MyApp;
 
 impl App for MyApp {
-    fn update(&mut self, _ctx: &mut UpdateContext) {}
+    type Camera = OrbitCamera;
 
-    fn encode(&mut self, ctx: &mut FrameContext) {
+    fn update(&mut self, _ctx: &mut UpdateContext<OrbitCamera>) {}
+
+    fn encode(&mut self, ctx: &mut FrameContext<OrbitCamera>) {
         let _pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("clear"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -52,8 +54,19 @@ fn main() {
 
 ## App Trait
 
+Each app specifies its camera type via an associated type:
+
+```rust
+impl App for MyApp {
+    type Camera = OrbitCamera;  // or Camera2d, or your own
+    fn update(&mut self, ctx: &mut UpdateContext<OrbitCamera>) { /* ... */ }
+    fn encode(&mut self, ctx: &mut FrameContext<OrbitCamera>) { /* ... */ }
+}
+```
+
 | Method | When called | Required |
 |--------|------------|----------|
+| `type Camera` | Associated type | Yes |
 | `update()` | Every frame (logic) | Yes |
 | `encode()` | Every frame (compute + render) | Yes |
 | `gui()` | Every frame (egui UI) | No |
@@ -82,31 +95,48 @@ winit events → InputState → egui input
 
 ## Context Types
 
-### `UpdateContext`
+### `UpdateContext<C: InteractiveCamera>`
 - `dt: f32` — seconds since last frame
 - `elapsed: f64` — total elapsed time
 - `gpu: &GpuContext` — device / queue
 - `input: &InputState` — keyboard / mouse state
-- `camera: &mut dyn CameraController` — mutable camera controller
+- `camera: &mut C` — mutable camera controller
 
-### `FrameContext`
+### `FrameContext<C: Camera>`
 - `gpu: &GpuContext` — device / queue (`gpu.device`, `gpu.queue`)
 - `encoder` — encode compute and render passes
 - `surface_view` — render target
 - `window_size` — current window size
-- `camera: &dyn Camera` — read-only camera
+- `camera: &C` — read-only camera
 
 ## RunConfig
+
+`RunConfig<C: InteractiveCamera>` is generic over the camera type (defaults to `OrbitCamera`).
+
+```rust
+// OrbitCamera (default) — supports Default
+let config = RunConfig {
+    title: "my app".to_string(),
+    camera,
+    ..Default::default()
+};
+
+// Camera2d — use with_defaults or builder
+let config = RunConfig::new("boids").with_camera(camera);
+let config = RunConfig { title: "boids".to_string(), ..RunConfig::with_defaults(camera) };
+```
 
 | Field | Default | Purpose |
 |-------|---------|---------|
 | `title` | `"mikage"` | Window title |
 | `width` / `height` | 1280 / 720 | Initial window size |
-| `camera` | `OrbitCamera` | Camera controller (`Box<dyn CameraController>`) |
+| `camera` | `OrbitCamera` | Camera controller (generic `C: InteractiveCamera`) |
 | `present_mode` | `AutoVsync` | wgpu presentation mode |
 | `wgpu_features` | empty | Required wgpu features |
 | `wgpu_limits` | `None` (downlevel defaults) | Required wgpu limits |
 | `init_logging` | `true` | Whether to initialize the tracing logger |
+| `sample_count` | 1 | MSAA sample count |
+| `canvas` | `None` | CSS selector for existing canvas (WASM only) |
 
 ## Helpers
 
@@ -277,7 +307,7 @@ In WGSL files:
 The camera system is split into two traits:
 
 - **`Camera`** — Read-only interface: `view_matrix()`, `projection_matrix()`, `position()`. Exposed in `FrameContext`.
-- **`CameraController`** — Extends `Camera` with input handling (`on_mouse_drag`, `on_scroll`, `update`). Exposed in `UpdateContext`.
+- **`InteractiveCamera`** — Extends `Camera` with input handling (`on_mouse_drag`, `on_scroll`, `update`). Exposed in `UpdateContext`.
 
 Built-in implementations:
 
@@ -286,7 +316,7 @@ Built-in implementations:
 | `OrbitCamera` | 3D | Left drag: orbit, Right drag: pan, Scroll: zoom |
 | `Camera2d` | 2D | Left drag: pan, Scroll: zoom |
 
-Implement `CameraController` for a custom camera and pass it via `RunConfig::camera`.
+Implement `InteractiveCamera` for a custom camera and pass it via `RunConfig::camera`.
 
 ## WASM
 
