@@ -48,6 +48,12 @@ pub struct RunConfig {
     /// via [`GpuContext::sample_count`](crate::GpuContext::sample_count);
     /// applications use it when creating render pipelines.
     pub sample_count: u32,
+    /// CSS selector for an existing `<canvas>` element (e.g., `"#my-canvas"`).
+    ///
+    /// If `Some`, the specified canvas is used and its size is controlled by the user's CSS.
+    /// If `None` (default), a canvas is created automatically and sized to fill the viewport.
+    /// This option is only used on WASM; it is ignored on native platforms.
+    pub canvas: Option<String>,
 }
 
 impl Default for RunConfig {
@@ -62,6 +68,7 @@ impl Default for RunConfig {
             wgpu_limits: None,
             init_logging: true,
             sample_count: 1,
+            canvas: None,
         }
     }
 }
@@ -112,6 +119,10 @@ struct RunState {
     input: InputState,
     camera: Box<dyn CameraController>,
     frame_time: FrameTime,
+    /// WASM: Resized イベントを render_frame の先頭まで遅延させる。
+    /// 連続リサイズ中に毎イベント surface.configure() が走るのを防ぐ。
+    #[cfg(target_family = "wasm")]
+    pending_resize: Option<PhysicalSize<u32>>,
 }
 
 // --- AppHandler ---
@@ -134,6 +145,10 @@ struct PendingGpuInit {
     window: Arc<Window>,
     camera: Box<dyn CameraController>,
     slot: std::rc::Rc<std::cell::RefCell<Option<GpuContext>>>,
+    /// GPU 初期化中に届いた最新の Resized イベントをバッファリングする。
+    /// winit の ResizeObserver は非同期に発火するため、初期化完了前に
+    /// 正しいサイズの Resized が届くことがある。
+    buffered_resize: Option<PhysicalSize<u32>>,
 }
 
 impl<A: App> AppHandler<A> {
@@ -156,7 +171,6 @@ impl<A: App> AppHandler<A> {
         camera: Box<dyn CameraController>,
     ) {
         let egui = EguiIntegration::new(&window, &gpu);
-        // サーフェスの実サイズを使う（WASM では window.inner_size() と異なる場合がある）
         let size = gpu.window_size();
 
         tracing::info!("App init with size: {}x{}", size.width, size.height);
@@ -170,6 +184,8 @@ impl<A: App> AppHandler<A> {
             input: InputState::default(),
             camera,
             frame_time: FrameTime::new(),
+            #[cfg(target_family = "wasm")]
+            pending_resize: None,
         });
     }
 }
@@ -185,15 +201,42 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
             None => return,
         };
 
-        #[allow(unused_mut)]
-        let mut window_attrs = WindowAttributes::default()
-            .with_title(&config.title)
-            .with_inner_size(PhysicalSize::new(config.width, config.height));
+        let mut window_attrs = WindowAttributes::default().with_title(&config.title);
 
+        // Native: ウィンドウサイズを指定
+        #[cfg(not(target_family = "wasm"))]
+        {
+            window_attrs =
+                window_attrs.with_inner_size(PhysicalSize::new(config.width, config.height));
+        }
+
+        // WASM: ユーザー指定のキャンバスを使うか、自動作成する
+        #[cfg(target_family = "wasm")]
+        let auto_created_canvas = config.canvas.is_none();
         #[cfg(target_family = "wasm")]
         {
             use winit::platform::web::WindowAttributesExtWebSys;
-            window_attrs = window_attrs.with_append(true);
+            if let Some(selector) = &config.canvas {
+                // ユーザー提供: with_inner_size を使わず、ユーザーの CSS に任せる
+                use wasm_bindgen::JsCast;
+                let document = web_sys::window()
+                    .expect("no window")
+                    .document()
+                    .expect("no document");
+                let el = document
+                    .query_selector(selector)
+                    .expect("invalid selector")
+                    .unwrap_or_else(|| panic!("canvas not found: {selector}"));
+                let canvas: web_sys::HtmlCanvasElement = el
+                    .dyn_into()
+                    .expect("element is not a canvas");
+                window_attrs = window_attrs.with_canvas(Some(canvas));
+            } else {
+                // 自動作成: with_inner_size で初期サイズを設定し、後で 100% に上書き
+                window_attrs = window_attrs
+                    .with_inner_size(PhysicalSize::new(config.width, config.height))
+                    .with_append(true);
+            }
         }
 
         let window = Arc::new(
@@ -201,6 +244,18 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                 .create_window(window_attrs)
                 .expect("Failed to create window"),
         );
+
+        // WASM: 自動作成の場合、キャンバスをビューポートに合わせる
+        // （winit のインラインスタイルを上書き）
+        #[cfg(target_family = "wasm")]
+        if auto_created_canvas {
+            use winit::platform::web::WindowExtWebSys;
+            if let Some(canvas) = window.canvas() {
+                let style = canvas.style();
+                let _ = style.set_property("width", "100%");
+                let _ = style.set_property("height", "100%");
+            }
+        }
 
         // Native: 同期的に GPU 初期化
         #[cfg(not(target_family = "wasm"))]
@@ -242,6 +297,7 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                 window: window.clone(),
                 camera: config.camera,
                 slot,
+                buffered_resize: None,
             });
 
             // redraw をリクエストして初期化完了チェックを駆動
@@ -258,13 +314,24 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
         // WASM: async GPU 初期化の完了チェック
         #[cfg(target_family = "wasm")]
         if self.state.is_none() {
+            // GPU 初期化中に届いた Resized イベントをバッファリング
+            if let WindowEvent::Resized(size) = &event {
+                if let Some(pending) = &mut self.pending_gpu {
+                    if size.width > 0 && size.height > 0 {
+                        pending.buffered_resize = Some(*size);
+                    }
+                }
+            }
+
             if let Some(pending) = self.pending_gpu.take() {
-                if let Some(gpu) = pending.slot.borrow_mut().take() {
-                    // 初期化完了
+                if let Some(mut gpu) = pending.slot.borrow_mut().take() {
+                    // 初期化完了: バッファされた Resized を適用
+                    if let Some(size) = pending.buffered_resize {
+                        gpu.resize(size);
+                    }
                     let window = pending.window.clone();
                     self.complete_init(pending.window, gpu, pending.camera);
                     tracing::info!("GPU initialization complete (WASM)");
-                    // 初期化直後に redraw をリクエスト
                     window.request_redraw();
                 } else {
                     // まだ完了していない、戻す
@@ -325,16 +392,25 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
             }
             WindowEvent::Resized(new_size) => {
                 if new_size.width > 0 && new_size.height > 0 {
-                    state.gpu.resize(new_size);
-                    state.egui.resize(
-                        new_size.width,
-                        new_size.height,
-                        crate::egui_integration::EguiIntegration::compute_pixels_per_point(
-                            &state.window,
-                        ),
-                    );
-                    if let Some(app) = self.app.as_mut() {
-                        app.resize(&state.gpu, new_size);
+                    // WASM: render_frame の先頭まで遅延させて 1 フレームに 1 回だけリサイズする。
+                    // 連続リサイズ中の surface.configure() 多発によるちらつきを防ぐ。
+                    #[cfg(target_family = "wasm")]
+                    {
+                        state.pending_resize = Some(new_size);
+                    }
+                    #[cfg(not(target_family = "wasm"))]
+                    {
+                        state.gpu.resize(new_size);
+                        state.egui.resize(
+                            new_size.width,
+                            new_size.height,
+                            crate::egui_integration::EguiIntegration::compute_pixels_per_point(
+                                &state.window,
+                            ),
+                        );
+                        if let Some(app) = self.app.as_mut() {
+                            app.resize(&state.gpu, new_size);
+                        }
                     }
                 }
             }
@@ -361,6 +437,14 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
 
 fn render_frame<A: App>(app: &mut A, state: &mut RunState) {
     state.frame_time.tick();
+
+    // WASM: Resized イベントで蓄積されたリサイズをここで一括適用
+    #[cfg(target_family = "wasm")]
+    if let Some(new_size) = state.pending_resize.take() {
+        state.gpu.resize(new_size);
+        state.egui.resize(new_size.width, new_size.height, 1.0);
+        app.resize(&state.gpu, new_size);
+    }
 
     let size = state.gpu.window_size();
 
@@ -444,3 +528,4 @@ fn render_frame<A: App>(app: &mut A, state: &mut RunState) {
     // その次の render_frame() の app.update() で見えるようにする。
     state.input.begin_frame();
 }
+

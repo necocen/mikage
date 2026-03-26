@@ -106,9 +106,10 @@ impl GpuContext {
             view_format
         );
 
-        // WASM ではキャンバスサイズが 0 の場合がある。フォールバック。
-        let width = if size.width > 0 { size.width } else { 800 };
-        let height = if size.height > 0 { size.height } else { 600 };
+        // WASM では ResizeObserver が非同期のため初期サイズが 0x0 になることがある。
+        // 1x1 でフォールバックし、後続の Resized イベントで正しいサイズに更新される。
+        let width = size.width.max(1);
+        let height = size.height.max(1);
 
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
