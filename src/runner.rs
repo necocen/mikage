@@ -227,9 +227,8 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                     .query_selector(selector)
                     .expect("invalid selector")
                     .unwrap_or_else(|| panic!("canvas not found: {selector}"));
-                let canvas: web_sys::HtmlCanvasElement = el
-                    .dyn_into()
-                    .expect("element is not a canvas");
+                let canvas: web_sys::HtmlCanvasElement =
+                    el.dyn_into().expect("element is not a canvas");
                 window_attrs = window_attrs.with_canvas(Some(canvas));
             } else {
                 // 自動作成: with_inner_size で初期サイズを設定し、後で 100% に上書き
@@ -526,4 +525,3 @@ fn render_frame<A: App>(app: &mut A, state: &mut RunState) {
     // その次の render_frame() の app.update() で見えるようにする。
     state.input.begin_frame();
 }
-
