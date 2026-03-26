@@ -251,9 +251,7 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
         if auto_created_canvas {
             use winit::platform::web::WindowExtWebSys;
             if let Some(canvas) = window.canvas() {
-                let style = canvas.style();
-                let _ = style.set_property("width", "100%");
-                let _ = style.set_property("height", "100%");
+                let _ = canvas.set_attribute("style", "width: 100%; height: 100%;");
             }
         }
 
