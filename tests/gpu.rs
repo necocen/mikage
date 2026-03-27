@@ -1086,3 +1086,389 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         }
     });
 }
+
+// ===========================================================================
+// 7. HSV color utility test
+// ===========================================================================
+
+/// CPU reference implementation of hsv2rgb matching the WGSL shader logic.
+fn hsv2rgb_reference(h: f32, s: f32, v: f32) -> [f32; 3] {
+    let pi = std::f32::consts::PI;
+    let c = v * s;
+    let hp = h * (3.0 / pi);
+    let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
+    let m = v - c;
+    let (r, g, b) = if hp < 1.0 {
+        (c, x, 0.0)
+    } else if hp < 2.0 {
+        (x, c, 0.0)
+    } else if hp < 3.0 {
+        (0.0, c, x)
+    } else if hp < 4.0 {
+        (0.0, x, c)
+    } else if hp < 5.0 {
+        (x, 0.0, c)
+    } else {
+        (c, 0.0, x)
+    };
+    [r + m, g + m, b + m]
+}
+
+/// Convert linear [0,1] to sRGB [0,255] (matches GPU's Rgba8UnormSrgb write).
+fn linear_to_srgb_u8(c: f32) -> u8 {
+    let s = if c <= 0.0031308 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    };
+    (s.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+#[test]
+fn snapshot_hsv_gradient() {
+    gpu_test!(|gpu: GpuTest| {
+        let w = 128u32;
+        let h = 64u32;
+
+        let sp = ShaderProcessor::new();
+        let shader_src = sp
+            .resolve(
+                r#"
+#import mikage::color_utils
+
+// Output: RGBA per pixel, stored as 4 x f32 per pixel
+@group(0) @binding(0) var<storage, read_write> pixels: array<vec4<f32>>;
+
+struct Params {
+    width: u32,
+    height: u32,
+}
+@group(0) @binding(1) var<uniform> params: Params;
+
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+    if id.x >= params.width || id.y >= params.height {
+        return;
+    }
+    let idx = id.y * params.width + id.x;
+    let u = f32(id.x) / f32(params.width - 1u);   // 0..1 → hue
+    let v = f32(id.y) / f32(params.height - 1u);   // 0..1 → saturation
+    let h = u * 2.0 * PI;                           // hue in radians
+    let rgb = hsv2rgb(h, v, 1.0);                   // value = 1.0
+    pixels[idx] = vec4<f32>(rgb, 1.0);
+}
+"#,
+            )
+            .unwrap();
+
+        let pixel_count = (w * h) as u64;
+        let buf_size = pixel_count * 16; // 4 x f32 per pixel
+
+        let pixel_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("hsv_pixels"),
+            size: buf_size,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        #[repr(C)]
+        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+        struct Params {
+            width: u32,
+            height: u32,
+        }
+        let params_buf = UniformBuffer::new(&gpu.device, "params", &Params { width: w, height: h });
+
+        let bgl = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[
+                storage_buffer_entry(0, wgpu::ShaderStages::COMPUTE, false),
+                mikage::uniform_buffer_entry(1, wgpu::ShaderStages::COMPUTE),
+            ],
+        });
+
+        let pipeline =
+            create_compute_pipeline(&gpu.device, "hsv_test", &shader_src, &[&bgl], "main");
+
+        let bg = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: pixel_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: params_buf.buffer().as_entire_binding(),
+                },
+            ],
+        });
+
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
+        }
+
+        let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback"),
+            size: buf_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_buffer_to_buffer(&pixel_buf, 0, &staging, 0, buf_size);
+        gpu.queue.submit([encoder.finish()]);
+
+        let slice = staging.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+        gpu.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .ok();
+        rx.recv().unwrap().unwrap();
+
+        let gpu_data: Vec<f32> = bytemuck::cast_slice(&slice.get_mapped_range()).to_vec();
+
+        // Compare GPU results against CPU reference + save as snapshot image
+        let mut rgba_pixels = Vec::with_capacity((w * h * 4) as usize);
+        let mut max_diff: f32 = 0.0;
+        let mut mismatches = 0u32;
+
+        for y in 0..h {
+            for x in 0..w {
+                let idx = (y * w + x) as usize;
+                let gpu_r = gpu_data[idx * 4];
+                let gpu_g = gpu_data[idx * 4 + 1];
+                let gpu_b = gpu_data[idx * 4 + 2];
+
+                let u = x as f32 / (w - 1) as f32;
+                let v = y as f32 / (h - 1) as f32;
+                let hue = u * 2.0 * std::f32::consts::PI;
+                let [exp_r, exp_g, exp_b] = hsv2rgb_reference(hue, v, 1.0);
+
+                let dr = (gpu_r - exp_r).abs();
+                let dg = (gpu_g - exp_g).abs();
+                let db = (gpu_b - exp_b).abs();
+                let pixel_diff = dr.max(dg).max(db);
+                max_diff = max_diff.max(pixel_diff);
+
+                if pixel_diff > 0.01 {
+                    mismatches += 1;
+                }
+
+                // Convert linear → sRGB u8 for the snapshot image
+                rgba_pixels.push(linear_to_srgb_u8(gpu_r));
+                rgba_pixels.push(linear_to_srgb_u8(gpu_g));
+                rgba_pixels.push(linear_to_srgb_u8(gpu_b));
+                rgba_pixels.push(255);
+            }
+        }
+
+        // Save as snapshot for visual inspection
+        assert_snapshot(
+            "hsv_gradient",
+            &rgba_pixels,
+            w,
+            h,
+            SNAP_TOLERANCE,
+            SNAP_MATCH,
+        );
+
+        // Verify GPU matches CPU reference
+        let total = w * h;
+        let match_pct = (total - mismatches) as f64 / total as f64 * 100.0;
+        assert!(
+            match_pct >= 99.0,
+            "HSV mismatch: {mismatches}/{total} pixels differ > 0.01 (max_diff={max_diff:.6}), match={match_pct:.1}%"
+        );
+    });
+}
+
+/// Test that hsv2rgb produces continuous output for angles spanning [-PI, PI],
+/// i.e. the full atan2 range. This catches the bug where negative hue values
+/// cause discontinuous color jumps.
+#[test]
+fn compute_hsv_negative_angle_continuity() {
+    gpu_test!(|gpu: GpuTest| {
+        let sp = ShaderProcessor::new();
+        let shader_src = sp
+            .resolve(
+                r#"
+#import mikage::color_utils
+#import mikage::math
+
+struct Result {
+    r: f32,
+    g: f32,
+    b: f32,
+    _pad: f32,
+}
+
+@group(0) @binding(0) var<storage, read_write> results: array<Result>;
+
+struct Params { count: u32 }
+@group(0) @binding(1) var<uniform> params: Params;
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let i = id.x;
+    if i >= params.count { return; }
+
+    // Sweep angle from -PI to PI (simulating atan2 range)
+    let t = f32(i) / f32(params.count - 1u);
+    let angle = mix(-PI, PI, t);
+
+    // Apply the same wrapping fix as the boids shader
+    let hue = (angle + TAU) % TAU;
+    let rgb = hsv2rgb(hue, 0.6, 1.0);
+    results[i] = Result(rgb.x, rgb.y, rgb.z, 0.0);
+}
+"#,
+            )
+            .unwrap();
+
+        let n = 512u32;
+
+        #[repr(C)]
+        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+        struct Params {
+            count: u32,
+        }
+
+        let result_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("results"),
+            size: (n as u64) * 16,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let params_buf = UniformBuffer::new(&gpu.device, "params", &Params { count: n });
+
+        let bgl = gpu
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: None,
+                entries: &[
+                    storage_buffer_entry(0, wgpu::ShaderStages::COMPUTE, false),
+                    mikage::uniform_buffer_entry(1, wgpu::ShaderStages::COMPUTE),
+                ],
+            });
+
+        let pipeline = create_compute_pipeline(
+            &gpu.device,
+            "hsv_continuity",
+            &shader_src,
+            &[&bgl],
+            "main",
+        );
+
+        let bg = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: result_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: params_buf.buffer().as_entire_binding(),
+                },
+            ],
+        });
+
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.dispatch_workgroups(n.div_ceil(64), 1, 1);
+        }
+        let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback"),
+            size: (n as u64) * 16,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_buffer_to_buffer(&result_buf, 0, &staging, 0, (n as u64) * 16);
+        gpu.queue.submit([encoder.finish()]);
+
+        let slice = staging.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+        gpu.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .ok();
+        rx.recv().unwrap().unwrap();
+
+        let data: Vec<f32> = bytemuck::cast_slice(&slice.get_mapped_range()).to_vec();
+
+        // Check continuity: adjacent samples should not jump too much
+        let pi = std::f32::consts::PI;
+        let mut max_jump: f32 = 0.0;
+        let mut worst_i = 0;
+
+        for i in 1..n as usize {
+            let prev_r = data[(i - 1) * 4];
+            let prev_g = data[(i - 1) * 4 + 1];
+            let prev_b = data[(i - 1) * 4 + 2];
+            let cur_r = data[i * 4];
+            let cur_g = data[i * 4 + 1];
+            let cur_b = data[i * 4 + 2];
+
+            let dr = (cur_r - prev_r).abs();
+            let dg = (cur_g - prev_g).abs();
+            let db = (cur_b - prev_b).abs();
+            let jump = dr.max(dg).max(db);
+
+            if jump > max_jump {
+                max_jump = jump;
+                worst_i = i;
+            }
+        }
+
+        // With 512 samples over [−π, π], the angle step is ~0.012 rad.
+        // The maximum color change per step should be small.
+        // A discontinuity (the old bug) would produce a jump > 0.5.
+        let t = worst_i as f32 / (n - 1) as f32;
+        let worst_angle = -pi + t * 2.0 * pi;
+        assert!(
+            max_jump < 0.05,
+            "color discontinuity detected: max_jump={max_jump:.4} at sample {worst_i} \
+             (angle={worst_angle:.4} rad). This suggests hsv2rgb is not handling \
+             negative angles correctly."
+        );
+
+        // Also verify against CPU reference at each point
+        for i in 0..n as usize {
+            let t = i as f32 / (n - 1) as f32;
+            let angle = -pi + t * 2.0 * pi;
+            let hue = (angle + std::f32::consts::TAU) % std::f32::consts::TAU;
+            let [exp_r, exp_g, exp_b] = hsv2rgb_reference(hue, 0.6, 1.0);
+
+            let gpu_r = data[i * 4];
+            let gpu_g = data[i * 4 + 1];
+            let gpu_b = data[i * 4 + 2];
+
+            let diff = (gpu_r - exp_r)
+                .abs()
+                .max((gpu_g - exp_g).abs())
+                .max((gpu_b - exp_b).abs());
+            assert!(
+                diff < 0.01,
+                "HSV mismatch at sample {i} (angle={angle:.4}): \
+                 GPU=({gpu_r:.4},{gpu_g:.4},{gpu_b:.4}), \
+                 expected=({exp_r:.4},{exp_g:.4},{exp_b:.4}), diff={diff:.6}"
+            );
+        }
+    });
+}
