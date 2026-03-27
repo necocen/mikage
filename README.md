@@ -322,7 +322,7 @@ Implement `InteractiveCamera` for a custom camera and pass it via `RunConfig::ca
 
 ```bash
 trunk build                   # build
-trunk serve --open=false      # local dev server
+trunk serve                   # local dev server
 ```
 
 
@@ -337,7 +337,7 @@ cargo run -p mikage --example orbit_camera       # IcoSphere + orbit camera + eg
 cargo run -p mikage --example instancing_2d      # 2D hex grid (Camera2d + pan/zoom)
 cargo run -p mikage --example instancing_3d      # 3D sphere grid with wave animation
 cargo run -p mikage --example custom_instance    # Custom InstanceVertex with 2D rotation
-cargo run -p mikage --example boids              # GPU compute flocking (10k boids)
+cargo run -p mikage --example boids              # GPU compute flocking (20k boids)
 ```
 
 ## Dependencies
