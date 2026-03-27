@@ -31,7 +31,7 @@ fn vertex(v: Vertex) -> VertexOut {
         0.0,
     );
 
-    let color = hsv2rgb(angle % TAU, 0.6, 1.0);
+    let color = hsv2rgb((angle + TAU) % TAU, 0.6, 1.0);
 
     var out: VertexOut;
     out.clip_position = scene.view_proj * vec4<f32>(world_pos, 1.0);
