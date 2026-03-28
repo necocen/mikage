@@ -88,7 +88,7 @@ impl SceneUniform {
         light_dir: glam::Vec3,
         ambient: f32,
     ) -> Self {
-        let dir = light_dir.normalize();
+        let dir = light_dir.normalize_or(glam::Vec3::Y);
         Self {
             view_proj: view_proj.to_cols_array_2d(),
             camera_pos: [camera_pos.x, camera_pos.y, camera_pos.z, 1.0],
@@ -232,6 +232,15 @@ mod tests {
         assert_approx!(u.light_dir[2], 0.0);
         assert_approx!(u.light_dir[3], 0.0);
         assert_approx!(u.ambient[0], 0.5);
+    }
+
+    #[test]
+    fn with_light_zero_vector_falls_back_to_y() {
+        let u = SceneUniform::with_light(Mat4::IDENTITY, Vec3::ZERO, Vec3::ZERO, 0.5);
+        // Zero light direction should fall back to Vec3::Y, not produce NaN
+        assert_approx!(u.light_dir[0], 0.0);
+        assert_approx!(u.light_dir[1], 1.0);
+        assert_approx!(u.light_dir[2], 0.0);
     }
 
     #[test]
