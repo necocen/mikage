@@ -59,6 +59,9 @@ pub trait InteractiveCamera: Camera {
     fn on_drag_end(&mut self) {}
 
     /// Called on a one-finger touch drag. Default: forwards as left-button mouse drag.
+    ///
+    /// This works for cameras where left-drag is the primary interaction
+    /// (orbit for 3D, pan for 2D). Override if your camera uses a different mapping.
     fn on_touch_drag(&mut self, dx: f64, dy: f64) {
         self.on_mouse_drag(dx, dy, true, false, false);
     }
@@ -72,7 +75,10 @@ pub trait InteractiveCamera: Camera {
     ///
     /// `zoom_delta`: positive = zoom in, negative = zoom out.
     /// `pan_dx`/`pan_dy`: pixel deltas of the gesture midpoint.
-    /// Default: forwards zoom to [`on_scroll`](Self::on_scroll) and pan as right-button drag.
+    ///
+    /// Default: forwards zoom to [`on_scroll`](Self::on_scroll) and pan as
+    /// **right-button** drag. This suits [`OrbitCamera`] (right-drag = pan), but
+    /// cameras that pan on left-drag (e.g. [`Camera2d`]) must override this method.
     fn on_pinch_pan(&mut self, zoom_delta: f32, pan_dx: f64, pan_dy: f64) {
         if zoom_delta.abs() > 1e-4 {
             self.on_scroll(zoom_delta);
