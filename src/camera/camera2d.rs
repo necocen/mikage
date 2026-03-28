@@ -94,11 +94,21 @@ impl Camera2d {
         (min, max)
     }
 
-    /// Converts the current cursor position (pixels, top-left origin) to world coordinates.
-    fn cursor_to_world(&self) -> Vec2 {
+    /// Zooms around a screen-space point (pixels, top-left origin),
+    /// preserving the world coordinate under that point.
+    fn zoom_around(&mut self, delta: f32, origin: Vec2) {
+        let before = self.screen_to_world(origin);
+        self.zoom *= 1.0 + delta * self.zoom_speed;
+        self.zoom = self.zoom.clamp(self.min_zoom, self.max_zoom);
+        let after = self.screen_to_world(origin);
+        self.position += before - after;
+    }
+
+    /// Converts a screen-space point (pixels, top-left origin) to world coordinates.
+    fn screen_to_world(&self, screen: Vec2) -> Vec2 {
         let aspect = self.viewport_width / self.viewport_height;
-        let ndc_x = (self.cursor_pos.x / self.viewport_width) * 2.0 - 1.0;
-        let ndc_y = 1.0 - (self.cursor_pos.y / self.viewport_height) * 2.0;
+        let ndc_x = (screen.x / self.viewport_width) * 2.0 - 1.0;
+        let ndc_y = 1.0 - (screen.y / self.viewport_height) * 2.0;
         Vec2::new(
             ndc_x * (aspect / self.zoom) + self.position.x,
             ndc_y * (1.0 / self.zoom) + self.position.y,
@@ -143,11 +153,7 @@ impl InteractiveCamera for Camera2d {
         if !self.enabled {
             return;
         }
-        let before = self.cursor_to_world();
-        self.zoom *= 1.0 + delta * self.zoom_speed;
-        self.zoom = self.zoom.clamp(self.min_zoom, self.max_zoom);
-        let after = self.cursor_to_world();
-        self.position += before - after;
+        self.zoom_around(delta, self.cursor_pos);
     }
 
     fn set_viewport_size(&mut self, width: u32, height: u32) {
@@ -159,9 +165,21 @@ impl InteractiveCamera for Camera2d {
         self.cursor_pos = Vec2::new(x as f32, y as f32);
     }
 
-    fn on_pinch_pan(&mut self, zoom_delta: f32, pan_dx: f64, pan_dy: f64) {
+    fn on_pinch_pan(
+        &mut self,
+        zoom_delta: f32,
+        pan_dx: f64,
+        pan_dy: f64,
+        focus: Option<(f64, f64)>,
+    ) {
+        if !self.enabled {
+            return;
+        }
         if zoom_delta.abs() > 1e-4 {
-            self.on_scroll(zoom_delta);
+            let origin = focus
+                .map(|(x, y)| Vec2::new(x as f32, y as f32))
+                .unwrap_or(self.cursor_pos);
+            self.zoom_around(zoom_delta, origin);
         }
         if pan_dx.abs() > 0.5 || pan_dy.abs() > 0.5 {
             // Camera2d pans on left drag, not right drag.
@@ -367,9 +385,9 @@ mod tests {
         // Place cursor at top-right quadrant
         cam.set_cursor_position(1200.0, 200.0);
 
-        let world_before = cam.cursor_to_world();
+        let world_before = cam.screen_to_world(cam.cursor_pos);
         cam.on_scroll(1.0); // zoom in
-        let world_after = cam.cursor_to_world();
+        let world_after = cam.screen_to_world(cam.cursor_pos);
 
         // The world point under the cursor should be preserved
         assert_approx!(world_before.x, world_after.x);
@@ -473,22 +491,36 @@ mod tests {
         let mut cam = Camera2d::default();
         cam.set_viewport_size(1600, 800);
         let before = cam.position;
-        // Two-finger pan: no zoom, just pan
-        cam.on_pinch_pan(0.0, 100.0, 0.0);
+        // Two-finger pan: no zoom, just pan, no focal point
+        cam.on_pinch_pan(0.0, 100.0, 0.0, None);
         // Should have moved (left drag path)
         assert!(cam.position.x < before.x, "pinch pan should move camera");
     }
 
     #[test]
-    fn pinch_zoom_uses_zoom_to_cursor() {
+    fn pinch_zoom_uses_focal_point() {
+        let mut cam = Camera2d::default();
+        cam.set_viewport_size(1600, 800);
+        let focus = (1200.0, 200.0);
+        let focus_screen = Vec2::new(focus.0 as f32, focus.1 as f32);
+        let world_before = cam.screen_to_world(focus_screen);
+        // Two-finger zoom with focal point
+        cam.on_pinch_pan(1.0, 0.0, 0.0, Some(focus));
+        let world_after = cam.screen_to_world(focus_screen);
+        // World point under focal point should be preserved
+        assert_approx!(world_before.x, world_after.x);
+        assert_approx!(world_before.y, world_after.y);
+    }
+
+    #[test]
+    fn pinch_zoom_without_focus_uses_cursor() {
         let mut cam = Camera2d::default();
         cam.set_viewport_size(1600, 800);
         cam.set_cursor_position(1200.0, 200.0);
-        let world_before = cam.cursor_to_world();
-        // Two-finger zoom: zoom in, no pan
-        cam.on_pinch_pan(1.0, 0.0, 0.0);
-        let world_after = cam.cursor_to_world();
-        // zoom-to-cursor should be preserved
+        let world_before = cam.screen_to_world(cam.cursor_pos);
+        // Two-finger zoom without focal point falls back to cursor
+        cam.on_pinch_pan(1.0, 0.0, 0.0, None);
+        let world_after = cam.screen_to_world(cam.cursor_pos);
         assert_approx!(world_before.x, world_after.x);
         assert_approx!(world_before.y, world_after.y);
     }

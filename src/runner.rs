@@ -233,6 +233,8 @@ enum TouchGestureAction {
         scroll_delta: f32,
         pan_dx: f64,
         pan_dy: f64,
+        /// Midpoint of the two fingers in physical pixels.
+        midpoint: (f64, f64),
     },
 }
 
@@ -283,6 +285,7 @@ impl TouchTracker {
                             scroll_delta,
                             pan_dx,
                             pan_dy,
+                            midpoint: mid,
                         })
                     }
                     _ => None,
@@ -639,21 +642,27 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                                 scroll_delta,
                                 pan_dx,
                                 pan_dy,
+                                midpoint,
                             } => {
-                                state.camera.on_pinch_pan(scroll_delta, pan_dx, pan_dy);
+                                state.camera.on_pinch_pan(
+                                    scroll_delta,
+                                    pan_dx,
+                                    pan_dy,
+                                    Some(midpoint),
+                                );
                             }
                         }
                     }
                 }
                 // Trackpad pinch gesture (native)
                 WindowEvent::PinchGesture { delta, .. } => {
-                    state.camera.on_pinch_pan(*delta as f32, 0.0, 0.0);
+                    state.camera.on_pinch_pan(*delta as f32, 0.0, 0.0, None);
                 }
                 // Trackpad pan gesture (native)
                 WindowEvent::PanGesture { delta, .. } => {
                     state
                         .camera
-                        .on_pinch_pan(0.0, delta.x as f64, delta.y as f64);
+                        .on_pinch_pan(0.0, delta.x as f64, delta.y as f64, None);
                 }
                 _ => {}
             }

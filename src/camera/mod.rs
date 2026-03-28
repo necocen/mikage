@@ -75,11 +75,21 @@ pub trait InteractiveCamera: Camera {
     ///
     /// `zoom_delta`: positive = zoom in, negative = zoom out.
     /// `pan_dx`/`pan_dy`: pixel deltas of the gesture midpoint.
+    /// `focus`: the focal point of the gesture in physical pixels (top-left
+    /// origin). For touch input this is the midpoint of the two fingers;
+    /// for trackpad gestures where no focal point is available, `None` is
+    /// passed and implementations should fall back to the last cursor position.
     ///
     /// Default: forwards zoom to [`on_scroll`](Self::on_scroll) and pan as
     /// **right-button** drag. This suits [`OrbitCamera`] (right-drag = pan), but
     /// cameras that pan on left-drag (e.g. [`Camera2d`]) must override this method.
-    fn on_pinch_pan(&mut self, zoom_delta: f32, pan_dx: f64, pan_dy: f64) {
+    fn on_pinch_pan(
+        &mut self,
+        zoom_delta: f32,
+        pan_dx: f64,
+        pan_dy: f64,
+        _focus: Option<(f64, f64)>,
+    ) {
         if zoom_delta.abs() > 1e-4 {
             self.on_scroll(zoom_delta);
         }
