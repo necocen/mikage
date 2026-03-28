@@ -115,8 +115,7 @@ impl App for CustomInstanceApp {
             }
         }
 
-        self.renderer
-            .update_instances(ctx.gpu, &instances);
+        self.renderer.update_instances(ctx.gpu, &instances);
     }
 
     fn encode(&mut self, ctx: &mut FrameContext<Camera2d>) {

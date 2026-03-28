@@ -34,10 +34,7 @@ pub struct RenderTargetConfig {
 
 impl RenderTargetConfig {
     /// Builds a [`ColorTargetState`](wgpu::ColorTargetState) with the given blend mode.
-    pub fn color_target_state(
-        &self,
-        blend: wgpu::BlendState,
-    ) -> wgpu::ColorTargetState {
+    pub fn color_target_state(&self, blend: wgpu::BlendState) -> wgpu::ColorTargetState {
         wgpu::ColorTargetState {
             format: self.color_format,
             blend: Some(blend),

@@ -425,11 +425,7 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
     /// This is the primary API for compute shader integration. Use it instead
     /// of the lower-level [`set_instance_count`](Self::set_instance_count) +
     /// [`ensure_capacity`](Self::ensure_capacity) combination.
-    pub fn prepare_compute(
-        &mut self,
-        device: &wgpu::Device,
-        count: u32,
-    ) -> ComputeBufferState<'_> {
+    pub fn prepare_compute(&mut self, device: &wgpu::Device, count: u32) -> ComputeBufferState<'_> {
         self.instance_count = count;
         let reallocated = self.ensure_capacity(device, count);
         ComputeBufferState {

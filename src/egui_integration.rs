@@ -61,8 +61,6 @@ impl EguiIntegration {
         self.ctx.wants_pointer_input()
     }
 
-
-
     /// リサイズ時にスクリーン情報を更新。
     pub fn resize(&mut self, width: u32, height: u32, pixels_per_point: f32) {
         self.screen_descriptor = egui_wgpu::ScreenDescriptor {

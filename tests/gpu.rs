@@ -822,7 +822,8 @@ fn snapshot_solid_sphere() {
             scene.update(queue, &uniform);
 
             let sphere = IcoSphereMesh::generate(2);
-            let id = solid.add_object_raw(device, &sphere.positions, &sphere.normals, &sphere.indices);
+            let id =
+                solid.add_object_raw(device, &sphere.positions, &sphere.normals, &sphere.indices);
             solid.update_object_raw(
                 queue,
                 id,
