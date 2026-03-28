@@ -94,6 +94,8 @@ impl RunConfig<OrbitCamera> {
 
 impl<C: InteractiveCamera> RunConfig<C> {
     /// Creates a new config with the given camera and default values for everything else.
+    ///
+    /// Use this instead of [`Default`] when the camera type is not [`OrbitCamera`].
     pub fn with_defaults(camera: C) -> Self {
         Self {
             title: "mikage".to_string(),
