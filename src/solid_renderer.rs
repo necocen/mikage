@@ -48,7 +48,10 @@ impl ModelUniform {
 }
 
 /// A handle to a registered object in the [`SolidRenderer`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+///
+/// Obtained from [`SolidRenderer::add_object`]. Only valid for the
+/// renderer that created it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SolidObjectId(usize);
 
 /// Per-object GPU resources.
@@ -281,7 +284,10 @@ impl SolidRenderer {
         model: Mat4,
         color: Vec4,
     ) {
-        let obj = &mut self.objects[id.0];
+        let obj = self
+            .objects
+            .get_mut(id.0)
+            .expect("invalid SolidObjectId: object not found");
         obj.alpha = color.w;
         let uniform = ModelUniform::new(model, color);
         queue.write_buffer(&obj.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
