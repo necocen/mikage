@@ -1167,8 +1167,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         let pixel_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("hsv_pixels"),
             size: buf_size,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_SRC,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
 
@@ -1178,15 +1177,24 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
             width: u32,
             height: u32,
         }
-        let params_buf = UniformBuffer::new(&gpu.device, "params", &Params { width: w, height: h });
+        let params_buf = UniformBuffer::new(
+            &gpu.device,
+            "params",
+            &Params {
+                width: w,
+                height: h,
+            },
+        );
 
-        let bgl = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: None,
-            entries: &[
-                storage_buffer_entry(0, wgpu::ShaderStages::COMPUTE, false),
-                mikage::uniform_buffer_entry(1, wgpu::ShaderStages::COMPUTE),
-            ],
-        });
+        let bgl = gpu
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: None,
+                entries: &[
+                    storage_buffer_entry(0, wgpu::ShaderStages::COMPUTE, false),
+                    mikage::uniform_buffer_entry(1, wgpu::ShaderStages::COMPUTE),
+                ],
+            });
 
         let pipeline =
             create_compute_pipeline(&gpu.device, "hsv_test", &shader_src, &[&bgl], "main");
@@ -1360,13 +1368,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
                 ],
             });
 
-        let pipeline = create_compute_pipeline(
-            &gpu.device,
-            "hsv_continuity",
-            &shader_src,
-            &[&bgl],
-            "main",
-        );
+        let pipeline =
+            create_compute_pipeline(&gpu.device, "hsv_continuity", &shader_src, &[&bgl], "main");
 
         let bg = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
