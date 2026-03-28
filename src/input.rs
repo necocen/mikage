@@ -27,6 +27,11 @@ pub struct InputState {
     pub mouse_buttons_pressed: MouseButtons,
     pub mouse_buttons_released: MouseButtons,
     pub scroll_delta: f32,
+
+    // Per-event deltas (used by runner for camera dispatch, not accumulated)
+    pub(crate) event_mouse_delta: (f64, f64),
+    pub(crate) event_scroll_delta: f32,
+
     // Internal: previous mouse position for delta calculation
     prev_mouse_position: Option<(f64, f64)>,
 }
@@ -74,10 +79,14 @@ impl InputState {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let new_pos = (position.x, position.y);
-                if let Some(prev) = self.prev_mouse_position {
-                    self.mouse_delta.0 += new_pos.0 - prev.0;
-                    self.mouse_delta.1 += new_pos.1 - prev.1;
-                }
+                let delta = if let Some(prev) = self.prev_mouse_position {
+                    (new_pos.0 - prev.0, new_pos.1 - prev.1)
+                } else {
+                    (0.0, 0.0)
+                };
+                self.event_mouse_delta = delta;
+                self.mouse_delta.0 += delta.0;
+                self.mouse_delta.1 += delta.1;
                 self.prev_mouse_position = Some(new_pos);
                 self.mouse_position = new_pos;
             }
@@ -112,10 +121,12 @@ impl InputState {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                self.scroll_delta += match delta {
+                let scroll = match delta {
                     MouseScrollDelta::LineDelta(_, y) => *y,
                     MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 50.0,
                 };
+                self.event_scroll_delta = scroll;
+                self.scroll_delta += scroll;
             }
             _ => {}
         }
@@ -137,6 +148,10 @@ impl InputState {
         self.mouse_buttons_released = MouseButtons::default();
         self.mouse_delta = (0.0, 0.0);
         self.scroll_delta = 0.0;
+        self.event_mouse_delta = (0.0, 0.0);
+        self.event_scroll_delta = 0.0;
+        // Reset prev position to avoid jump delta after egui capture ends
+        self.prev_mouse_position = None;
     }
 
     pub fn is_key_down(&self, key: KeyCode) -> bool {
@@ -314,5 +329,49 @@ mod tests {
         state.handle_event(&mouse_scroll_line(2.0));
         state.handle_event(&mouse_scroll_line(3.0));
         assert_eq!(state.scroll_delta, 5.0);
+    }
+
+    #[test]
+    fn event_mouse_delta_is_per_event() {
+        let mut state = InputState::default();
+        state.handle_event(&cursor_moved(100.0, 200.0));
+        state.handle_event(&cursor_moved(110.0, 220.0));
+        // Accumulated delta is total
+        assert_eq!(state.mouse_delta, (10.0, 20.0));
+        // Per-event delta is only the last event's contribution
+        assert_eq!(state.event_mouse_delta, (10.0, 20.0));
+
+        // Third move
+        state.handle_event(&cursor_moved(115.0, 225.0));
+        // Accumulated: (10+5, 20+5) = (15, 25)
+        assert_eq!(state.mouse_delta, (15.0, 25.0));
+        // Per-event: only (5, 5)
+        assert_eq!(state.event_mouse_delta, (5.0, 5.0));
+    }
+
+    #[test]
+    fn event_scroll_delta_is_per_event() {
+        let mut state = InputState::default();
+        state.handle_event(&mouse_scroll_line(2.0));
+        assert_eq!(state.event_scroll_delta, 2.0);
+        assert_eq!(state.scroll_delta, 2.0);
+
+        state.handle_event(&mouse_scroll_line(3.0));
+        // Per-event: only 3.0
+        assert_eq!(state.event_scroll_delta, 3.0);
+        // Accumulated: 5.0
+        assert_eq!(state.scroll_delta, 5.0);
+    }
+
+    #[test]
+    fn clear_pointer_resets_prev_position() {
+        let mut state = InputState::default();
+        state.handle_event(&cursor_moved(100.0, 200.0));
+        state.clear_pointer();
+
+        // After clear, next move should not produce a jump delta
+        state.handle_event(&cursor_moved(500.0, 500.0));
+        assert_eq!(state.mouse_delta, (0.0, 0.0));
+        assert_eq!(state.event_mouse_delta, (0.0, 0.0));
     }
 }

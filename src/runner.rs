@@ -586,7 +586,7 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
             // Camera input
             match &event {
                 WindowEvent::CursorMoved { .. } => {
-                    let (dx, dy) = state.input.mouse_delta;
+                    let (dx, dy) = state.input.event_mouse_delta;
                     if dx != 0.0 || dy != 0.0 {
                         let buttons = &state.input.mouse_buttons_down;
                         state.camera.on_mouse_drag(
@@ -599,7 +599,7 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                     }
                 }
                 WindowEvent::MouseWheel { .. } => {
-                    state.camera.on_scroll(state.input.scroll_delta);
+                    state.camera.on_scroll(state.input.event_scroll_delta);
                 }
                 WindowEvent::MouseInput {
                     state: winit::event::ElementState::Released,
