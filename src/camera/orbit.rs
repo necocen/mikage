@@ -152,19 +152,30 @@ impl InteractiveCamera for OrbitCamera {
         self.is_dragging = false;
     }
 
-    fn update(&mut self, _dt: f32) {
+    fn update(&mut self, dt: f32) {
         if self.damping <= 0.0 || self.is_dragging {
             return;
         }
 
-        // Apply inertial velocity
+        // Apply inertial velocity (frame-rate independent).
+        // Velocities are per-reference-frame deltas (reference = 60fps).
+        // Use exact geometric series to compute displacement over `factor`
+        // reference frames, ensuring identical results at any frame rate.
         if self.velocity_yaw.abs() > 1e-6 || self.velocity_pitch.abs() > 1e-6 {
-            self.yaw += self.velocity_yaw;
-            self.pitch += self.velocity_pitch;
+            const REFERENCE_DT: f32 = 1.0 / 60.0;
+            let factor = dt / REFERENCE_DT;
+            let decay = self.damping.powf(factor);
+            let movement_scale = if (1.0 - self.damping).abs() > 1e-6 {
+                (1.0 - decay) / (1.0 - self.damping)
+            } else {
+                factor // limit as damping → 1.0
+            };
+            self.yaw += self.velocity_yaw * movement_scale;
+            self.pitch += self.velocity_pitch * movement_scale;
             self.pitch = self.pitch.clamp(self.min_pitch, self.max_pitch);
 
-            self.velocity_yaw *= self.damping;
-            self.velocity_pitch *= self.damping;
+            self.velocity_yaw *= decay;
+            self.velocity_pitch *= decay;
         }
     }
 

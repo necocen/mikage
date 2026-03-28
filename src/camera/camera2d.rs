@@ -170,15 +170,26 @@ impl InteractiveCamera for Camera2d {
         self.is_dragging = false;
     }
 
-    fn update(&mut self, _dt: f32) {
+    fn update(&mut self, dt: f32) {
         if self.damping <= 0.0 || self.is_dragging {
             return;
         }
 
-        // Apply inertial velocity
+        // Apply inertial velocity (frame-rate independent).
+        // velocity is a per-reference-frame delta (reference = 60fps).
+        // Use exact geometric series to compute displacement over `factor`
+        // reference frames, ensuring identical results at any frame rate.
         if self.velocity.length_squared() > 1e-12 {
-            self.position += self.velocity;
-            self.velocity *= self.damping;
+            const REFERENCE_DT: f32 = 1.0 / 60.0;
+            let factor = dt / REFERENCE_DT;
+            let decay = self.damping.powf(factor);
+            let movement_scale = if (1.0 - self.damping).abs() > 1e-6 {
+                (1.0 - decay) / (1.0 - self.damping)
+            } else {
+                factor // limit as damping → 1.0
+            };
+            self.position += self.velocity * movement_scale;
+            self.velocity *= decay;
         }
     }
 
@@ -409,6 +420,41 @@ mod tests {
         }
         // After many iterations velocity should be very small
         assert!(cam.velocity.length() < 1e-4);
+    }
+
+    #[test]
+    fn damping_is_framerate_independent() {
+        // Same initial velocity, different frame rates → same final position after 1 second
+        let make_cam = || {
+            let mut cam = Camera2d::default();
+            cam.damping = 0.9;
+            cam.set_viewport_size(1600, 800);
+            cam.on_mouse_drag(100.0, 0.0, true, false, false);
+            cam.on_drag_end();
+            cam
+        };
+
+        // 60 fps
+        let mut cam60 = make_cam();
+        for _ in 0..60 {
+            cam60.update(1.0 / 60.0);
+        }
+
+        // 30 fps
+        let mut cam30 = make_cam();
+        for _ in 0..30 {
+            cam30.update(1.0 / 30.0);
+        }
+
+        // Positions should be approximately equal (within 1% of the 60fps position)
+        let diff = (cam60.position - cam30.position).length();
+        let magnitude = cam60.position.length().max(0.001);
+        assert!(
+            diff / magnitude < 0.01,
+            "30fps pos {:?} vs 60fps pos {:?}, diff={diff}",
+            cam30.position,
+            cam60.position
+        );
     }
 
     #[test]
