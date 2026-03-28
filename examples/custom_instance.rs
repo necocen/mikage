@@ -51,8 +51,7 @@ impl CustomInstanceApp {
         // Pentagon mesh
         let mesh = RegularPolygonMesh::generate(5);
         let renderer = InstanceRenderer::<RotatedInstance>::with_shader(
-            &ctx.device,
-            ctx.render_format(),
+            ctx,
             scene.layout(),
             &mesh.positions,
             &mesh.normals,
@@ -62,7 +61,6 @@ impl CustomInstanceApp {
                 vertex_entry: "vertex",
                 fragment_entry: "fragment",
                 depth: false,
-                sample_count: 1,
                 storage_binding: false,
             },
         );
@@ -122,22 +120,18 @@ impl App for CustomInstanceApp {
     }
 
     fn encode(&mut self, ctx: &mut FrameContext<Camera2d>) {
+        let color_attachment = ctx.color_attachment(wgpu::Operations {
+            load: wgpu::LoadOp::Clear(wgpu::Color {
+                r: 0.08,
+                g: 0.08,
+                b: 0.12,
+                a: 1.0,
+            }),
+            store: wgpu::StoreOp::Store,
+        });
         let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("custom_instance_pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: ctx.surface_view,
-                resolve_target: None,
-                depth_slice: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 0.08,
-                        g: 0.08,
-                        b: 0.12,
-                        a: 1.0,
-                    }),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
+            color_attachments: &[Some(color_attachment)],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,

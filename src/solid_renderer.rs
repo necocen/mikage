@@ -8,7 +8,7 @@
 //! # Example
 //!
 //! ```ignore
-//! let mut solid = SolidRenderer::new(&device, render_format, &scene_bind_group_layout);
+//! let mut solid = SolidRenderer::new(&ctx, &scene_bind_group_layout);
 //!
 //! let cube = mikage::CubeMesh::generate();
 //! let id = solid.add_object(&device, &cube.positions, &cube.normals, &cube.indices);
@@ -83,10 +83,22 @@ impl SolidRenderer {
     /// `scene_bind_group_layout` is the layout for `@group(0)` containing
     /// a [`SceneUniform`](crate::SceneUniform) buffer. This must match the
     /// bind group you set at group 0 before calling [`render`](SolidRenderer::render).
-    pub fn new(
+    pub fn new(gpu: &crate::GpuContext, scene_bind_group_layout: &wgpu::BindGroupLayout) -> Self {
+        Self::from_parts(
+            &gpu.device,
+            gpu.render_format(),
+            scene_bind_group_layout,
+            gpu.sample_count(),
+        )
+    }
+
+    /// Low-level constructor. Prefer [`new`](Self::new) which takes `&GpuContext`.
+    #[doc(hidden)]
+    pub fn from_parts(
         device: &wgpu::Device,
         render_format: wgpu::TextureFormat,
         scene_bind_group_layout: &wgpu::BindGroupLayout,
+        sample_count: u32,
     ) -> Self {
         // Model bind group layout: single uniform buffer at binding 0
         let model_bind_group_layout =
@@ -139,7 +151,7 @@ impl SolidRenderer {
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState {
-                count: 1,
+                count: sample_count,
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
@@ -184,7 +196,7 @@ impl SolidRenderer {
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState {
-                count: 1,
+                count: sample_count,
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },

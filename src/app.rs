@@ -7,18 +7,38 @@ use crate::input::InputState;
 /// Context for encoding GPU command passes (compute and render).
 ///
 /// Passed to [`App::encode`]. Encode compute passes and/or render passes on `encoder`.
-/// Draw to `surface_view` for rendering. Access device/queue via `gpu.device` / `gpu.queue`.
+/// Use [`color_attachment()`](FrameContext::color_attachment) to build the color attachment
+/// for render passes. Access device/queue via `ctx.gpu.device` / `ctx.gpu.queue`.
 pub struct FrameContext<'a, C: Camera> {
     /// GPU context. Access `gpu.device` and `gpu.queue`.
     pub gpu: &'a GpuContext,
     /// Command encoder. Record compute and render passes here.
     pub encoder: &'a mut wgpu::CommandEncoder,
-    /// The surface texture view for this frame. Use as the color attachment target.
-    pub surface_view: &'a wgpu::TextureView,
+    /// The color attachment view (MSAA multisampled when enabled).
+    pub(crate) surface_view: &'a wgpu::TextureView,
+    /// The resolve target for MSAA (`Some` when enabled).
+    pub(crate) resolve_target: Option<&'a wgpu::TextureView>,
     /// Current window size in pixels.
     pub window_size: PhysicalSize<u32>,
     /// The active camera (read-only). Use for view/projection matrices.
     pub camera: &'a C,
+}
+
+impl<'a, C: Camera> FrameContext<'a, C> {
+    /// Creates a [`RenderPassColorAttachment`](wgpu::RenderPassColorAttachment) that
+    /// correctly handles MSAA resolve. When `sample_count > 1`, the multisample
+    /// texture is used as the view and the surface texture is set as the resolve target.
+    pub fn color_attachment(
+        &self,
+        ops: wgpu::Operations<wgpu::Color>,
+    ) -> wgpu::RenderPassColorAttachment<'a> {
+        wgpu::RenderPassColorAttachment {
+            view: self.surface_view,
+            resolve_target: self.resolve_target,
+            depth_slice: None,
+            ops,
+        }
+    }
 }
 
 /// Context for per-frame logic updates.
@@ -69,7 +89,8 @@ pub trait App: 'static {
 
     /// Called every frame to encode GPU command passes.
     ///
-    /// Encode compute passes and render passes here. Draw to `ctx.surface_view`.
+    /// Encode compute passes and render passes here. Use
+    /// [`ctx.color_attachment()`](FrameContext::color_attachment) for render pass color attachments.
     /// Access device/queue via `ctx.gpu.device` / `ctx.gpu.queue`.
     /// The framework renders egui on top after [`gui`](App::gui), so you don't
     /// need to handle egui rendering here.

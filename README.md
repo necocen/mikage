@@ -30,17 +30,13 @@ impl App for MyApp {
     fn update(&mut self, _ctx: &mut UpdateContext<OrbitCamera>) {}
 
     fn encode(&mut self, ctx: &mut FrameContext<OrbitCamera>) {
+        let color_attachment = ctx.color_attachment(wgpu::Operations {
+            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+            store: wgpu::StoreOp::Store,
+        });
         let _pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("clear"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: ctx.surface_view,
-                resolve_target: None,
-                depth_slice: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
+            color_attachments: &[Some(color_attachment)],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
@@ -106,7 +102,7 @@ winit events → InputState → egui input
 ### `FrameContext<C: Camera>`
 - `gpu: &GpuContext` — device / queue (`gpu.device`, `gpu.queue`)
 - `encoder` — encode compute and render passes
-- `surface_view` — render target
+- `color_attachment(ops)` — build `RenderPassColorAttachment` with correct MSAA resolve
 - `window_size` — current window size
 - `camera: &C` — read-only camera
 

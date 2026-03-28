@@ -87,7 +87,7 @@ impl OrbitCameraApp {
             });
 
         // Depth texture
-        let (_, depth_view) = create_depth_texture(&ctx.device, size, DEPTH_FORMAT);
+        let (_, depth_view) = create_depth_texture(ctx, size, DEPTH_FORMAT);
 
         Self {
             render_pipeline,
@@ -110,22 +110,18 @@ impl App for OrbitCameraApp {
     }
 
     fn encode(&mut self, ctx: &mut FrameContext<OrbitCamera>) {
+        let color_attachment = ctx.color_attachment(wgpu::Operations {
+            load: wgpu::LoadOp::Clear(wgpu::Color {
+                r: 0.05,
+                g: 0.05,
+                b: 0.08,
+                a: 1.0,
+            }),
+            store: wgpu::StoreOp::Store,
+        });
         let mut render_pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("main_pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: ctx.surface_view,
-                resolve_target: None,
-                depth_slice: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 0.05,
-                        g: 0.05,
-                        b: 0.08,
-                        a: 1.0,
-                    }),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
+            color_attachments: &[Some(color_attachment)],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &self.depth_view,
                 depth_ops: Some(wgpu::Operations {
@@ -157,7 +153,7 @@ impl App for OrbitCameraApp {
     }
 
     fn resize(&mut self, ctx: &GpuContext, new_size: PhysicalSize<u32>) {
-        let (_, depth_view) = create_depth_texture(&ctx.device, new_size, DEPTH_FORMAT);
+        let (_, depth_view) = create_depth_texture(ctx, new_size, DEPTH_FORMAT);
         self.depth_view = depth_view;
     }
 }

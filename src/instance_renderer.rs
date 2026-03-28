@@ -9,7 +9,7 @@
 //! ```ignore
 //! let hex = mikage::RegularPolygonMesh::generate(6);
 //! let mut renderer = InstanceRenderer::new(
-//!     &device, render_format, &scene_bgl,
+//!     &ctx, scene.layout(),
 //!     &hex.positions, &hex.normals, &hex.indices,
 //!     InstanceRendererConfig::default_2d(),
 //! );
@@ -43,7 +43,7 @@
 //! }
 //!
 //! let renderer = InstanceRenderer::<TileInstance>::with_shader(
-//!     &device, render_format, &scene_bgl,
+//!     &ctx, scene.layout(),
 //!     &mesh.positions, &mesh.normals, &mesh.indices,
 //!     &resolved_shader_source,
 //!     InstanceRendererConfig::default_2d(),
@@ -98,43 +98,39 @@ impl InstanceVertex for InstanceData {
 }
 
 /// Configuration for creating an [`InstanceRenderer`].
-pub struct InstanceRendererConfig<'a> {
+pub struct InstanceRendererConfig {
     /// Vertex shader entry point name.
-    pub vertex_entry: &'a str,
+    pub vertex_entry: &'static str,
     /// Fragment shader entry point name.
-    pub fragment_entry: &'a str,
+    pub fragment_entry: &'static str,
     /// Enable depth testing/writing.
     pub depth: bool,
-    /// Multisample count (1 = no MSAA).
-    pub sample_count: u32,
     /// Add `STORAGE` usage to the instance buffer so compute shaders can write to it.
     /// Disable this for WebGL2 compatibility. Default: `false`.
     pub storage_binding: bool,
 }
 
-impl InstanceRendererConfig<'_> {
-    /// Configuration for 3D rendering: lit shading, depth enabled, no MSAA.
+impl InstanceRendererConfig {
+    /// Configuration for 3D rendering: lit shading, depth enabled.
     ///
     /// Uses the built-in instancing shader entry points (`vertex` / `fragment_lit`).
-    pub fn default_3d() -> InstanceRendererConfig<'static> {
+    pub fn default_3d() -> InstanceRendererConfig {
         InstanceRendererConfig {
             vertex_entry: "vertex",
             fragment_entry: "fragment_lit",
             depth: true,
-            sample_count: 1,
             storage_binding: false,
         }
     }
 
-    /// Configuration for 2D rendering: unlit shading, no depth, no MSAA.
+    /// Configuration for 2D rendering: unlit shading, no depth.
     ///
     /// Uses the built-in instancing shader entry points (`vertex` / `fragment_unlit`).
-    pub fn default_2d() -> InstanceRendererConfig<'static> {
+    pub fn default_2d() -> InstanceRendererConfig {
         InstanceRendererConfig {
             vertex_entry: "vertex",
             fragment_entry: "fragment_unlit",
             depth: false,
-            sample_count: 1,
             storage_binding: false,
         }
     }
@@ -169,18 +165,42 @@ impl InstanceRenderer<InstanceData> {
     /// (position + scale + color). For custom vertex types, use
     /// [`with_shader`](InstanceRenderer::with_shader).
     pub fn new(
-        device: &wgpu::Device,
-        render_format: wgpu::TextureFormat,
+        gpu: &crate::GpuContext,
         scene_bind_group_layout: &wgpu::BindGroupLayout,
         positions: &[[f32; 3]],
         normals: &[[f32; 3]],
         indices: &[u32],
         config: InstanceRendererConfig,
     ) -> Self {
+        Self::from_parts(
+            &gpu.device,
+            gpu.render_format(),
+            scene_bind_group_layout,
+            positions,
+            normals,
+            indices,
+            gpu.sample_count(),
+            config,
+        )
+    }
+
+    /// Low-level constructor with built-in shader. Prefer [`new`](Self::new) which takes `&GpuContext`.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts(
+        device: &wgpu::Device,
+        render_format: wgpu::TextureFormat,
+        scene_bind_group_layout: &wgpu::BindGroupLayout,
+        positions: &[[f32; 3]],
+        normals: &[[f32; 3]],
+        indices: &[u32],
+        sample_count: u32,
+        config: InstanceRendererConfig,
+    ) -> Self {
         let resolved = mikage_shader_processor()
             .resolve(SHADER_SOURCE)
             .expect("failed to resolve instancing shader imports");
-        Self::with_shader(
+        Self::with_shader_from_parts(
             device,
             render_format,
             scene_bind_group_layout,
@@ -188,6 +208,7 @@ impl InstanceRenderer<InstanceData> {
             normals,
             indices,
             &resolved,
+            sample_count,
             config,
         )
     }
@@ -201,8 +222,32 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
     ///
     /// The shader must declare vertex attributes matching `V::vertex_attributes()`
     /// at the expected shader locations (starting at 2).
-    #[allow(clippy::too_many_arguments)]
     pub fn with_shader(
+        gpu: &crate::GpuContext,
+        scene_bind_group_layout: &wgpu::BindGroupLayout,
+        positions: &[[f32; 3]],
+        normals: &[[f32; 3]],
+        indices: &[u32],
+        shader_source: &str,
+        config: InstanceRendererConfig,
+    ) -> Self {
+        Self::with_shader_from_parts(
+            &gpu.device,
+            gpu.render_format(),
+            scene_bind_group_layout,
+            positions,
+            normals,
+            indices,
+            shader_source,
+            gpu.sample_count(),
+            config,
+        )
+    }
+
+    /// Low-level constructor. Prefer [`with_shader`](Self::with_shader) which takes `&GpuContext`.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_shader_from_parts(
         device: &wgpu::Device,
         render_format: wgpu::TextureFormat,
         scene_bind_group_layout: &wgpu::BindGroupLayout,
@@ -210,6 +255,7 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
         normals: &[[f32; 3]],
         indices: &[u32],
         shader_source: &str,
+        sample_count: u32,
         config: InstanceRendererConfig,
     ) -> Self {
         let mesh = MeshBuffers::from_position_normal(device, positions, normals, indices);
@@ -277,7 +323,7 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
             },
             depth_stencil,
             multisample: wgpu::MultisampleState {
-                count: config.sample_count,
+                count: sample_count,
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
@@ -378,9 +424,7 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
         self.instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("instance_data_buffer"),
             size: (new_cap as u64) * instance_stride,
-            usage: wgpu::BufferUsages::VERTEX
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::STORAGE,
+            usage: self.instance_buffer_usage,
             mapped_at_creation: false,
         });
         self.instance_capacity = new_cap;

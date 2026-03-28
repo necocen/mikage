@@ -15,8 +15,7 @@ impl Instancing2dApp {
 
         let hex = RegularPolygonMesh::generate(6);
         let renderer = InstanceRenderer::new(
-            &ctx.device,
-            ctx.render_format(),
+            ctx,
             scene.layout(),
             &hex.positions,
             &hex.normals,
@@ -79,22 +78,18 @@ impl App for Instancing2dApp {
     }
 
     fn encode(&mut self, ctx: &mut FrameContext<Camera2d>) {
+        let color_attachment = ctx.color_attachment(wgpu::Operations {
+            load: wgpu::LoadOp::Clear(wgpu::Color {
+                r: 0.1,
+                g: 0.1,
+                b: 0.15,
+                a: 1.0,
+            }),
+            store: wgpu::StoreOp::Store,
+        });
         let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("instancing_2d_pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: ctx.surface_view,
-                resolve_target: None,
-                depth_slice: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 0.1,
-                        g: 0.1,
-                        b: 0.15,
-                        a: 1.0,
-                    }),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
+            color_attachments: &[Some(color_attachment)],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,

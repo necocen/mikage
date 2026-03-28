@@ -266,13 +266,14 @@ fn instance_renderer_2d_creation() {
     gpu_test!(|gpu: GpuTest| {
         let scene = SceneBinding::new(&gpu.device);
         let quad = QuadMesh2d::generate();
-        let _renderer = InstanceRenderer::new(
+        let _renderer = InstanceRenderer::from_parts(
             &gpu.device,
             RENDER_FORMAT,
             scene.layout(),
             &quad.positions,
             &quad.normals,
             &quad.indices,
+            1,
             InstanceRendererConfig::default_2d(),
         );
     });
@@ -283,13 +284,14 @@ fn instance_renderer_3d_creation() {
     gpu_test!(|gpu: GpuTest| {
         let scene = SceneBinding::new(&gpu.device);
         let sphere = IcoSphereMesh::generate(1);
-        let _renderer = InstanceRenderer::new(
+        let _renderer = InstanceRenderer::from_parts(
             &gpu.device,
             RENDER_FORMAT,
             scene.layout(),
             &sphere.positions,
             &sphere.normals,
             &sphere.indices,
+            1,
             InstanceRendererConfig::default_3d(),
         );
     });
@@ -299,7 +301,7 @@ fn instance_renderer_3d_creation() {
 fn solid_renderer_creation() {
     gpu_test!(|gpu: GpuTest| {
         let scene = SceneBinding::new(&gpu.device);
-        let _solid = SolidRenderer::new(&gpu.device, RENDER_FORMAT, scene.layout());
+        let _solid = SolidRenderer::from_parts(&gpu.device, RENDER_FORMAT, scene.layout(), 1);
     });
 }
 
@@ -307,7 +309,7 @@ fn solid_renderer_creation() {
 fn solid_renderer_add_and_update_object() {
     gpu_test!(|gpu: GpuTest| {
         let scene = SceneBinding::new(&gpu.device);
-        let mut solid = SolidRenderer::new(&gpu.device, RENDER_FORMAT, scene.layout());
+        let mut solid = SolidRenderer::from_parts(&gpu.device, RENDER_FORMAT, scene.layout(), 1);
         let cube = CubeMesh::generate();
         let id = solid.add_object(&gpu.device, &cube.positions, &cube.normals, &cube.indices);
         solid.update_object(
@@ -384,13 +386,14 @@ fn instance_renderer_draws_pixels() {
         let normals: Vec<[f32; 3]> = vec![[0.0, 0.0, 1.0]; 4];
         let indices: Vec<u32> = vec![0, 1, 2, 0, 2, 3];
 
-        let mut renderer = InstanceRenderer::new(
+        let mut renderer = InstanceRenderer::from_parts(
             &gpu.device,
             RENDER_FORMAT,
             scene.layout(),
             &positions,
             &normals,
             &indices,
+            1,
             InstanceRendererConfig::default_2d(),
         );
 
@@ -451,7 +454,7 @@ fn solid_renderer_draws_pixels() {
         let uniform = SceneUniform::new(glam::Mat4::IDENTITY, glam::Vec3::ZERO);
         scene.update(&gpu.queue, &uniform);
 
-        let mut solid = SolidRenderer::new(&gpu.device, RENDER_FORMAT, scene.layout());
+        let mut solid = SolidRenderer::from_parts(&gpu.device, RENDER_FORMAT, scene.layout(), 1);
 
         // Full-screen quad facing camera
         let positions: Vec<[f32; 3]> = vec![
@@ -520,13 +523,14 @@ fn instance_renderer_update_and_regrow() {
     gpu_test!(|gpu: GpuTest| {
         let scene = SceneBinding::new(&gpu.device);
         let hex = RegularPolygonMesh::generate(6);
-        let mut renderer = InstanceRenderer::new(
+        let mut renderer = InstanceRenderer::from_parts(
             &gpu.device,
             RENDER_FORMAT,
             scene.layout(),
             &hex.positions,
             &hex.normals,
             &hex.indices,
+            1,
             InstanceRendererConfig::default_2d(),
         );
 
@@ -676,7 +680,7 @@ fn render_solid(
     setup: impl FnOnce(&mut SolidRenderer, &SceneBinding, &wgpu::Device, &wgpu::Queue),
 ) -> Vec<u8> {
     let scene = SceneBinding::new(&gpu.device);
-    let mut solid = SolidRenderer::new(&gpu.device, RENDER_FORMAT, scene.layout());
+    let mut solid = SolidRenderer::from_parts(&gpu.device, RENDER_FORMAT, scene.layout(), 1);
     setup(&mut solid, &scene, &gpu.device, &gpu.queue);
 
     let (tex, color_view) = create_color_texture(&gpu.device, w, h);
@@ -726,13 +730,14 @@ fn render_instances_2d(
     let scene = SceneBinding::new(&gpu.device);
     scene.update(&gpu.queue, scene_uniform);
 
-    let mut renderer = InstanceRenderer::new(
+    let mut renderer = InstanceRenderer::from_parts(
         &gpu.device,
         RENDER_FORMAT,
         scene.layout(),
         positions,
         normals,
         indices,
+        1,
         InstanceRendererConfig::default_2d(),
     );
     renderer.update_instances(&gpu.device, &gpu.queue, instances);

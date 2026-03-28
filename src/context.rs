@@ -18,6 +18,8 @@ pub struct GpuContext {
     surface_config: wgpu::SurfaceConfiguration,
     /// MSAA sample count for render pipelines.
     sample_count: u32,
+    /// Multisample render target (None if sample_count == 1).
+    msaa_texture_view: Option<wgpu::TextureView>,
 }
 
 impl GpuContext {
@@ -156,6 +158,18 @@ impl GpuContext {
         };
         surface.configure(&device, &surface_config);
 
+        let msaa_texture_view = if sample_count > 1 {
+            Some(Self::create_msaa_texture(
+                &device,
+                view_format,
+                width,
+                height,
+                sample_count,
+            ))
+        } else {
+            None
+        };
+
         Self {
             device,
             queue,
@@ -163,6 +177,7 @@ impl GpuContext {
             render_format: view_format,
             surface,
             surface_config,
+            msaa_texture_view,
             sample_count,
         }
     }
@@ -172,6 +187,15 @@ impl GpuContext {
             self.surface_config.width = new_size.width;
             self.surface_config.height = new_size.height;
             self.surface.configure(&self.device, &self.surface_config);
+            if self.sample_count > 1 {
+                self.msaa_texture_view = Some(Self::create_msaa_texture(
+                    &self.device,
+                    self.render_format,
+                    new_size.width,
+                    new_size.height,
+                    self.sample_count,
+                ));
+            }
         }
     }
 
@@ -198,5 +222,37 @@ impl GpuContext {
     /// Returns the current surface size in pixels.
     pub fn window_size(&self) -> PhysicalSize<u32> {
         PhysicalSize::new(self.surface_config.width, self.surface_config.height)
+    }
+
+    /// Returns the MSAA texture view if `sample_count > 1`, or `None`.
+    ///
+    /// When MSAA is enabled, use this as the render pass color attachment `view`
+    /// and the surface texture view as `resolve_target`.
+    pub fn msaa_view(&self) -> Option<&wgpu::TextureView> {
+        self.msaa_texture_view.as_ref()
+    }
+
+    fn create_msaa_texture(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+        sample_count: u32,
+    ) -> wgpu::TextureView {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("msaa_texture"),
+            size: wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        texture.create_view(&wgpu::TextureViewDescriptor::default())
     }
 }

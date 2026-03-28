@@ -151,8 +151,7 @@ impl BoidsApp {
         // Triangle mesh (pointing right = +X)
         let mesh = RegularPolygonMesh::generate(3);
         let mut renderer = InstanceRenderer::<RotatedInstance>::with_shader(
-            device,
-            ctx.render_format(),
+            ctx,
             tile_scenes[0].layout(),
             &mesh.positions,
             &mesh.normals,
@@ -162,7 +161,6 @@ impl BoidsApp {
                 vertex_entry: "vertex",
                 fragment_entry: "fragment",
                 depth: false,
-                sample_count: 1,
                 storage_binding: true,
             },
         );
@@ -328,22 +326,18 @@ impl App for BoidsApp {
         }
 
         // Render pass
+        let color_attachment = ctx.color_attachment(wgpu::Operations {
+            load: wgpu::LoadOp::Clear(wgpu::Color {
+                r: 0.02,
+                g: 0.02,
+                b: 0.06,
+                a: 1.0,
+            }),
+            store: wgpu::StoreOp::Store,
+        });
         let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("boids_render_pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: ctx.surface_view,
-                resolve_target: None,
-                depth_slice: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 0.02,
-                        g: 0.02,
-                        b: 0.06,
-                        a: 1.0,
-                    }),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
+            color_attachments: &[Some(color_attachment)],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,

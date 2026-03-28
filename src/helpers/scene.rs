@@ -7,12 +7,14 @@ use crate::camera::Camera;
 ///
 /// Typically called in the factory closure and
 /// [`App::resize`](crate::App::resize). Use [`DEPTH_FORMAT`] as the format.
+/// The sample count is automatically matched to
+/// [`GpuContext::sample_count`](crate::GpuContext::sample_count).
 pub fn create_depth_texture(
-    device: &wgpu::Device,
+    gpu: &crate::GpuContext,
     size: PhysicalSize<u32>,
     format: wgpu::TextureFormat,
 ) -> (wgpu::Texture, wgpu::TextureView) {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
+    let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("depth_texture"),
         size: wgpu::Extent3d {
             width: size.width.max(1),
@@ -20,7 +22,7 @@ pub fn create_depth_texture(
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
-        sample_count: 1,
+        sample_count: gpu.sample_count(),
         dimension: wgpu::TextureDimension::D2,
         format,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
@@ -107,7 +109,7 @@ impl SceneUniform {
 /// let scene = SceneBinding::new(&device);
 ///
 /// // Pass the layout to renderers:
-/// let renderer = InstanceRenderer::new(&device, fmt, scene.layout(), ...);
+/// let renderer = InstanceRenderer::new(&ctx, scene.layout(), ...);
 ///
 /// // Update each frame:
 /// scene.update_from_camera(&queue, &camera, aspect);

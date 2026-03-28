@@ -18,8 +18,7 @@ impl Instancing3dApp {
 
         let sphere = IcoSphereMesh::generate(1);
         let renderer = InstanceRenderer::new(
-            &ctx.device,
-            ctx.render_format(),
+            ctx,
             scene.layout(),
             &sphere.positions,
             &sphere.normals,
@@ -27,7 +26,7 @@ impl Instancing3dApp {
             InstanceRendererConfig::default_3d(),
         );
 
-        let (_, depth_view) = create_depth_texture(&ctx.device, size, DEPTH_FORMAT);
+        let (_, depth_view) = create_depth_texture(ctx, size, DEPTH_FORMAT);
 
         Self {
             renderer,
@@ -83,22 +82,18 @@ impl App for Instancing3dApp {
     }
 
     fn encode(&mut self, ctx: &mut FrameContext<OrbitCamera>) {
+        let color_attachment = ctx.color_attachment(wgpu::Operations {
+            load: wgpu::LoadOp::Clear(wgpu::Color {
+                r: 0.02,
+                g: 0.02,
+                b: 0.05,
+                a: 1.0,
+            }),
+            store: wgpu::StoreOp::Store,
+        });
         let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("instancing_3d_pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: ctx.surface_view,
-                resolve_target: None,
-                depth_slice: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 0.02,
-                        g: 0.02,
-                        b: 0.05,
-                        a: 1.0,
-                    }),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
+            color_attachments: &[Some(color_attachment)],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &self.depth_view,
                 depth_ops: Some(wgpu::Operations {
@@ -124,7 +119,7 @@ impl App for Instancing3dApp {
     }
 
     fn resize(&mut self, ctx: &GpuContext, new_size: PhysicalSize<u32>) {
-        let (_, depth_view) = create_depth_texture(&ctx.device, new_size, DEPTH_FORMAT);
+        let (_, depth_view) = create_depth_texture(ctx, new_size, DEPTH_FORMAT);
         self.depth_view = depth_view;
     }
 }

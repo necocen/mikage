@@ -705,6 +705,11 @@ fn render_frame<A: App>(app: &mut A, state: &mut RunState<A::Camera>) {
             ..Default::default()
         });
 
+    // MSAA: App は msaa_view に描画し、surface_view に resolve する。
+    // sample_count == 1 の場合は surface_view に直接描画。
+    let render_view = state.gpu.msaa_view().unwrap_or(&surface_view);
+    let resolve_target = state.gpu.msaa_view().map(|_| &surface_view);
+
     let mut encoder = state
         .gpu
         .device
@@ -717,7 +722,8 @@ fn render_frame<A: App>(app: &mut A, state: &mut RunState<A::Camera>) {
         let mut frame_ctx = FrameContext {
             gpu: &state.gpu,
             encoder: &mut encoder,
-            surface_view: &surface_view,
+            surface_view: render_view,
+            resolve_target,
             window_size: size,
             camera: &state.camera,
         };
