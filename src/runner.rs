@@ -53,8 +53,9 @@ pub struct RunConfig<C: InteractiveCamera = OrbitCamera> {
     /// Set to `false` if you initialize your own tracing subscriber.
     pub init_logging: bool,
     /// MSAA sample count for render pipelines. Default: 1 (no MSAA).
-    /// Typical values: 1, 4. The framework stores this value and exposes it
-    /// via [`GpuContext::sample_count`](crate::GpuContext::sample_count);
+    /// Must be `1` (no MSAA) or `4` (4× MSAA); other values will panic
+    /// at startup. The framework stores this value and exposes it via
+    /// [`GpuContext::sample_count`](crate::GpuContext::sample_count);
     /// applications use it when creating render pipelines.
     pub sample_count: u32,
     /// CSS selector for an existing `<canvas>` element (e.g., `"#my-canvas"`).

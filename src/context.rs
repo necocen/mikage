@@ -91,6 +91,11 @@ impl GpuContext {
         required_limits: Option<wgpu::Limits>,
         sample_count: u32,
     ) -> Self {
+        assert!(
+            sample_count == 1 || sample_count == 4,
+            "sample_count must be 1 or 4, got {sample_count}"
+        );
+
         let size = window.inner_size();
         tracing::info!("Initial window size: {}x{}", size.width, size.height);
 
