@@ -74,7 +74,7 @@ mod time;
 
 pub use app::{App, FrameContext, UpdateContext};
 pub use camera::{Camera, Camera2d, InteractiveCamera, OrbitCamera};
-pub use context::GpuContext;
+pub use context::{GpuContext, RenderTargetConfig};
 pub use helpers::{
     CubeMesh, DEPTH_FORMAT, IcoSphereMesh, MeshBuffers, POSITION_NORMAL_LAYOUT, PlaneMesh,
     QuadMesh2d, RegularPolygonMesh, SceneBinding, SceneUniform, UniformBuffer,

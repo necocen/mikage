@@ -2,6 +2,70 @@ use std::sync::Arc;
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
+/// Render target configuration for building pipelines.
+///
+/// Bundles color format, depth format, and MSAA sample count so that
+/// pipeline creation stays consistent with the framework's surface and
+/// MSAA settings. Obtain via [`GpuContext::render_target_config()`].
+///
+/// # Example
+///
+/// ```ignore
+/// let rt = ctx.render_target_config();
+/// let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+///     fragment: Some(wgpu::FragmentState {
+///         targets: &[Some(rt.color_target_state(wgpu::BlendState::REPLACE))],
+///         ..
+///     }),
+///     depth_stencil: Some(rt.depth_stencil_state()),
+///     multisample: rt.multisample_state(),
+///     ..
+/// });
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct RenderTargetConfig {
+    /// The color format to use in `ColorTargetState`.
+    pub color_format: wgpu::TextureFormat,
+    /// The depth format. Matches [`DEPTH_FORMAT`](crate::DEPTH_FORMAT).
+    pub depth_format: wgpu::TextureFormat,
+    /// MSAA sample count.
+    pub sample_count: u32,
+}
+
+impl RenderTargetConfig {
+    /// Builds a [`ColorTargetState`](wgpu::ColorTargetState) with the given blend mode.
+    pub fn color_target_state(
+        &self,
+        blend: wgpu::BlendState,
+    ) -> wgpu::ColorTargetState {
+        wgpu::ColorTargetState {
+            format: self.color_format,
+            blend: Some(blend),
+            write_mask: wgpu::ColorWrites::ALL,
+        }
+    }
+
+    /// Builds a [`MultisampleState`](wgpu::MultisampleState) matching the configured sample count.
+    pub fn multisample_state(&self) -> wgpu::MultisampleState {
+        wgpu::MultisampleState {
+            count: self.sample_count,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        }
+    }
+
+    /// Builds a [`DepthStencilState`](wgpu::DepthStencilState) with depth test/write enabled.
+    pub fn depth_stencil_state(&self) -> wgpu::DepthStencilState {
+        wgpu::DepthStencilState {
+            format: self.depth_format,
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::Less,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }
+    }
+}
+
 /// GPU context holding wgpu Device, Queue, and Surface.
 ///
 /// Created and managed by the framework. Passed to [`App`](crate::App) methods.
@@ -217,6 +281,18 @@ impl GpuContext {
     /// Use this value in `MultisampleState::count` when creating render pipelines.
     pub fn sample_count(&self) -> u32 {
         self.sample_count
+    }
+
+    /// Returns the render target configuration for building pipelines.
+    ///
+    /// Bundles color format, depth format, and sample count so that
+    /// custom pipeline creation stays consistent with the framework.
+    pub fn render_target_config(&self) -> RenderTargetConfig {
+        RenderTargetConfig {
+            color_format: self.render_format,
+            depth_format: crate::DEPTH_FORMAT,
+            sample_count: self.sample_count,
+        }
     }
 
     /// Returns the current surface size in pixels.

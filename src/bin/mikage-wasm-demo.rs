@@ -1,6 +1,6 @@
 use mikage::{
-    App, DEPTH_FORMAT, FrameContext, GpuContext, MeshBuffers, OrbitCamera, POSITION_NORMAL_LAYOUT,
-    RunConfig, SceneBinding, ShaderProcessor, UpdateContext, create_depth_texture,
+    App, FrameContext, GpuContext, MeshBuffers, OrbitCamera, POSITION_NORMAL_LAYOUT, RunConfig,
+    SceneBinding, ShaderProcessor, UpdateContext, create_depth_texture,
 };
 use winit::dpi::PhysicalSize;
 
@@ -22,6 +22,7 @@ impl DemoApp {
             &sphere.indices,
         );
 
+        let rt = ctx.render_target_config();
         let scene = SceneBinding::new(&ctx.device);
 
         let sp = ShaderProcessor::new();
@@ -57,11 +58,7 @@ impl DemoApp {
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
                     entry_point: Some("fs_main"),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: ctx.render_format(),
-                        blend: Some(wgpu::BlendState::REPLACE),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
+                    targets: &[Some(rt.color_target_state(wgpu::BlendState::REPLACE))],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 }),
                 primitive: wgpu::PrimitiveState {
@@ -70,19 +67,13 @@ impl DemoApp {
                     cull_mode: Some(wgpu::Face::Back),
                     ..Default::default()
                 },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: DEPTH_FORMAT,
-                    depth_write_enabled: true,
-                    depth_compare: wgpu::CompareFunction::Less,
-                    stencil: wgpu::StencilState::default(),
-                    bias: wgpu::DepthBiasState::default(),
-                }),
-                multisample: wgpu::MultisampleState::default(),
+                depth_stencil: Some(rt.depth_stencil_state()),
+                multisample: rt.multisample_state(),
                 multiview: None,
                 cache: None,
             });
 
-        let (_, depth_view) = create_depth_texture(ctx, size, DEPTH_FORMAT);
+        let (_, depth_view) = create_depth_texture(ctx, size, rt.depth_format);
 
         Self {
             render_pipeline,
@@ -145,7 +136,7 @@ impl App for DemoApp {
     }
 
     fn resize(&mut self, ctx: &GpuContext, new_size: PhysicalSize<u32>) {
-        let (_, depth_view) = create_depth_texture(ctx, new_size, DEPTH_FORMAT);
+        let (_, depth_view) = create_depth_texture(ctx, new_size, mikage::DEPTH_FORMAT);
         self.depth_view = depth_view;
     }
 }
