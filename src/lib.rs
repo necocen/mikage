@@ -39,8 +39,8 @@
 //! - **Raw wgpu access**: The framework manages the surface; you create your own pipelines and buffers.
 //! - **Compute shaders**: Encode compute passes in [`App::encode`], before render passes.
 //! - **egui integration**: Build UI in [`App::gui`]. Input lock between egui and camera is automatic.
-//! - **Camera system**: [`Camera`] trait with a built-in [`OrbitCamera`] implementation.
-//! - **Multi-platform**: Native (Metal/Vulkan/DX12) and WASM (WebGPU).
+//! - **Camera system**: [`Camera`] trait with built-in [`OrbitCamera`] and [`Camera2d`]. Touch and trackpad gestures supported.
+//! - **Multi-platform**: Native (Metal/Vulkan/DX12) and WASM (WebGPU, with optional WebGL2 fallback via `webgl` feature).
 //! - **Helpers**: [`SceneBinding`], [`SceneUniform`], [`UniformBuffer`], [`MeshBuffers`], [`create_storage_buffer_init`], [`storage_buffer_entry`], [`uniform_buffer_entry`], [`create_depth_texture`], and mesh generators.
 //! - **Shader imports**: [`ShaderProcessor`] resolves `#import` directives in WGSL shaders.
 //! - **Instanced rendering**: [`InstanceRenderer`] with generic [`InstanceVertex`] support for custom per-instance data layouts.
@@ -55,7 +55,7 @@
 //! | `instancing_2d` | 2D hex grid with [`InstanceData`] (pan/zoom) |
 //! | `instancing_3d` | 3D sphere grid with wave animation |
 //! | `custom_instance` | Custom [`InstanceVertex`] with per-instance 2D rotation |
-//! | `boids` | GPU compute flocking (10k boids) with compute-to-instance pipeline |
+//! | `boids` | GPU compute flocking (20k boids) with compute-to-instance pipeline |
 //!
 //! Run with `cargo run -p mikage --example <name>`.
 

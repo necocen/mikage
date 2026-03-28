@@ -13,7 +13,8 @@ Provides GPU rendering, compute shaders, and egui UI integration for both Native
 - **SolidRenderer** — Opaque (lit) and transparent (unlit) pipelines for solid-colored meshes.
 - **InstanceRenderer** — GPU-instanced rendering with generic per-instance vertex data via `InstanceVertex` trait.
 - **ShaderProcessor** — Lightweight WGSL preprocessor with `#import` resolution, recursive dependency handling, and circular import detection.
-- **Multi-platform** — Native (Metal / Vulkan / DX12) and WASM (WebGPU).
+- **Multi-platform** — Native (Metal / Vulkan / DX12) and WASM (WebGPU, with optional WebGL2 fallback).
+- **Touch input** — One-finger orbit/pan, two-finger pinch-to-zoom and pan. Trackpad gestures on native.
 - **tracing** — `RUST_LOG` on native, `tracing-web` (browser console) on WASM.
 
 ## Quick Start
@@ -311,10 +312,10 @@ The camera system is split into two traits:
 
 Built-in implementations:
 
-| Camera | Use case | Controls |
-|--------|----------|----------|
-| `OrbitCamera` | 3D | Left drag: orbit, Right drag: pan, Scroll: zoom |
-| `Camera2d` | 2D | Left drag: pan, Scroll: zoom |
+| Camera | Use case | Mouse | Touch |
+|--------|----------|-------|-------|
+| `OrbitCamera` | 3D | Left drag: orbit, Right drag: pan, Scroll: zoom | 1-finger: orbit, 2-finger: pinch zoom + pan |
+| `Camera2d` | 2D | Left drag: pan, Scroll: zoom | 1-finger: pan, 2-finger: pinch zoom |
 
 Implement `InteractiveCamera` for a custom camera and pass it via `RunConfig::camera`.
 
@@ -325,8 +326,19 @@ trunk build                   # build
 trunk serve                   # local dev server
 ```
 
+Uses WebGPU backend by default. GPU initialization is asynchronous on WASM.
 
-Uses WebGPU backend. GPU initialization is asynchronous on WASM.
+### WebGL2 fallback
+
+Enable the `webgl` feature for environments without WebGPU support (e.g. older browsers, iOS Simulator).
+WebGPU is tried first; if no adapter is found, the framework falls back to WebGL2 automatically.
+
+```toml
+# Cargo.toml
+mikage = { path = "...", features = ["webgl"] }
+```
+
+Note: WebGL2 does not support compute shaders. The `boids` example requires WebGPU.
 
 ## Examples
 
@@ -339,6 +351,12 @@ cargo run -p mikage --example instancing_3d      # 3D sphere grid with wave anim
 cargo run -p mikage --example custom_instance    # Custom InstanceVertex with 2D rotation
 cargo run -p mikage --example boids              # GPU compute flocking (20k boids)
 ```
+
+## Feature Flags
+
+| Feature | Default | Purpose |
+|---------|---------|---------|
+| `webgl` | off | Enable WebGL2 fallback on WASM (increases binary size) |
 
 ## Dependencies
 
