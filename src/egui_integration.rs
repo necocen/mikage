@@ -79,18 +79,8 @@ impl EguiIntegration {
         };
     }
 
-    /// WASM ではブラウザが CSS レベルでスケーリングするため pixels_per_point = 1.0。
-    /// Native では window.scale_factor() を使う。
     pub(crate) fn compute_pixels_per_point(window: &Window) -> f32 {
-        #[cfg(target_family = "wasm")]
-        {
-            let _ = window;
-            1.0
-        }
-        #[cfg(not(target_family = "wasm"))]
-        {
-            window.scale_factor() as f32
-        }
+        window.scale_factor() as f32
     }
 
     /// egui の UI 構築・描画を一括で行う。
