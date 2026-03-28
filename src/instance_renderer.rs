@@ -194,6 +194,9 @@ impl InstanceRenderer<InstanceData> {
     }
 
     /// Low-level constructor with built-in shader. Prefer [`new`](Self::new) which takes `&GpuContext`.
+    ///
+    /// This method is `pub` for integration testing only and is **not** part of
+    /// the stable API. It may be changed or removed without a semver bump.
     #[doc(hidden)]
     #[allow(clippy::too_many_arguments)]
     pub fn from_parts(
@@ -254,6 +257,9 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
     }
 
     /// Low-level constructor. Prefer [`with_shader`](Self::with_shader) which takes `&GpuContext`.
+    ///
+    /// This method is `pub` for integration testing only and is **not** part of
+    /// the stable API. It may be changed or removed without a semver bump.
     #[doc(hidden)]
     #[allow(clippy::too_many_arguments)]
     pub fn with_shader_from_parts(
@@ -369,6 +375,9 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
     }
 
     /// Updates instance data from CPU (low-level, raw wgpu types).
+    ///
+    /// This method is `pub` for integration testing only and is **not** part of
+    /// the stable API. It may be changed or removed without a semver bump.
     #[doc(hidden)]
     pub fn update_instances_raw(
         &mut self,

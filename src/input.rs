@@ -176,6 +176,16 @@ mod tests {
     fn key_event(code: KeyCode, state: ElementState) -> WindowEvent {
         // KeyEvent has a pub(crate) platform_specific field, so we cannot construct it directly.
         // We create a zeroed one via unsafe and set the public fields.
+        //
+        // SAFETY: KeyEvent's hidden `platform_specific` field is a plain-data struct
+        // on every current winit platform; zeroing it produces a valid (default-like)
+        // value. All public fields are overwritten immediately after. This is fragile —
+        // if winit adds non-zero-safe fields (e.g. NonZero*, Box, Arc), this will
+        // become UB.
+        //
+        // TODO: Replace with a safe constructor if winit ever exposes one, or
+        // migrate to winit's own test helpers. Track winit issue / changelog on
+        // major version bumps.
         let mut ke: KeyEvent = unsafe { std::mem::zeroed() };
         ke.physical_key = PhysicalKey::Code(code);
         ke.logical_key = winit::keyboard::Key::Unidentified(NativeKey::Unidentified);

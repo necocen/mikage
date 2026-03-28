@@ -5,6 +5,22 @@
 //! `@group(0)` (the same bind group layout the application already has)
 //! and per-object model matrix + RGBA color at `@group(1)`.
 //!
+//! # Transparency policy
+//!
+//! Pipeline selection is driven by the alpha component of the color passed
+//! to [`SolidRenderer::update_object`]:
+//!
+//! - **alpha >= 1.0** — drawn with the **opaque (lit)** pipeline: back-face
+//!   culling, depth write enabled, directional + ambient lighting.
+//! - **alpha < 1.0** — drawn with the **transparent (unlit)** pipeline:
+//!   no culling, depth write disabled, alpha blending, flat color only.
+//!
+//! Opaque objects are always rendered before transparent objects. However,
+//! **transparent objects are not depth-sorted**; overlapping transparent
+//! geometry may produce order-dependent blending artifacts. If correct
+//! transparency ordering is required, sort objects externally or use an
+//! OIT (order-independent transparency) technique.
+//!
 //! # Example
 //!
 //! ```ignore
@@ -68,8 +84,12 @@ struct ObjectData {
 /// Renders solid-colored meshes with SceneUniform lighting.
 ///
 /// Objects with `alpha >= 1.0` are drawn with the opaque (lit) pipeline.
-/// Objects with `alpha < 1.0` are drawn with the transparent (unlit) pipeline.
+/// Objects with `alpha < 1.0` are automatically switched to the transparent
+/// (unlit) pipeline — no API call is needed to change pipelines.
 /// Opaque objects are always drawn first, then transparent objects.
+///
+/// **Limitation:** transparent objects are not depth-sorted; overlapping
+/// transparent geometry may exhibit order-dependent blending artifacts.
 ///
 /// The scene bind group (`@group(0)`) must be set by the caller before
 /// calling [`render`](SolidRenderer::render).
@@ -96,6 +116,9 @@ impl SolidRenderer {
     }
 
     /// Low-level constructor. Prefer [`new`](Self::new) which takes `&GpuContext`.
+    ///
+    /// This method is `pub` for integration testing only and is **not** part of
+    /// the stable API. It may be changed or removed without a semver bump.
     #[doc(hidden)]
     pub fn from_parts(
         device: &wgpu::Device,
@@ -247,6 +270,9 @@ impl SolidRenderer {
     }
 
     /// Registers a new mesh object (low-level, raw wgpu types).
+    ///
+    /// This method is `pub` for integration testing only and is **not** part of
+    /// the stable API. It may be changed or removed without a semver bump.
     #[doc(hidden)]
     pub fn add_object_raw(
         &mut self,
@@ -289,8 +315,13 @@ impl SolidRenderer {
     /// Updates an object's model matrix and RGBA color.
     ///
     /// The `color.w` (alpha) value determines which pipeline is used:
-    /// - `alpha >= 1.0` -> opaque (lit) pipeline
-    /// - `alpha < 1.0` -> transparent (unlit) pipeline
+    /// - `alpha >= 1.0` — opaque (lit) pipeline with directional + ambient lighting
+    /// - `alpha < 1.0` — transparent (unlit) pipeline with alpha blending,
+    ///   no depth write, and no back-face culling
+    ///
+    /// The switch is automatic and takes effect on the next
+    /// [`render`](SolidRenderer::render) call. Note that transparent objects
+    /// are not depth-sorted; see the [module-level docs](self) for details.
     pub fn update_object(
         &mut self,
         gpu: &crate::GpuContext,
@@ -302,6 +333,9 @@ impl SolidRenderer {
     }
 
     /// Updates an object's model matrix and RGBA color (low-level, raw wgpu types).
+    ///
+    /// This method is `pub` for integration testing only and is **not** part of
+    /// the stable API. It may be changed or removed without a semver bump.
     #[doc(hidden)]
     pub fn update_object_raw(
         &mut self,
