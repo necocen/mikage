@@ -595,48 +595,35 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                 } => {
                     state.camera.on_drag_end();
                 }
-                // Touch gestures: 1-finger orbit, 2-finger pinch/pan
+                // Touch gestures: runner tracks state, camera interprets
                 WindowEvent::Touch(touch) => {
                     if let Some(action) = state.touch_tracker.handle_touch(touch) {
                         match action {
                             TouchGestureAction::OneDrag { dx, dy } => {
-                                state.camera.on_mouse_drag(dx, dy, true, false, false);
+                                state.camera.on_touch_drag(dx, dy);
                             }
                             TouchGestureAction::OneDragEnd => {
-                                state.camera.on_drag_end();
+                                state.camera.on_touch_drag_end();
                             }
                             TouchGestureAction::TwoFinger {
                                 scroll_delta,
                                 pan_dx,
                                 pan_dy,
                             } => {
-                                if scroll_delta.abs() > 1e-4 {
-                                    state.camera.on_scroll(scroll_delta);
-                                }
-                                if pan_dx.abs() > 0.5 || pan_dy.abs() > 0.5 {
-                                    state
-                                        .camera
-                                        .on_mouse_drag(pan_dx, pan_dy, false, true, false);
-                                }
+                                state.camera.on_pinch_pan(scroll_delta, pan_dx, pan_dy);
                             }
                         }
                     }
                 }
                 // Trackpad pinch gesture (native)
                 WindowEvent::PinchGesture { delta, .. } => {
-                    state.camera.on_scroll(*delta as f32);
+                    state.camera.on_pinch_pan(*delta as f32, 0.0, 0.0);
                 }
                 // Trackpad pan gesture (native)
                 WindowEvent::PanGesture { delta, .. } => {
-                    if delta.x.abs() > 0.5 || delta.y.abs() > 0.5 {
-                        state.camera.on_mouse_drag(
-                            delta.x as f64,
-                            delta.y as f64,
-                            false,
-                            true,
-                            false,
-                        );
-                    }
+                    state
+                        .camera
+                        .on_pinch_pan(0.0, delta.x as f64, delta.y as f64);
                 }
                 _ => {}
             }
