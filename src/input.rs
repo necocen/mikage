@@ -7,6 +7,11 @@ use winit::keyboard::KeyCode;
 /// Tracks keyboard, mouse, and scroll state. Updated automatically by the
 /// framework. Access via [`UpdateContext::input`](crate::UpdateContext::input).
 ///
+/// Events consumed by egui (e.g. keyboard input while a text field is focused,
+/// or pointer input over an egui window) are **not** reflected here. This
+/// ensures that `update()` and `on_window_event()` see a consistent,
+/// egui-filtered view of input.
+///
 /// `keys_pressed` / `mouse_buttons_pressed` contain keys/buttons that were
 /// newly pressed this frame (trigger detection).
 /// `keys_down` / `mouse_buttons_down` contain keys/buttons currently held (continuous detection).
@@ -110,6 +115,24 @@ impl InputState {
             }
             _ => {}
         }
+    }
+
+    /// Clears all keyboard state. Called when egui captures keyboard input
+    /// to prevent stuck keys.
+    pub(crate) fn clear_keyboard(&mut self) {
+        self.keys_down.clear();
+        self.keys_pressed.clear();
+        self.keys_released.clear();
+    }
+
+    /// Clears all pointer/mouse state. Called when egui captures pointer input
+    /// to prevent stuck buttons.
+    pub(crate) fn clear_pointer(&mut self) {
+        self.mouse_buttons_down = MouseButtons::default();
+        self.mouse_buttons_pressed = MouseButtons::default();
+        self.mouse_buttons_released = MouseButtons::default();
+        self.mouse_delta = (0.0, 0.0);
+        self.scroll_delta = 0.0;
     }
 
     pub fn is_key_down(&self, key: KeyCode) -> bool {

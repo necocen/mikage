@@ -524,14 +524,54 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
             return;
         };
 
-        // egui にイベントを先に転送
-        let _egui_consumed = state.egui.handle_window_event(&state.window, &event);
+        // ---------------------------------------------------------------
+        // Event routing: egui → filter → InputState / camera / app
+        //
+        // 1. Forward to egui first and get per-event `consumed` flag.
+        // 2. Classify the event:
+        //    - keyboard: filtered by `consumed` (egui handles Tab specially)
+        //    - pointer:  filtered by `wants_pointer_input()` (covers hover)
+        //    - system:   always passed through
+        // 3. Only filtered-through events reach InputState, camera, and
+        //    on_window_event, so update() and on_window_event() see the
+        //    same egui-filtered view.
+        // ---------------------------------------------------------------
 
-        // 入力状態を更新
-        state.input.handle_event(&event);
+        let egui_consumed = state.egui.handle_window_event(&state.window, &event);
 
-        // カメラへのマウスドラッグ転送（egui が入力を要求していなければ）
-        if !state.egui.wants_any_input() {
+        // Determine whether this event should be suppressed from the app.
+        let is_keyboard_event = matches!(
+            event,
+            WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(..)
+        );
+        let is_pointer_event = matches!(
+            event,
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::CursorEntered { .. }
+                | WindowEvent::CursorLeft { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::MouseWheel { .. }
+                | WindowEvent::Touch(..)
+                | WindowEvent::PinchGesture { .. }
+                | WindowEvent::PanGesture { .. }
+        );
+
+        let suppress = (is_keyboard_event && egui_consumed)
+            || (is_pointer_event && state.egui.wants_pointer_input());
+
+        // When egui captures a category, clear stuck state in InputState.
+        if is_keyboard_event && egui_consumed {
+            state.input.clear_keyboard();
+        }
+        if is_pointer_event && state.egui.wants_pointer_input() {
+            state.input.clear_pointer();
+        }
+
+        // Update InputState and dispatch to camera only for non-suppressed events.
+        if !suppress {
+            state.input.handle_event(&event);
+
+            // Camera input
             match &event {
                 WindowEvent::CursorMoved { .. } => {
                     let (dx, dy) = state.input.mouse_delta;
@@ -553,8 +593,6 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                     state: winit::event::ElementState::Released,
                     ..
                 } => {
-                    // Notify camera that dragging has ended so it can
-                    // transition to inertial motion.
                     state.camera.on_drag_end();
                 }
                 // Touch gestures: 1-finger orbit, 2-finger pinch/pan
@@ -610,8 +648,6 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
             }
             WindowEvent::Resized(new_size) => {
                 if new_size.width > 0 && new_size.height > 0 {
-                    // WASM: render_frame の先頭まで遅延させて 1 フレームに 1 回だけリサイズする。
-                    // 連続リサイズ中の surface.configure() 多発によるちらつきを防ぐ。
                     #[cfg(target_family = "wasm")]
                     {
                         state.pending_resize = Some(new_size);
@@ -638,8 +674,11 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                 }
             }
             ref other => {
-                if let Some(app) = self.app.as_mut() {
-                    app.on_window_event(other);
+                // Only pass non-suppressed events to the app.
+                if !suppress {
+                    if let Some(app) = self.app.as_mut() {
+                        app.on_window_event(other);
+                    }
                 }
             }
         }

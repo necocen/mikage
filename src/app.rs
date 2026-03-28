@@ -108,9 +108,11 @@ pub trait App: 'static {
     /// The default does nothing.
     fn resize(&mut self, _ctx: &GpuContext, _new_size: PhysicalSize<u32>) {}
 
-    /// Called for window events not handled internally by the framework.
+    /// Called for window events not consumed by the framework or egui.
     ///
-    /// Use this to handle file drops, focus changes, scale factor changes,
-    /// keyboard shortcuts, etc. The default does nothing.
+    /// Keyboard events are suppressed while egui has keyboard focus (e.g.
+    /// text input); pointer events are suppressed while the pointer is over
+    /// an egui area. System events (focus, file drops, etc.) are always
+    /// delivered. The default does nothing.
     fn on_window_event(&mut self, _event: &winit::event::WindowEvent) {}
 }

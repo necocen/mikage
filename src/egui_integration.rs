@@ -61,15 +61,7 @@ impl EguiIntegration {
         self.ctx.wants_pointer_input()
     }
 
-    /// egui がキーボード入力を要求しているか。
-    pub fn wants_keyboard_input(&self) -> bool {
-        self.ctx.wants_keyboard_input()
-    }
 
-    /// egui がなんらかの入力を要求しているか。
-    pub fn wants_any_input(&self) -> bool {
-        self.wants_pointer_input() || self.wants_keyboard_input()
-    }
 
     /// リサイズ時にスクリーン情報を更新。
     pub fn resize(&mut self, width: u32, height: u32, pixels_per_point: f32) {
