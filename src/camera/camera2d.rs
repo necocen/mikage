@@ -50,8 +50,10 @@ pub struct Camera2d {
     // Internal state
     velocity: Vec2,
     is_dragging: bool,
-    window_height: f32,
-    aspect: f32,
+    /// Viewport width in physical pixels (updated via `set_viewport_size`).
+    viewport_width: f32,
+    /// Viewport height in physical pixels (updated via `set_viewport_size`).
+    viewport_height: f32,
     cursor_pos: Vec2,
 }
 
@@ -69,8 +71,8 @@ impl Default for Camera2d {
             enabled: true,
             velocity: Vec2::ZERO,
             is_dragging: false,
-            window_height: 720.0,
-            aspect: 16.0 / 9.0,
+            viewport_width: 1280.0,
+            viewport_height: 720.0,
             cursor_pos: Vec2::ZERO,
         }
     }
@@ -91,11 +93,11 @@ impl Camera2d {
 
     /// Converts the current cursor position (pixels, top-left origin) to world coordinates.
     fn cursor_to_world(&self) -> Vec2 {
-        let w = self.aspect * self.window_height;
-        let ndc_x = (self.cursor_pos.x / w) * 2.0 - 1.0;
-        let ndc_y = 1.0 - (self.cursor_pos.y / self.window_height) * 2.0;
+        let aspect = self.viewport_width / self.viewport_height;
+        let ndc_x = (self.cursor_pos.x / self.viewport_width) * 2.0 - 1.0;
+        let ndc_y = 1.0 - (self.cursor_pos.y / self.viewport_height) * 2.0;
         Vec2::new(
-            ndc_x * (self.aspect / self.zoom) + self.position.x,
+            ndc_x * (aspect / self.zoom) + self.position.x,
             ndc_y * (1.0 / self.zoom) + self.position.y,
         )
     }
@@ -125,9 +127,9 @@ impl InteractiveCamera for Camera2d {
 
         if left {
             // Pan: convert pixel delta to world units.
-            // The orthographic projection maps window_height pixels to 2/zoom world units.
-            let px_to_world = 2.0 / (self.window_height * self.zoom);
-            let delta = Vec2::new(-dx as f32 * px_to_world, dy as f32 * px_to_world);
+            // The orthographic projection maps viewport_height pixels to 2/zoom world units.
+            let world_per_px = 2.0 / (self.viewport_height * self.zoom);
+            let delta = Vec2::new(-dx as f32 * world_per_px, dy as f32 * world_per_px);
             self.position += delta;
             self.velocity = delta;
             self.is_dragging = true;
@@ -146,12 +148,22 @@ impl InteractiveCamera for Camera2d {
     }
 
     fn set_viewport_size(&mut self, width: u32, height: u32) {
-        self.window_height = height as f32;
-        self.aspect = width as f32 / height as f32;
+        self.viewport_width = width as f32;
+        self.viewport_height = height as f32;
     }
 
     fn set_cursor_position(&mut self, x: f64, y: f64) {
         self.cursor_pos = Vec2::new(x as f32, y as f32);
+    }
+
+    fn on_pinch_pan(&mut self, zoom_delta: f32, pan_dx: f64, pan_dy: f64) {
+        if zoom_delta.abs() > 1e-4 {
+            self.on_scroll(zoom_delta);
+        }
+        if pan_dx.abs() > 0.5 || pan_dy.abs() > 0.5 {
+            // Camera2d pans on left drag, not right drag.
+            self.on_mouse_drag(pan_dx, pan_dy, true, false, false);
+        }
     }
 
     fn on_drag_end(&mut self) {
@@ -206,7 +218,7 @@ mod tests {
         assert_approx!(cam.far, 1.0);
         assert!(cam.enabled);
         assert_approx!(cam.damping, 0.0);
-        assert_approx!(cam.window_height, 720.0);
+        assert_approx!(cam.viewport_height, 720.0);
     }
 
     #[test]
@@ -403,7 +415,32 @@ mod tests {
     fn set_viewport_size_updates_fields() {
         let mut cam = Camera2d::default();
         cam.set_viewport_size(1920, 1080);
-        assert_approx!(cam.window_height, 1080.0);
-        assert_approx!(cam.aspect, 1920.0 / 1080.0);
+        assert_approx!(cam.viewport_width, 1920.0);
+        assert_approx!(cam.viewport_height, 1080.0);
+    }
+
+    #[test]
+    fn pinch_pan_moves_camera2d() {
+        let mut cam = Camera2d::default();
+        cam.set_viewport_size(1600, 800);
+        let before = cam.position;
+        // Two-finger pan: no zoom, just pan
+        cam.on_pinch_pan(0.0, 100.0, 0.0);
+        // Should have moved (left drag path)
+        assert!(cam.position.x < before.x, "pinch pan should move camera");
+    }
+
+    #[test]
+    fn pinch_zoom_uses_zoom_to_cursor() {
+        let mut cam = Camera2d::default();
+        cam.set_viewport_size(1600, 800);
+        cam.set_cursor_position(1200.0, 200.0);
+        let world_before = cam.cursor_to_world();
+        // Two-finger zoom: zoom in, no pan
+        cam.on_pinch_pan(1.0, 0.0, 0.0);
+        let world_after = cam.cursor_to_world();
+        // zoom-to-cursor should be preserved
+        assert_approx!(world_before.x, world_after.x);
+        assert_approx!(world_before.y, world_after.y);
     }
 }
