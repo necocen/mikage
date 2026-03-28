@@ -163,6 +163,7 @@ impl BoidsApp {
                 fragment_entry: "fragment",
                 depth: false,
                 sample_count: 1,
+                storage_binding: true,
             },
         );
         renderer.ensure_capacity(device, params.num_boids);

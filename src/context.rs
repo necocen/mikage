@@ -31,11 +31,38 @@ impl GpuContext {
         let size = window.inner_size();
         tracing::info!("Initial window size: {}x{}", size.width, size.height);
 
-        // WASM では WebGPU バックエンドを明示的に指定
-        #[cfg(target_family = "wasm")]
-        let backends = wgpu::Backends::BROWSER_WEBGPU;
         #[cfg(not(target_family = "wasm"))]
         let backends = wgpu::Backends::PRIMARY;
+
+        // WASM (webgl feature 無効): WebGPU のみ
+        #[cfg(all(target_family = "wasm", not(feature = "webgl")))]
+        let backends = wgpu::Backends::BROWSER_WEBGPU;
+
+        // WASM (webgl feature 有効): WebGPU を優先し、アダプタが取れなければ WebGL2。
+        // surface 作成前にバックエンドを決定する必要がある（canvas は一度コンテキストを
+        // 取得すると他の種類のコンテキストを取得できないため）。
+        #[cfg(all(target_family = "wasm", feature = "webgl"))]
+        let backends = {
+            let probe = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+                backends: wgpu::Backends::BROWSER_WEBGPU,
+                ..Default::default()
+            });
+            let has_webgpu = probe
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    compatible_surface: None,
+                    force_fallback_adapter: false,
+                })
+                .await
+                .is_ok();
+            if has_webgpu {
+                tracing::info!("Using WebGPU backend");
+                wgpu::Backends::BROWSER_WEBGPU
+            } else {
+                tracing::info!("WebGPU not available, using WebGL2 backend");
+                wgpu::Backends::GL
+            }
+        };
 
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends,
@@ -57,12 +84,18 @@ impl GpuContext {
 
         tracing::info!("Adapter: {:?}", adapter.get_info());
 
+        let default_limits = if adapter.get_info().backend == wgpu::Backend::Gl {
+            wgpu::Limits::downlevel_webgl2_defaults()
+        } else {
+            wgpu::Limits::downlevel_defaults()
+        };
+
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("mikage_device"),
                 required_features,
                 required_limits: required_limits
-                    .unwrap_or_else(wgpu::Limits::downlevel_defaults)
+                    .unwrap_or(default_limits)
                     .using_resolution(adapter.limits()),
                 memory_hints: wgpu::MemoryHints::MemoryUsage,
                 ..Default::default()

@@ -107,6 +107,9 @@ pub struct InstanceRendererConfig<'a> {
     pub depth: bool,
     /// Multisample count (1 = no MSAA).
     pub sample_count: u32,
+    /// Add `STORAGE` usage to the instance buffer so compute shaders can write to it.
+    /// Disable this for WebGL2 compatibility. Default: `false`.
+    pub storage_binding: bool,
 }
 
 impl InstanceRendererConfig<'_> {
@@ -119,6 +122,7 @@ impl InstanceRendererConfig<'_> {
             fragment_entry: "fragment_lit",
             depth: true,
             sample_count: 1,
+            storage_binding: false,
         }
     }
 
@@ -131,6 +135,7 @@ impl InstanceRendererConfig<'_> {
             fragment_entry: "fragment_unlit",
             depth: false,
             sample_count: 1,
+            storage_binding: false,
         }
     }
 }
@@ -149,6 +154,7 @@ pub struct InstanceRenderer<V: InstanceVertex = InstanceData> {
     index_buffer: wgpu::Buffer,
     index_count: u32,
     instance_buffer: wgpu::Buffer,
+    instance_buffer_usage: wgpu::BufferUsages,
     instance_capacity: u32,
     instance_count: u32,
     _phantom: PhantomData<V>,
@@ -209,12 +215,14 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
         let mesh = MeshBuffers::from_position_normal(device, positions, normals, indices);
 
         let instance_stride = std::mem::size_of::<V>() as u64;
+        let mut instance_usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
+        if config.storage_binding {
+            instance_usage |= wgpu::BufferUsages::STORAGE;
+        }
         let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("instance_data_buffer"),
             size: (INITIAL_INSTANCE_CAPACITY as u64) * instance_stride,
-            usage: wgpu::BufferUsages::VERTEX
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::STORAGE,
+            usage: instance_usage,
             mapped_at_creation: false,
         });
 
@@ -293,6 +301,7 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
             index_buffer: mesh.index_buffer,
             index_count: mesh.index_count,
             instance_buffer,
+            instance_buffer_usage: instance_usage,
             instance_capacity: INITIAL_INSTANCE_CAPACITY,
             instance_count: 0,
             _phantom: PhantomData,
@@ -323,9 +332,7 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
             self.instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("instance_data_buffer"),
                 size: (new_cap as u64) * instance_stride,
-                usage: wgpu::BufferUsages::VERTEX
-                    | wgpu::BufferUsages::COPY_DST
-                    | wgpu::BufferUsages::STORAGE,
+                usage: self.instance_buffer_usage,
                 mapped_at_creation: false,
             });
             self.instance_capacity = new_cap;

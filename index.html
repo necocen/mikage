@@ -38,13 +38,29 @@
     <script>
         window.addEventListener("load", () => {
             if (!navigator.gpu) {
-                document.getElementById("loading").textContent = "WebGPU is not supported in this browser";
+                const msg = window.isSecureContext
+                    ? "WebGPU is not supported in this browser"
+                    : "WebGPU requires HTTPS (current context is not secure)";
+                document.getElementById("loading").textContent = msg;
                 return;
             }
-            setTimeout(() => {
+            // Hide loading overlay once the canvas appears
+            const observer = new MutationObserver(() => {
+                if (document.querySelector("canvas")) {
+                    const loading = document.getElementById("loading");
+                    if (loading) loading.style.display = "none";
+                    observer.disconnect();
+                }
+            });
+            observer.observe(document.body, { childList: true, subtree: true });
+
+            // Catch wasm panics and show them to the user
+            window.addEventListener("error", (e) => {
                 const loading = document.getElementById("loading");
-                if (loading) loading.style.display = "none";
-            }, 2000);
+                if (loading && loading.style.display !== "none") {
+                    loading.textContent = "GPU initialization failed";
+                }
+            });
         });
     </script>
 </body>

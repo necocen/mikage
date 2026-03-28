@@ -63,6 +63,7 @@ impl CustomInstanceApp {
                 fragment_entry: "fragment",
                 depth: false,
                 sample_count: 1,
+                storage_binding: false,
             },
         );
 
