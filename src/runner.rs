@@ -663,11 +663,10 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                 }
             }
             ref other => {
-                // Only pass non-suppressed events to the app.
-                if !suppress {
-                    if let Some(app) = self.app.as_mut() {
-                        app.on_window_event(other);
-                    }
+                if !suppress
+                    && let Some(app) = self.app.as_mut()
+                {
+                    app.on_window_event(other);
                 }
             }
         }
