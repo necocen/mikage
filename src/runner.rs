@@ -777,7 +777,7 @@ fn render_frame<A: App>(app: &mut A, state: &mut RunState<A::Camera>) {
     // フレーム末尾で per-frame 入力状態をリセット。
     // 次フレームの window_event() で蓄積されたイベントが
     // その次の render_frame() の app.update() で見えるようにする。
-    state.input.begin_frame();
+    state.input.end_frame();
 }
 
 #[cfg(test)]

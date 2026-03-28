@@ -40,8 +40,12 @@ pub struct MouseButtons {
 }
 
 impl InputState {
-    /// Resets per-frame state. Called automatically at the start of each frame.
-    pub fn begin_frame(&mut self) {
+    /// Resets per-frame transient state (pressed/released/deltas).
+    ///
+    /// Called automatically at the end of each frame, after rendering.
+    /// Continuous state (`keys_down`, `mouse_buttons_down`, `mouse_position`)
+    /// is preserved across frames.
+    pub(crate) fn end_frame(&mut self) {
         self.keys_pressed.clear();
         self.keys_released.clear();
         self.mouse_buttons_pressed = MouseButtons::default();
@@ -240,10 +244,10 @@ mod tests {
     }
 
     #[test]
-    fn begin_frame_clears_transient() {
+    fn end_frame_clears_transient() {
         let mut state = InputState::default();
         state.handle_event(&key_event(KeyCode::KeyW, ElementState::Pressed));
-        state.begin_frame();
+        state.end_frame();
         assert!(state.keys_pressed.is_empty());
         assert!(state.is_key_down(KeyCode::KeyW));
         assert_eq!(state.mouse_delta, (0.0, 0.0));
@@ -266,11 +270,11 @@ mod tests {
     }
 
     #[test]
-    fn mouse_delta_resets_on_begin_frame() {
+    fn mouse_delta_resets_on_end_frame() {
         let mut state = InputState::default();
         state.handle_event(&cursor_moved(100.0, 200.0));
         state.handle_event(&cursor_moved(110.0, 220.0));
-        state.begin_frame();
+        state.end_frame();
         assert_eq!(state.mouse_delta, (0.0, 0.0));
     }
 
