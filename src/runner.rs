@@ -197,10 +197,114 @@ struct RunState<C: InteractiveCamera> {
     input: InputState,
     camera: C,
     frame_time: FrameTime,
+    touch_tracker: TouchTracker,
     /// WASM: Resized イベントを render_frame の先頭まで遅延させる。
     /// 連続リサイズ中に毎イベント surface.configure() が走るのを防ぐ。
     #[cfg(target_family = "wasm")]
     pending_resize: Option<PhysicalSize<u32>>,
+}
+
+// --- タッチ・ジェスチャー入力 ---
+
+/// Tracks touch gestures: one-finger drag (orbit) and two-finger pinch/pan.
+#[derive(Default)]
+struct TouchTracker {
+    /// Active touch points.
+    touches: std::collections::HashMap<u64, (f64, f64)>,
+    /// Previous distance between two fingers (for pinch detection).
+    prev_pinch_distance: Option<f64>,
+    /// Previous midpoint of two fingers (for two-finger pan).
+    prev_midpoint: Option<(f64, f64)>,
+}
+
+enum TouchGestureAction {
+    /// One-finger drag (orbit): dx, dy in pixels.
+    OneDrag { dx: f64, dy: f64 },
+    /// One-finger released.
+    OneDragEnd,
+    /// Two-finger gesture: pinch zoom + pan.
+    TwoFinger {
+        scroll_delta: f32,
+        pan_dx: f64,
+        pan_dy: f64,
+    },
+}
+
+impl TouchTracker {
+    fn handle_touch(&mut self, touch: &winit::event::Touch) -> Option<TouchGestureAction> {
+        use winit::event::TouchPhase;
+        match touch.phase {
+            TouchPhase::Started => {
+                self.touches
+                    .insert(touch.id, (touch.location.x, touch.location.y));
+                if self.touches.len() == 2 {
+                    let (dist, mid) = self.two_finger_state();
+                    self.prev_pinch_distance = Some(dist);
+                    self.prev_midpoint = Some(mid);
+                }
+                None
+            }
+            TouchPhase::Moved => {
+                let new_pos = (touch.location.x, touch.location.y);
+                let prev_pos = self.touches.insert(touch.id, new_pos);
+
+                match self.touches.len() {
+                    1 => {
+                        // One-finger drag
+                        if let Some((px, py)) = prev_pos {
+                            let dx = new_pos.0 - px;
+                            let dy = new_pos.1 - py;
+                            Some(TouchGestureAction::OneDrag { dx, dy })
+                        } else {
+                            None
+                        }
+                    }
+                    2 => {
+                        // Two-finger pinch + pan
+                        let (dist, mid) = self.two_finger_state();
+                        let scroll_delta = self
+                            .prev_pinch_distance
+                            .map(|prev| ((dist / prev) - 1.0) as f32 * 5.0)
+                            .unwrap_or(0.0);
+                        let (pan_dx, pan_dy) = self
+                            .prev_midpoint
+                            .map(|(px, py)| (mid.0 - px, mid.1 - py))
+                            .unwrap_or((0.0, 0.0));
+
+                        self.prev_pinch_distance = Some(dist);
+                        self.prev_midpoint = Some(mid);
+                        Some(TouchGestureAction::TwoFinger {
+                            scroll_delta,
+                            pan_dx,
+                            pan_dy,
+                        })
+                    }
+                    _ => None,
+                }
+            }
+            TouchPhase::Ended | TouchPhase::Cancelled => {
+                self.touches.remove(&touch.id);
+                self.prev_pinch_distance = None;
+                self.prev_midpoint = None;
+                if self.touches.is_empty() {
+                    Some(TouchGestureAction::OneDragEnd)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    fn two_finger_state(&self) -> (f64, (f64, f64)) {
+        let mut iter = self.touches.values();
+        let &(x0, y0) = iter.next().unwrap();
+        let &(x1, y1) = iter.next().unwrap();
+        let dx = x1 - x0;
+        let dy = y1 - y0;
+        let dist = (dx * dx + dy * dy).sqrt().max(1.0);
+        let mid = ((x0 + x1) * 0.5, (y0 + y1) * 0.5);
+        (dist, mid)
+    }
 }
 
 // --- AppHandler ---
@@ -257,6 +361,7 @@ impl<A: App> AppHandler<A> {
             input: InputState::default(),
             camera,
             frame_time: FrameTime::new(),
+            touch_tracker: TouchTracker::default(),
             #[cfg(target_family = "wasm")]
             pending_resize: None,
         });
@@ -452,6 +557,49 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                     // transition to inertial motion.
                     state.camera.on_drag_end();
                 }
+                // Touch gestures: 1-finger orbit, 2-finger pinch/pan
+                WindowEvent::Touch(touch) => {
+                    if let Some(action) = state.touch_tracker.handle_touch(touch) {
+                        match action {
+                            TouchGestureAction::OneDrag { dx, dy } => {
+                                state.camera.on_mouse_drag(dx, dy, true, false, false);
+                            }
+                            TouchGestureAction::OneDragEnd => {
+                                state.camera.on_drag_end();
+                            }
+                            TouchGestureAction::TwoFinger {
+                                scroll_delta,
+                                pan_dx,
+                                pan_dy,
+                            } => {
+                                if scroll_delta.abs() > 1e-4 {
+                                    state.camera.on_scroll(scroll_delta);
+                                }
+                                if pan_dx.abs() > 0.5 || pan_dy.abs() > 0.5 {
+                                    state
+                                        .camera
+                                        .on_mouse_drag(pan_dx, pan_dy, false, true, false);
+                                }
+                            }
+                        }
+                    }
+                }
+                // Trackpad pinch gesture (native)
+                WindowEvent::PinchGesture { delta, .. } => {
+                    state.camera.on_scroll(*delta as f32);
+                }
+                // Trackpad pan gesture (native)
+                WindowEvent::PanGesture { delta, .. } => {
+                    if delta.x.abs() > 0.5 || delta.y.abs() > 0.5 {
+                        state.camera.on_mouse_drag(
+                            delta.x as f64,
+                            delta.y as f64,
+                            false,
+                            true,
+                            false,
+                        );
+                    }
+                }
                 _ => {}
             }
         }
@@ -498,11 +646,6 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
     }
 }
 
-// --- タッチ入力 ---
-// winit on WASM は 1本指タッチを CursorMoved + MouseInput(Left) として転送するため、
-// 1本指ドラッグ = orbit は追加コード不要で動作する。
-// 2本指のピンチ/パンは必要に応じて追加実装する。
-
 // --- レンダリング ---
 
 fn render_frame<A: App>(app: &mut A, state: &mut RunState<A::Camera>) {
@@ -512,7 +655,11 @@ fn render_frame<A: App>(app: &mut A, state: &mut RunState<A::Camera>) {
     #[cfg(target_family = "wasm")]
     if let Some(new_size) = state.pending_resize.take() {
         state.gpu.resize(new_size);
-        state.egui.resize(new_size.width, new_size.height, 1.0);
+        state.egui.resize(
+            new_size.width,
+            new_size.height,
+            crate::egui_integration::EguiIntegration::compute_pixels_per_point(&state.window),
+        );
         app.resize(&state.gpu, new_size);
     }
 
