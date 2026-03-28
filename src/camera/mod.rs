@@ -93,6 +93,10 @@ pub trait InteractiveCamera: Camera {
     fn set_cursor_position(&mut self, _x: f64, _y: f64) {}
 
     /// Enables or disables camera input.
+    ///
+    /// When disabled, input events (`on_mouse_drag`, `on_scroll`, etc.) are
+    /// ignored, but [`update`](Self::update) continues to run (e.g. inertial
+    /// motion will still decay).
     fn set_enabled(&mut self, enabled: bool);
 
     /// Returns whether camera input is enabled.

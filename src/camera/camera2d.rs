@@ -44,8 +44,11 @@ pub struct Camera2d {
     pub max_zoom: f32,
     /// Damping factor for pan inertia (0.0 = instant stop, 0.9 = smooth).
     pub damping: f32,
-    /// Whether camera input is enabled.
-    pub enabled: bool,
+
+    /// Whether camera input is enabled. Use [`set_enabled`](InteractiveCamera::set_enabled)
+    /// / [`is_enabled`](InteractiveCamera::is_enabled) to toggle.
+    /// When disabled, input events are ignored but inertial motion continues.
+    enabled: bool,
 
     // Internal state
     velocity: Vec2,
@@ -390,7 +393,7 @@ mod tests {
     #[test]
     fn disabled_ignores_input() {
         let mut cam = Camera2d::default();
-        cam.enabled = false;
+        cam.set_enabled(false);
         let pos_before = cam.position;
         let zoom_before = cam.zoom;
         cam.on_mouse_drag(100.0, 50.0, true, false, false);

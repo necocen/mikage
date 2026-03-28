@@ -45,7 +45,11 @@ pub struct OrbitCamera {
     pub max_pitch: f32,
     /// Damping factor for orbit inertia (0.0 = instant stop, 0.9 = smooth).
     pub damping: f32,
-    pub enabled: bool,
+
+    /// Whether camera input is enabled. Use [`set_enabled`](InteractiveCamera::set_enabled)
+    /// / [`is_enabled`](InteractiveCamera::is_enabled) to toggle.
+    /// When disabled, input events are ignored but inertial motion continues.
+    enabled: bool,
 
     // Internal velocity state for damping
     velocity_yaw: f32,
