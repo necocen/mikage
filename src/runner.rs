@@ -743,14 +743,17 @@ fn render_frame<A: App>(app: &mut A, state: &mut RunState<A::Camera>) {
         Ok(tex) => tex,
         Err(wgpu::SurfaceError::Lost) => {
             state.gpu.resize(size);
+            state.window.request_redraw();
             return;
         }
         Err(wgpu::SurfaceError::OutOfMemory) => {
-            tracing::error!("Out of GPU memory");
+            tracing::error!("Out of GPU memory, retrying next frame");
+            state.window.request_redraw();
             return;
         }
         Err(e) => {
             tracing::warn!("Surface error: {e:?}");
+            state.window.request_redraw();
             return;
         }
     };
