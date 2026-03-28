@@ -82,6 +82,16 @@ pub trait InteractiveCamera: Camera {
         }
     }
 
+    /// Notifies the camera of the current viewport size in physical pixels.
+    ///
+    /// Called on window resize. Default implementation does nothing.
+    fn set_viewport_size(&mut self, _width: u32, _height: u32) {}
+
+    /// Notifies the camera of the current cursor position in physical pixels (top-left origin).
+    ///
+    /// Called on every cursor move. Default implementation does nothing.
+    fn set_cursor_position(&mut self, _x: f64, _y: f64) {}
+
     /// Enables or disables camera input.
     fn set_enabled(&mut self, enabled: bool);
 

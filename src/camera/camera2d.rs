@@ -36,8 +36,6 @@ pub struct Camera2d {
     pub near: f32,
     /// Far clip plane. Default: 1.0.
     pub far: f32,
-    /// Pan speed multiplier.
-    pub pan_speed: f32,
     /// Zoom speed multiplier.
     pub zoom_speed: f32,
     /// Minimum zoom level.
@@ -49,9 +47,12 @@ pub struct Camera2d {
     /// Whether camera input is enabled.
     pub enabled: bool,
 
-    // Internal velocity state for damping
+    // Internal state
     velocity: Vec2,
     is_dragging: bool,
+    window_height: f32,
+    aspect: f32,
+    cursor_pos: Vec2,
 }
 
 impl Default for Camera2d {
@@ -61,7 +62,6 @@ impl Default for Camera2d {
             zoom: 1.0,
             near: -1.0,
             far: 1.0,
-            pan_speed: 0.005,
             zoom_speed: 0.1,
             min_zoom: 0.01,
             max_zoom: 1000.0,
@@ -69,6 +69,9 @@ impl Default for Camera2d {
             enabled: true,
             velocity: Vec2::ZERO,
             is_dragging: false,
+            window_height: 720.0,
+            aspect: 16.0 / 9.0,
+            cursor_pos: Vec2::ZERO,
         }
     }
 }
@@ -84,6 +87,17 @@ impl Camera2d {
         let min = self.position - Vec2::new(half_w, half_h);
         let max = self.position + Vec2::new(half_w, half_h);
         (min, max)
+    }
+
+    /// Converts the current cursor position (pixels, top-left origin) to world coordinates.
+    fn cursor_to_world(&self) -> Vec2 {
+        let w = self.aspect * self.window_height;
+        let ndc_x = (self.cursor_pos.x / w) * 2.0 - 1.0;
+        let ndc_y = 1.0 - (self.cursor_pos.y / self.window_height) * 2.0;
+        Vec2::new(
+            ndc_x * (self.aspect / self.zoom) + self.position.x,
+            ndc_y * (1.0 / self.zoom) + self.position.y,
+        )
     }
 }
 
@@ -110,11 +124,10 @@ impl InteractiveCamera for Camera2d {
         }
 
         if left {
-            // Pan: move camera opposite to drag direction
-            let delta = Vec2::new(
-                -dx as f32 * self.pan_speed / self.zoom,
-                dy as f32 * self.pan_speed / self.zoom,
-            );
+            // Pan: convert pixel delta to world units.
+            // The orthographic projection maps window_height pixels to 2/zoom world units.
+            let px_to_world = 2.0 / (self.window_height * self.zoom);
+            let delta = Vec2::new(-dx as f32 * px_to_world, dy as f32 * px_to_world);
             self.position += delta;
             self.velocity = delta;
             self.is_dragging = true;
@@ -125,8 +138,20 @@ impl InteractiveCamera for Camera2d {
         if !self.enabled {
             return;
         }
+        let before = self.cursor_to_world();
         self.zoom *= 1.0 + delta * self.zoom_speed;
         self.zoom = self.zoom.clamp(self.min_zoom, self.max_zoom);
+        let after = self.cursor_to_world();
+        self.position += before - after;
+    }
+
+    fn set_viewport_size(&mut self, width: u32, height: u32) {
+        self.window_height = height as f32;
+        self.aspect = width as f32 / height as f32;
+    }
+
+    fn set_cursor_position(&mut self, x: f64, y: f64) {
+        self.cursor_pos = Vec2::new(x as f32, y as f32);
     }
 
     fn on_drag_end(&mut self) {
@@ -181,6 +206,7 @@ mod tests {
         assert_approx!(cam.far, 1.0);
         assert!(cam.enabled);
         assert_approx!(cam.damping, 0.0);
+        assert_approx!(cam.window_height, 720.0);
     }
 
     #[test]
@@ -269,6 +295,32 @@ mod tests {
     }
 
     #[test]
+    fn pan_pixel_to_world_accuracy() {
+        // A 1600x800 window with zoom=1 has visible height = 2 world units.
+        // 1 pixel = 2/(800*1) = 0.0025 world units.
+        let mut cam = Camera2d::default();
+        cam.set_viewport_size(1600, 800);
+
+        cam.on_mouse_drag(400.0, 0.0, true, false, false);
+        // 400 px * 0.0025 = 1.0 world unit to the left
+        assert_approx!(cam.position.x, -1.0);
+        assert_approx!(cam.position.y, 0.0);
+    }
+
+    #[test]
+    fn pan_accuracy_with_zoom() {
+        // zoom=2: 1 pixel = 2/(800*2) = 0.00125 world units
+        let mut cam = Camera2d::default();
+        cam.set_viewport_size(1600, 800);
+        cam.zoom = 2.0;
+
+        cam.on_mouse_drag(0.0, 800.0, true, false, false);
+        // 800 px * 0.00125 = 1.0 world unit upward
+        assert_approx!(cam.position.x, 0.0);
+        assert_approx!(cam.position.y, 1.0);
+    }
+
+    #[test]
     fn scroll_changes_zoom() {
         let mut cam = Camera2d::default();
         let initial_zoom = cam.zoom;
@@ -280,6 +332,36 @@ mod tests {
             cam.on_scroll(-100.0);
         }
         assert_approx!(cam.zoom, cam.min_zoom);
+    }
+
+    #[test]
+    fn zoom_to_cursor_preserves_world_point() {
+        let mut cam = Camera2d::default();
+        cam.set_viewport_size(1600, 800);
+        // Place cursor at top-right quadrant
+        cam.set_cursor_position(1200.0, 200.0);
+
+        let world_before = cam.cursor_to_world();
+        cam.on_scroll(1.0); // zoom in
+        let world_after = cam.cursor_to_world();
+
+        // The world point under the cursor should be preserved
+        assert_approx!(world_before.x, world_after.x);
+        assert_approx!(world_before.y, world_after.y);
+    }
+
+    #[test]
+    fn zoom_at_center_does_not_move_position() {
+        let mut cam = Camera2d::default();
+        cam.set_viewport_size(1600, 800);
+        // Cursor at window center
+        cam.set_cursor_position(800.0, 400.0);
+
+        let pos_before = cam.position;
+        cam.on_scroll(1.0);
+        // Zooming at center should not move the camera
+        assert_approx!(cam.position.x, pos_before.x);
+        assert_approx!(cam.position.y, pos_before.y);
     }
 
     #[test]
@@ -315,5 +397,13 @@ mod tests {
         }
         // After many iterations velocity should be very small
         assert!(cam.velocity.length() < 1e-4);
+    }
+
+    #[test]
+    fn set_viewport_size_updates_fields() {
+        let mut cam = Camera2d::default();
+        cam.set_viewport_size(1920, 1080);
+        assert_approx!(cam.window_height, 1080.0);
+        assert_approx!(cam.aspect, 1920.0 / 1080.0);
     }
 }

@@ -356,6 +356,10 @@ impl<A: App> AppHandler<A> {
         let init_fn = self.init_fn.take().expect("init_fn already consumed");
         self.app = Some(init_fn(&gpu, size));
 
+        // Notify camera of initial viewport size
+        let mut camera = camera;
+        camera.set_viewport_size(size.width, size.height);
+
         self.state = Some(RunState {
             window,
             gpu,
@@ -558,6 +562,12 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                 | WindowEvent::PanGesture { .. }
         );
 
+        // Always update cursor position for the camera (needed for zoom-to-cursor),
+        // even when egui captures pointer events.
+        if let WindowEvent::CursorMoved { position, .. } = &event {
+            state.camera.set_cursor_position(position.x, position.y);
+        }
+
         let suppress = (is_keyboard_event && egui_consumed)
             || (is_pointer_event && state.egui.wants_pointer_input());
 
@@ -651,6 +661,9 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                                 &state.window,
                             ),
                         );
+                        state
+                            .camera
+                            .set_viewport_size(new_size.width, new_size.height);
                         if let Some(app) = self.app.as_mut() {
                             app.resize(&state.gpu, new_size);
                         }
@@ -663,9 +676,7 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                 }
             }
             ref other => {
-                if !suppress
-                    && let Some(app) = self.app.as_mut()
-                {
+                if !suppress && let Some(app) = self.app.as_mut() {
                     app.on_window_event(other);
                 }
             }
@@ -687,6 +698,9 @@ fn render_frame<A: App>(app: &mut A, state: &mut RunState<A::Camera>) {
             new_size.height,
             crate::egui_integration::EguiIntegration::compute_pixels_per_point(&state.window),
         );
+        state
+            .camera
+            .set_viewport_size(new_size.width, new_size.height);
         app.resize(&state.gpu, new_size);
     }
 
