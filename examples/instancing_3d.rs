@@ -78,7 +78,7 @@ impl App for Instancing3dApp {
         }
 
         self.renderer
-            .update_instances(&ctx.gpu.device, &ctx.gpu.queue, &instances);
+            .update_instances(ctx.gpu, &instances);
     }
 
     fn encode(&mut self, ctx: &mut FrameContext<OrbitCamera>) {

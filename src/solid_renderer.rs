@@ -232,9 +232,23 @@ impl SolidRenderer {
     /// Returns a [`SolidObjectId`] handle for later updates.
     ///
     /// The object starts with an identity model matrix and white color.
+    /// Registers a new mesh object and returns its handle.
+    ///
     /// Call [`update_object`](SolidRenderer::update_object) to set the
     /// actual transform and color.
     pub fn add_object(
+        &mut self,
+        gpu: &crate::GpuContext,
+        positions: &[[f32; 3]],
+        normals: &[[f32; 3]],
+        indices: &[u32],
+    ) -> SolidObjectId {
+        self.add_object_raw(&gpu.device, positions, normals, indices)
+    }
+
+    /// Registers a new mesh object (low-level, raw wgpu types).
+    #[doc(hidden)]
+    pub fn add_object_raw(
         &mut self,
         device: &wgpu::Device,
         positions: &[[f32; 3]],
@@ -278,6 +292,18 @@ impl SolidRenderer {
     /// - `alpha >= 1.0` -> opaque (lit) pipeline
     /// - `alpha < 1.0` -> transparent (unlit) pipeline
     pub fn update_object(
+        &mut self,
+        gpu: &crate::GpuContext,
+        id: SolidObjectId,
+        model: Mat4,
+        color: Vec4,
+    ) {
+        self.update_object_raw(&gpu.queue, id, model, color);
+    }
+
+    /// Updates an object's model matrix and RGBA color (low-level, raw wgpu types).
+    #[doc(hidden)]
+    pub fn update_object_raw(
         &mut self,
         queue: &wgpu::Queue,
         id: SolidObjectId,

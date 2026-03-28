@@ -311,8 +311,8 @@ fn solid_renderer_add_and_update_object() {
         let scene = SceneBinding::new(&gpu.device);
         let mut solid = SolidRenderer::from_parts(&gpu.device, RENDER_FORMAT, scene.layout(), 1);
         let cube = CubeMesh::generate();
-        let id = solid.add_object(&gpu.device, &cube.positions, &cube.normals, &cube.indices);
-        solid.update_object(
+        let id = solid.add_object_raw(&gpu.device, &cube.positions, &cube.normals, &cube.indices);
+        solid.update_object_raw(
             &gpu.queue,
             id,
             glam::Mat4::from_scale(glam::Vec3::splat(2.0)),
@@ -402,7 +402,7 @@ fn instance_renderer_draws_pixels() {
             pos_scale: [0.0, 0.0, 0.0, 1.0],
             color: [0.0, 1.0, 0.0, 1.0],
         }];
-        renderer.update_instances(&gpu.device, &gpu.queue, &instances);
+        renderer.update_instances_raw(&gpu.device, &gpu.queue, &instances);
 
         let (tex, color_view) = create_color_texture(&gpu.device, w, h);
 
@@ -466,9 +466,9 @@ fn solid_renderer_draws_pixels() {
         let normals: Vec<[f32; 3]> = vec![[0.0, 0.0, 1.0]; 4];
         let indices: Vec<u32> = vec![0, 1, 2, 0, 2, 3];
 
-        let id = solid.add_object(&gpu.device, &positions, &normals, &indices);
+        let id = solid.add_object_raw(&gpu.device, &positions, &normals, &indices);
         // Transparent (alpha < 1.0) so it uses the unlit pipeline (direct color)
-        solid.update_object(
+        solid.update_object_raw(
             &gpu.queue,
             id,
             glam::Mat4::IDENTITY,
@@ -541,7 +541,7 @@ fn instance_renderer_update_and_regrow() {
                 color: [1.0, 1.0, 1.0, 1.0],
             })
             .collect();
-        renderer.update_instances(&gpu.device, &gpu.queue, &small);
+        renderer.update_instances_raw(&gpu.device, &gpu.queue, &small);
 
         // Grow past initial capacity (1024)
         let large: Vec<InstanceData> = (0..2000)
@@ -550,7 +550,7 @@ fn instance_renderer_update_and_regrow() {
                 color: [1.0, 0.0, 0.0, 1.0],
             })
             .collect();
-        renderer.update_instances(&gpu.device, &gpu.queue, &large);
+        renderer.update_instances_raw(&gpu.device, &gpu.queue, &large);
         assert!(renderer.instance_capacity() >= 2000);
     });
 }
@@ -740,7 +740,7 @@ fn render_instances_2d(
         1,
         InstanceRendererConfig::default_2d(),
     );
-    renderer.update_instances(&gpu.device, &gpu.queue, instances);
+    renderer.update_instances_raw(&gpu.device, &gpu.queue, instances);
 
     let (tex, color_view) = create_color_texture(&gpu.device, w, h);
     let mut encoder = gpu.device.create_command_encoder(&Default::default());
@@ -789,8 +789,8 @@ fn snapshot_solid_cube() {
             scene.update(queue, &uniform);
 
             let cube = CubeMesh::generate();
-            let id = solid.add_object(device, &cube.positions, &cube.normals, &cube.indices);
-            solid.update_object(
+            let id = solid.add_object_raw(device, &cube.positions, &cube.normals, &cube.indices);
+            solid.update_object_raw(
                 queue,
                 id,
                 glam::Mat4::IDENTITY,
@@ -822,8 +822,8 @@ fn snapshot_solid_sphere() {
             scene.update(queue, &uniform);
 
             let sphere = IcoSphereMesh::generate(2);
-            let id = solid.add_object(device, &sphere.positions, &sphere.normals, &sphere.indices);
-            solid.update_object(
+            let id = solid.add_object_raw(device, &sphere.positions, &sphere.normals, &sphere.indices);
+            solid.update_object_raw(
                 queue,
                 id,
                 glam::Mat4::IDENTITY,
@@ -855,8 +855,8 @@ fn snapshot_solid_plane() {
             scene.update(queue, &uniform);
 
             let plane = PlaneMesh::generate();
-            let id = solid.add_object(device, &plane.positions, &plane.normals, &plane.indices);
-            solid.update_object(
+            let id = solid.add_object_raw(device, &plane.positions, &plane.normals, &plane.indices);
+            solid.update_object_raw(
                 queue,
                 id,
                 glam::Mat4::from_scale(glam::Vec3::splat(3.0)),
@@ -975,9 +975,9 @@ fn snapshot_solid_transparent() {
             let normals: Vec<[f32; 3]> = vec![[0.0, 0.0, 1.0]; 4];
             let indices: Vec<u32> = vec![0, 1, 2, 0, 2, 3];
 
-            let id = solid.add_object(device, &positions, &normals, &indices);
+            let id = solid.add_object_raw(device, &positions, &normals, &indices);
             // Semi-transparent blue (uses unlit pipeline)
-            solid.update_object(
+            solid.update_object_raw(
                 queue,
                 id,
                 glam::Mat4::IDENTITY,

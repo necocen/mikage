@@ -363,8 +363,14 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
         }
     }
 
-    /// Updates instance data. Resizes the GPU buffer if needed.
-    pub fn update_instances(
+    /// Updates instance data from CPU. Resizes the GPU buffer if needed.
+    pub fn update_instances(&mut self, gpu: &crate::GpuContext, instances: &[V]) {
+        self.update_instances_raw(&gpu.device, &gpu.queue, instances);
+    }
+
+    /// Updates instance data from CPU (low-level, raw wgpu types).
+    #[doc(hidden)]
+    pub fn update_instances_raw(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
