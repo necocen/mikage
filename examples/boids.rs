@@ -164,8 +164,7 @@ impl BoidsApp {
                 storage_binding: true,
             },
         );
-        renderer.ensure_capacity(device, params.num_boids);
-        renderer.set_instance_count(params.num_boids);
+        let compute_state = renderer.prepare_compute(device, params.num_boids);
 
         // Boid state buffers (double-buffered)
         let initial = generate_initial_boids(params.num_boids, params.world_size);
@@ -202,7 +201,7 @@ impl BoidsApp {
             &compute_bind_group_layout,
             &boid_buffers,
             params_buffer.buffer(),
-            renderer.instance_buffer(),
+            compute_state.buffer,
         );
 
         Self {

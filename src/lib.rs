@@ -83,7 +83,7 @@ pub use helpers::{
 };
 pub use input::InputState;
 pub use instance_renderer::{
-    InstanceData, InstanceRenderer, InstanceRendererConfig, InstanceVertex,
+    ComputeBufferState, InstanceData, InstanceRenderer, InstanceRendererConfig, InstanceVertex,
 };
 pub use runner::{RunConfig, run};
 pub use shader_processor::{

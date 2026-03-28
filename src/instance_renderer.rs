@@ -158,6 +158,15 @@ pub struct InstanceRenderer<V: InstanceVertex = InstanceData> {
 
 const INITIAL_INSTANCE_CAPACITY: u32 = 1024;
 
+/// Result of [`InstanceRenderer::prepare_compute`].
+pub struct ComputeBufferState<'a> {
+    /// The instance buffer to bind in compute shader bind groups.
+    pub buffer: &'a wgpu::Buffer,
+    /// `true` if the buffer was reallocated. Callers must rebuild any
+    /// bind groups that reference the instance buffer when this is `true`.
+    pub reallocated: bool,
+}
+
 impl InstanceRenderer<InstanceData> {
     /// Creates an `InstanceRenderer` using the built-in instancing shader.
     ///
@@ -400,10 +409,33 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
         self.instance_capacity
     }
 
+    /// Prepares the renderer for compute-driven rendering.
+    ///
+    /// Sets the draw count to `count`, grows the buffer if needed, and returns
+    /// a reference to the (possibly new) buffer along with whether it was
+    /// reallocated. When `reallocated` is `true`, callers **must** rebuild any
+    /// bind groups that reference the instance buffer.
+    ///
+    /// This is the primary API for compute shader integration. Use it instead
+    /// of the lower-level [`set_instance_count`](Self::set_instance_count) +
+    /// [`ensure_capacity`](Self::ensure_capacity) combination.
+    pub fn prepare_compute(
+        &mut self,
+        device: &wgpu::Device,
+        count: u32,
+    ) -> ComputeBufferState<'_> {
+        self.instance_count = count;
+        let reallocated = self.ensure_capacity(device, count);
+        ComputeBufferState {
+            buffer: &self.instance_buffer,
+            reallocated,
+        }
+    }
+
     /// Sets the number of instances to draw.
     ///
-    /// Use this instead of [`update_instances`](InstanceRenderer::update_instances)
-    /// when a compute shader writes instance data directly to the buffer.
+    /// Low-level method for compute pipelines. Prefer
+    /// [`prepare_compute`](Self::prepare_compute) which also handles capacity.
     pub fn set_instance_count(&mut self, count: u32) {
         self.instance_count = count;
     }
@@ -412,6 +444,8 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
     ///
     /// Returns `true` if the buffer was reallocated (callers may need to
     /// rebuild bind groups that reference the buffer).
+    ///
+    /// Low-level method. Prefer [`prepare_compute`](Self::prepare_compute).
     pub fn ensure_capacity(&mut self, device: &wgpu::Device, required: u32) -> bool {
         if required <= self.instance_capacity {
             return false;
