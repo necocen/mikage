@@ -200,6 +200,9 @@ struct RunState<C: InteractiveCamera> {
     camera: C,
     frame_time: FrameTime,
     touch_tracker: TouchTracker,
+    /// Whether pointer events were suppressed (egui capturing) in the previous event.
+    /// Used to detect suppress transitions and send on_drag_end.
+    pointer_suppressed: bool,
     /// WASM: Resized イベントを render_frame の先頭まで遅延させる。
     /// 連続リサイズ中に毎イベント surface.configure() が走るのを防ぐ。
     #[cfg(target_family = "wasm")]
@@ -368,6 +371,7 @@ impl<A: App> AppHandler<A> {
             camera,
             frame_time: FrameTime::new(),
             touch_tracker: TouchTracker::default(),
+            pointer_suppressed: false,
             #[cfg(target_family = "wasm")]
             pending_resize: None,
         });
@@ -568,15 +572,22 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
             state.camera.set_cursor_position(position.x, position.y);
         }
 
-        let suppress = (is_keyboard_event && egui_consumed)
-            || (is_pointer_event && state.egui.wants_pointer_input());
+        let pointer_suppress = is_pointer_event && state.egui.wants_pointer_input();
+        let suppress = (is_keyboard_event && egui_consumed) || pointer_suppress;
 
         // When egui captures a category, clear stuck state in InputState.
         if is_keyboard_event && egui_consumed {
             state.input.clear_keyboard();
         }
-        if is_pointer_event && state.egui.wants_pointer_input() {
+        if pointer_suppress {
+            // End any active drag when egui starts capturing pointer.
+            if !state.pointer_suppressed {
+                state.camera.on_drag_end();
+                state.pointer_suppressed = true;
+            }
             state.input.clear_pointer();
+        } else if is_pointer_event {
+            state.pointer_suppressed = false;
         }
 
         // Update InputState and dispatch to camera only for non-suppressed events.
@@ -587,8 +598,10 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
             match &event {
                 WindowEvent::CursorMoved { .. } => {
                     let (dx, dy) = state.input.event_mouse_delta;
-                    if dx != 0.0 || dy != 0.0 {
-                        let buttons = &state.input.mouse_buttons_down;
+                    let buttons = &state.input.mouse_buttons_down;
+                    // Only dispatch drag when a button is pressed and there's actual movement.
+                    if (buttons.left || buttons.right || buttons.middle) && (dx != 0.0 || dy != 0.0)
+                    {
                         state.camera.on_mouse_drag(
                             dx,
                             dy,
@@ -605,7 +618,11 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                     state: winit::event::ElementState::Released,
                     ..
                 } => {
-                    state.camera.on_drag_end();
+                    // Only end drag when all buttons are released.
+                    let buttons = &state.input.mouse_buttons_down;
+                    if !buttons.left && !buttons.right && !buttons.middle {
+                        state.camera.on_drag_end();
+                    }
                 }
                 // Touch gestures: runner tracks state, camera interprets
                 WindowEvent::Touch(touch) => {
