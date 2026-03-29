@@ -169,8 +169,9 @@ impl Camera for Camera2d {
 /// EMA retain factor for velocity smoothing during drag.
 /// Higher values weight previous velocity more, producing a smoother
 /// direction estimate at the cost of responsiveness.
-/// 0.8 gives a half-life of ~3 events (~50ms at 60fps).
-const VELOCITY_SMOOTHING: f32 = 0.8;
+/// 0.5 gives a half-life of ~1 event — fast convergence while still
+/// smoothing out noisy final deltas on release.
+const VELOCITY_SMOOTHING: f32 = 0.5;
 
 impl InteractiveCamera for Camera2d {
     fn on_mouse_drag(&mut self, dx: f64, dy: f64, left: bool, _right: bool, _middle: bool) {
@@ -179,17 +180,16 @@ impl InteractiveCamera for Camera2d {
         }
 
         if left {
-            // Clear residual velocity from previous fling on drag start.
-            if !self.is_dragging {
-                self.velocity = Vec2::ZERO;
-                self.is_dragging = true;
-            }
+            self.is_dragging = true;
             // Pan: convert pixel delta to world units.
             // The orthographic projection maps viewport_height pixels to 2/zoom world units.
             let world_per_px = 2.0 / (self.viewport_height * self.zoom);
             let delta = Vec2::new(-dx as f32 * world_per_px, dy as f32 * world_per_px);
             self.position += delta;
-            // Exponential moving average for smoother inertia direction on release.
+            // Exponential moving average: smooths direction while preserving
+            // speed. When starting a drag during inertia, the existing velocity
+            // blends with the new drag deltas instead of resetting to zero,
+            // avoiding a stutter at the transition.
             self.velocity = self.velocity * VELOCITY_SMOOTHING + delta * (1.0 - VELOCITY_SMOOTHING);
         }
     }
@@ -224,7 +224,16 @@ impl InteractiveCamera for Camera2d {
             let origin = focus
                 .map(|(x, y)| Vec2::new(x as f32, y as f32))
                 .unwrap_or(self.cursor_pos);
-            self.zoom_around(zoom_delta, origin);
+            // Pinch zoom is direct manipulation — apply instantly without
+            // smoothing. Smoothing adds latency that feels wrong when the
+            // user's fingers are continuously controlling the zoom level.
+            let before = self.screen_to_world(origin);
+            let base = self.target_zoom.unwrap_or(self.zoom);
+            self.zoom =
+                (base * (1.0 + zoom_delta * self.zoom_speed)).clamp(self.min_zoom, self.max_zoom);
+            self.target_zoom = None;
+            let after = self.screen_to_world(origin);
+            self.position += before - after;
         }
         if pan_dx.abs() > 0.5 || pan_dy.abs() > 0.5 {
             // Camera2d pans on left drag, not right drag.
@@ -678,12 +687,58 @@ mod tests {
         cam.on_drag_end();
 
         // Velocity direction should still be roughly diagonal, not horizontal.
-        // arctan(vy/vx) should be > 20 degrees (0.35 rad).
+        // arctan(vy/vx) should be > 15 degrees (0.26 rad).
         let angle = cam.velocity.y.atan2(cam.velocity.x.abs());
         assert!(
-            angle.abs() > 0.35,
+            angle.abs() > 0.26,
             "velocity angle {angle:.3} rad is too horizontal; velocity = {:?}",
             cam.velocity
+        );
+    }
+
+    #[test]
+    fn flick_during_inertia_no_stutter() {
+        let mut cam = Camera2d::default();
+        cam.set_viewport_size(1600, 800);
+        cam.damping = 0.9;
+
+        // Initial flick to start inertia
+        for _ in 0..5 {
+            cam.on_mouse_drag(100.0, 0.0, true, false, false);
+        }
+        cam.on_drag_end();
+        let inertia_speed = cam.velocity.length();
+        assert!(inertia_speed > 0.0);
+
+        // Let inertia run a few frames
+        for _ in 0..5 {
+            cam.update(1.0 / 60.0);
+        }
+        let speed_before_reflick = cam.velocity.length();
+        assert!(speed_before_reflick > 0.0);
+
+        // Re-flick in same direction — velocity should NOT drop to zero
+        cam.on_mouse_drag(100.0, 0.0, true, false, false);
+        assert!(
+            cam.velocity.length() > speed_before_reflick * 0.3,
+            "velocity dropped too much on re-flick: was {speed_before_reflick}, now {}",
+            cam.velocity.length()
+        );
+    }
+
+    #[test]
+    fn pinch_zoom_bypasses_smoothing() {
+        let mut cam = Camera2d::default();
+        cam.set_viewport_size(1600, 800);
+        cam.zoom_smoothing = 0.2;
+
+        let zoom_before = cam.zoom;
+        cam.on_pinch_pan(1.0, 0.0, 0.0, Some((800.0, 400.0)));
+        // Pinch should change zoom immediately, not defer to update()
+        assert!(cam.zoom > zoom_before, "pinch zoom should be instant");
+        assert!(
+            cam.target_zoom.is_none(),
+            "pinch should not set target_zoom"
         );
     }
 
