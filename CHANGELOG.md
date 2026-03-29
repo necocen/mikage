@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.3.4
+
+### Fixed
+
+- **Camera2d flick-during-inertia stutter** — Velocity is no longer cleared on drag start. When the user flicks during inertial scroll, the EMA blends existing inertia with the new drag smoothly instead of dropping speed to zero.
+- **Camera2d pinch zoom latency** — Pinch zoom now applies instantly, bypassing `zoom_smoothing`. Direct finger control should not have animation delay.
+
+### Changed
+
+- **Camera2d velocity EMA retain lowered from 0.8 to 0.5** — Short flicks now reach ~78% of full speed in 3 events (was ~49%). Direction smoothing is still effective.
+
 ## v0.3.3
 
 ### Fixed
