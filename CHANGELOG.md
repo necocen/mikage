@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.3.3
+
+### Fixed
+
+- **Camera2d pinch-to-zoom origin** — Pinch zoom now uses the gesture midpoint as the zoom origin instead of the top-left corner. Added `focus: Option<(f64, f64)>` parameter to `InteractiveCamera::on_pinch_pan`; touch passes `Some(midpoint)`, trackpad passes `None` (falls back to cursor position).
+- **Camera2d inertia direction** — Pan velocity now uses an exponential moving average (EMA) instead of storing only the last event's delta. This prevents the fling direction from snapping horizontal due to noisy final cursor movement.
+
+### Added
+
+- **Camera2d zoom smoothing** — New `zoom_smoothing` field (0.0 = instant, 0.2–0.3 = smooth). Scroll/pinch sets a target zoom; `update()` interpolates with frame-rate independent exponential decay while preserving the world point under the zoom anchor. Default is 0.0 (instant, backward compatible).
+
+### Changed
+
+- **`InteractiveCamera::on_pinch_pan` signature** — Added `focus: Option<(f64, f64)>` parameter. The default implementation ignores it. Custom `InteractiveCamera` implementations need to add the parameter.
+
 ## v0.3.0
 
 ### Added
