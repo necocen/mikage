@@ -18,6 +18,15 @@ use super::{Camera, InteractiveCamera};
 /// - `0.0` (default): no damping, camera stops immediately when input stops
 /// - `0.9`: smooth deceleration after releasing the mouse
 ///
+/// # Zoom smoothing
+///
+/// Set `zoom_smoothing` to a value between 0.0 and 1.0 to enable smooth
+/// zoom animation. The value controls what fraction of the remaining zoom
+/// distance is covered per 1/60s reference frame.
+/// - `0.0` (default): instant zoom
+/// - `0.2`: responsive smooth zoom
+/// - `0.3`: noticeably smooth zoom
+///
 /// # Example
 /// ```
 /// use mikage::Camera2d;
@@ -26,6 +35,7 @@ use super::{Camera, InteractiveCamera};
 /// camera.position = glam::Vec2::new(0.0, 0.0);
 /// camera.zoom = 1.0;
 /// camera.damping = 0.85;
+/// camera.zoom_smoothing = 0.2;
 /// ```
 pub struct Camera2d {
     /// Camera center in world coordinates.
@@ -44,6 +54,10 @@ pub struct Camera2d {
     pub max_zoom: f32,
     /// Damping factor for pan inertia (0.0 = instant stop, 0.9 = smooth).
     pub damping: f32,
+    /// Smoothing factor for zoom animation (0.0 = instant, 0.2–0.3 = smooth).
+    /// Controls what fraction of the remaining zoom distance is covered per
+    /// 1/60s reference frame. Frame-rate independent.
+    pub zoom_smoothing: f32,
 
     /// Whether camera input is enabled. Use [`set_enabled`](InteractiveCamera::set_enabled)
     /// / [`is_enabled`](InteractiveCamera::is_enabled) to toggle.
@@ -58,6 +72,10 @@ pub struct Camera2d {
     /// Viewport height in physical pixels (updated via `set_viewport_size`).
     viewport_height: f32,
     cursor_pos: Vec2,
+    /// Target zoom for smooth animation. `None` when no animation is active.
+    target_zoom: Option<f32>,
+    /// Screen-space anchor point for zoom animation (preserves world point here).
+    zoom_anchor: Vec2,
 }
 
 impl Default for Camera2d {
@@ -71,12 +89,15 @@ impl Default for Camera2d {
             min_zoom: 0.01,
             max_zoom: 1000.0,
             damping: 0.0,
+            zoom_smoothing: 0.0,
             enabled: true,
             velocity: Vec2::ZERO,
             is_dragging: false,
             viewport_width: 1280.0,
             viewport_height: 720.0,
             cursor_pos: Vec2::ZERO,
+            target_zoom: None,
+            zoom_anchor: Vec2::new(640.0, 360.0),
         }
     }
 }
@@ -96,12 +117,25 @@ impl Camera2d {
 
     /// Zooms around a screen-space point (pixels, top-left origin),
     /// preserving the world coordinate under that point.
+    ///
+    /// When `zoom_smoothing > 0`, sets `target_zoom` and defers the actual
+    /// zoom change to [`update`](InteractiveCamera::update). Otherwise applies instantly.
     fn zoom_around(&mut self, delta: f32, origin: Vec2) {
-        let before = self.screen_to_world(origin);
-        self.zoom *= 1.0 + delta * self.zoom_speed;
-        self.zoom = self.zoom.clamp(self.min_zoom, self.max_zoom);
-        let after = self.screen_to_world(origin);
-        self.position += before - after;
+        let base = self.target_zoom.unwrap_or(self.zoom);
+        let new_target =
+            (base * (1.0 + delta * self.zoom_speed)).clamp(self.min_zoom, self.max_zoom);
+        self.zoom_anchor = origin;
+
+        if self.zoom_smoothing <= 0.0 {
+            // Instant zoom
+            let before = self.screen_to_world(origin);
+            self.zoom = new_target;
+            let after = self.screen_to_world(origin);
+            self.position += before - after;
+            self.target_zoom = None;
+        } else {
+            self.target_zoom = Some(new_target);
+        }
     }
 
     /// Converts a screen-space point (pixels, top-left origin) to world coordinates.
@@ -132,6 +166,12 @@ impl Camera for Camera2d {
     }
 }
 
+/// EMA retain factor for velocity smoothing during drag.
+/// Higher values weight previous velocity more, producing a smoother
+/// direction estimate at the cost of responsiveness.
+/// 0.8 gives a half-life of ~3 events (~50ms at 60fps).
+const VELOCITY_SMOOTHING: f32 = 0.8;
+
 impl InteractiveCamera for Camera2d {
     fn on_mouse_drag(&mut self, dx: f64, dy: f64, left: bool, _right: bool, _middle: bool) {
         if !self.enabled {
@@ -139,13 +179,18 @@ impl InteractiveCamera for Camera2d {
         }
 
         if left {
+            // Clear residual velocity from previous fling on drag start.
+            if !self.is_dragging {
+                self.velocity = Vec2::ZERO;
+                self.is_dragging = true;
+            }
             // Pan: convert pixel delta to world units.
             // The orthographic projection maps viewport_height pixels to 2/zoom world units.
             let world_per_px = 2.0 / (self.viewport_height * self.zoom);
             let delta = Vec2::new(-dx as f32 * world_per_px, dy as f32 * world_per_px);
             self.position += delta;
-            self.velocity = delta;
-            self.is_dragging = true;
+            // Exponential moving average for smoother inertia direction on release.
+            self.velocity = self.velocity * VELOCITY_SMOOTHING + delta * (1.0 - VELOCITY_SMOOTHING);
         }
     }
 
@@ -192,6 +237,26 @@ impl InteractiveCamera for Camera2d {
     }
 
     fn update(&mut self, dt: f32) {
+        const REFERENCE_DT: f32 = 1.0 / 60.0;
+
+        // Smooth zoom animation (runs regardless of drag/damping state).
+        if let Some(target) = self.target_zoom {
+            let gap = self.zoom - target;
+            if gap.abs() > 1e-6 {
+                let before = self.screen_to_world(self.zoom_anchor);
+                let factor = dt / REFERENCE_DT;
+                let retain = (1.0 - self.zoom_smoothing).powf(factor);
+                self.zoom = target + gap * retain;
+                let after = self.screen_to_world(self.zoom_anchor);
+                self.position += before - after;
+            }
+            if (self.zoom - target).abs() <= 1e-6 {
+                self.zoom = target;
+                self.target_zoom = None;
+            }
+        }
+
+        // Pan inertia
         if self.damping <= 0.0 || self.is_dragging {
             return;
         }
@@ -201,7 +266,6 @@ impl InteractiveCamera for Camera2d {
         // Use exact geometric series to compute displacement over `factor`
         // reference frames, ensuring identical results at any frame rate.
         if self.velocity.length_squared() > 1e-12 {
-            const REFERENCE_DT: f32 = 1.0 / 60.0;
             let factor = dt / REFERENCE_DT;
             let decay = self.damping.powf(factor);
             let movement_scale = if (1.0 - self.damping).abs() > 1e-6 {
@@ -523,5 +587,115 @@ mod tests {
         let world_after = cam.screen_to_world(cam.cursor_pos);
         assert_approx!(world_before.x, world_after.x);
         assert_approx!(world_before.y, world_after.y);
+    }
+
+    #[test]
+    fn smooth_zoom_converges() {
+        let mut cam = Camera2d::default();
+        cam.set_viewport_size(1600, 800);
+        cam.zoom_smoothing = 0.2;
+        cam.set_cursor_position(800.0, 400.0);
+
+        cam.on_scroll(1.0);
+        let target = cam.target_zoom.unwrap();
+        assert!(
+            target > cam.zoom,
+            "target should be higher than current zoom"
+        );
+
+        // After many frames, zoom should converge to target
+        for _ in 0..120 {
+            cam.update(1.0 / 60.0);
+        }
+        assert_approx!(cam.zoom, target);
+        assert!(cam.target_zoom.is_none(), "animation should have completed");
+    }
+
+    #[test]
+    fn smooth_zoom_preserves_anchor_point() {
+        let mut cam = Camera2d::default();
+        cam.set_viewport_size(1600, 800);
+        cam.zoom_smoothing = 0.2;
+        cam.set_cursor_position(1200.0, 200.0);
+
+        let anchor = cam.cursor_pos;
+        let world_before = cam.screen_to_world(anchor);
+        cam.on_scroll(2.0);
+
+        // Animate to completion
+        for _ in 0..120 {
+            cam.update(1.0 / 60.0);
+        }
+
+        let world_after = cam.screen_to_world(anchor);
+        assert_approx!(world_before.x, world_after.x);
+        assert_approx!(world_before.y, world_after.y);
+    }
+
+    #[test]
+    fn smooth_zoom_is_framerate_independent() {
+        let make_cam = || {
+            let mut cam = Camera2d::default();
+            cam.set_viewport_size(1600, 800);
+            cam.zoom_smoothing = 0.2;
+            cam.set_cursor_position(800.0, 400.0);
+            cam.on_scroll(2.0);
+            cam
+        };
+
+        let mut cam60 = make_cam();
+        for _ in 0..60 {
+            cam60.update(1.0 / 60.0);
+        }
+
+        let mut cam30 = make_cam();
+        for _ in 0..30 {
+            cam30.update(1.0 / 30.0);
+        }
+
+        let diff = (cam60.zoom - cam30.zoom).abs();
+        let magnitude = cam60.zoom.max(0.001);
+        assert!(
+            diff / magnitude < 0.01,
+            "30fps zoom {} vs 60fps zoom {}, diff={diff}",
+            cam30.zoom,
+            cam60.zoom
+        );
+    }
+
+    #[test]
+    fn velocity_ema_smooths_direction() {
+        let mut cam = Camera2d::default();
+        cam.set_viewport_size(1600, 800);
+        cam.damping = 0.9;
+
+        // Simulate diagonal drag: mostly (100, 100) deltas
+        for _ in 0..10 {
+            cam.on_mouse_drag(100.0, 100.0, true, false, false);
+        }
+        // Last event with horizontal jitter (mouse deceleration artifact)
+        cam.on_mouse_drag(50.0, 2.0, true, false, false);
+        cam.on_drag_end();
+
+        // Velocity direction should still be roughly diagonal, not horizontal.
+        // arctan(vy/vx) should be > 20 degrees (0.35 rad).
+        let angle = cam.velocity.y.atan2(cam.velocity.x.abs());
+        assert!(
+            angle.abs() > 0.35,
+            "velocity angle {angle:.3} rad is too horizontal; velocity = {:?}",
+            cam.velocity
+        );
+    }
+
+    #[test]
+    fn direct_zoom_set_not_animated_back() {
+        // Setting zoom directly should not cause animation back to default
+        let mut cam = Camera2d::default();
+        cam.zoom_smoothing = 0.2;
+        cam.zoom = 5.0;
+
+        cam.update(1.0 / 60.0);
+        // target_zoom is None, so no animation should occur
+        assert_approx!(cam.zoom, 5.0);
     }
 }
