@@ -59,6 +59,8 @@
 //!
 //! Run with `cargo run -p mikage --example <name>`.
 
+#[cfg(all(feature = "agent", not(target_family = "wasm")))]
+pub mod agent;
 pub mod app;
 pub mod camera;
 pub mod context;
@@ -72,6 +74,8 @@ pub mod shader_processor;
 pub mod solid_renderer;
 mod time;
 
+#[cfg(all(feature = "agent", not(target_family = "wasm")))]
+pub use agent::{AgentCommand, AgentConfig, AgentMouseButton, CameraSnapshot};
 pub use app::{App, FrameContext, UpdateContext};
 pub use camera::{Camera, Camera2d, InteractiveCamera, OrbitCamera};
 pub use context::{GpuContext, RenderTargetConfig};
@@ -85,6 +89,8 @@ pub use input::InputState;
 pub use instance_renderer::{
     ComputeBufferState, InstanceData, InstanceRenderer, InstanceRendererConfig, InstanceVertex,
 };
+#[cfg(all(feature = "agent", not(target_family = "wasm")))]
+pub use runner::run_with_agent;
 pub use runner::{RunConfig, run};
 pub use shader_processor::{
     COLOR_UTILS_WGSL, LIGHTING_WGSL, MATH_WGSL, SCENE_TYPES_WGSL, ShaderError, ShaderProcessor,

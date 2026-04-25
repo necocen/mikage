@@ -115,4 +115,25 @@ pub trait App: 'static {
     /// an egui area. System events (focus, file drops, etc.) are always
     /// delivered. The default does nothing.
     fn on_window_event(&mut self, _event: &winit::event::WindowEvent) {}
+
+    /// Returns application-specific state for the agent HTTP status endpoint.
+    ///
+    /// This is only available on native builds with the `agent` feature.
+    #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+    fn agent_status(&self) -> serde_json::Value {
+        serde_json::Value::Null
+    }
+
+    /// Handles an application-specific JSON command from the agent HTTP API.
+    ///
+    /// The framework handles built-in camera and screenshot commands itself.
+    /// Use this hook for simulation reset, seed changes, parameter updates,
+    /// or other app-owned debug controls.
+    #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+    fn on_agent_command(
+        &mut self,
+        _payload: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        Err("app.command is not implemented for this app".to_string())
+    }
 }

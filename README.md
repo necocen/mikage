@@ -15,6 +15,7 @@ Provides GPU rendering, compute shaders, and egui UI integration for both Native
 - **ShaderProcessor** — Lightweight WGSL preprocessor with `#import` resolution, recursive dependency handling, and circular import detection.
 - **Multi-platform** — Native (Metal / Vulkan / DX12) and WASM (WebGPU, with optional WebGL2 fallback).
 - **Touch input** — One-finger orbit/pan, two-finger pinch-to-zoom and pan. Trackpad gestures on native.
+- **Agent HTTP API** — Optional native localhost API for screenshots, camera control, redraws, and app-specific JSON commands.
 - **tracing** — `RUST_LOG` on native, `tracing-web` (browser console) on WASM.
 
 ## Quick Start
@@ -134,6 +135,31 @@ let config = RunConfig { title: "boids".to_string(), ..RunConfig::with_defaults(
 | `init_logging` | `true` | Whether to initialize the tracing logger |
 | `sample_count` | 1 | MSAA sample count |
 | `canvas` | `None` | CSS selector for existing canvas (WASM only) |
+
+## Agent HTTP API
+
+Enable the native-only `agent` feature and call `run_with_agent()` to expose a
+local debugging API for LLM agents and scripts:
+
+```rust
+mikage::run_with_agent(
+    MyApp::new,
+    RunConfig::default(),
+    mikage::AgentConfig::default(),
+);
+```
+
+Default address: `127.0.0.1:3939`.
+
+```sh
+curl -s http://127.0.0.1:3939/status
+curl -s http://127.0.0.1:3939/screenshot -o /tmp/mikage.png
+curl -s -X POST http://127.0.0.1:3939/command \
+  -H 'content-type: application/json' \
+  -d '{"op":"camera.drag","dx":-80,"dy":20,"button":"left"}'
+```
+
+See [`docs/agent-http-api.md`](docs/agent-http-api.md) for the full command list.
 
 ## Helpers
 

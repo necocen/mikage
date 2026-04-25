@@ -190,6 +190,50 @@ impl InteractiveCamera for OrbitCamera {
     fn is_enabled(&self) -> bool {
         self.enabled
     }
+
+    #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+    fn agent_snapshot(&self) -> crate::agent::CameraSnapshot {
+        crate::agent::CameraSnapshot::Orbit {
+            position: self.position().to_array(),
+            target: self.target.to_array(),
+            distance: self.distance,
+            yaw: self.yaw,
+            pitch: self.pitch,
+            fov_y: self.fov_y,
+            enabled: self.enabled,
+        }
+    }
+
+    #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+    fn apply_agent_command(&mut self, command: &crate::agent::AgentCommand) -> Result<(), String> {
+        match command {
+            crate::agent::AgentCommand::CameraSetOrbit {
+                target,
+                distance,
+                yaw,
+                pitch,
+                fov_y,
+            } => {
+                if let Some(target) = target {
+                    self.target = Vec3::from_array(*target);
+                }
+                if let Some(distance) = distance {
+                    self.distance = distance.clamp(self.min_distance, self.max_distance);
+                }
+                if let Some(yaw) = yaw {
+                    self.yaw = *yaw;
+                }
+                if let Some(pitch) = pitch {
+                    self.pitch = pitch.clamp(self.min_pitch, self.max_pitch);
+                }
+                if let Some(fov_y) = fov_y {
+                    self.fov_y = *fov_y;
+                }
+                Ok(())
+            }
+            _ => crate::agent::apply_basic_camera_command(self, command),
+        }
+    }
 }
 
 #[cfg(test)]

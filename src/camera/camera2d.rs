@@ -294,6 +294,32 @@ impl InteractiveCamera for Camera2d {
     fn is_enabled(&self) -> bool {
         self.enabled
     }
+
+    #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+    fn agent_snapshot(&self) -> crate::agent::CameraSnapshot {
+        crate::agent::CameraSnapshot::Camera2d {
+            position: self.position.to_array(),
+            zoom: self.zoom,
+            enabled: self.enabled,
+        }
+    }
+
+    #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+    fn apply_agent_command(&mut self, command: &crate::agent::AgentCommand) -> Result<(), String> {
+        match command {
+            crate::agent::AgentCommand::CameraSet2d { position, zoom } => {
+                if let Some(position) = position {
+                    self.position = Vec2::from_array(*position);
+                }
+                if let Some(zoom) = zoom {
+                    self.zoom = zoom.clamp(self.min_zoom, self.max_zoom);
+                    self.target_zoom = None;
+                }
+                Ok(())
+            }
+            _ => crate::agent::apply_basic_camera_command(self, command),
+        }
+    }
 }
 
 #[cfg(test)]

@@ -212,8 +212,15 @@ impl GpuContext {
         let width = size.width.max(1);
         let height = size.height.max(1);
 
+        let desired_usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
+        let surface_usage = if surface_caps.usages.contains(desired_usage) {
+            desired_usage
+        } else {
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+        };
+
         let surface_config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: surface_usage,
             format: config_format,
             width,
             height,
@@ -267,6 +274,18 @@ impl GpuContext {
 
     pub(crate) fn surface_texture(&self) -> Result<wgpu::SurfaceTexture, wgpu::SurfaceError> {
         self.surface.get_current_texture()
+    }
+
+    #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+    pub(crate) fn surface_format(&self) -> wgpu::TextureFormat {
+        self.surface_config.format
+    }
+
+    /// Returns whether the current surface can be copied for screenshot readback.
+    pub fn screenshot_supported(&self) -> bool {
+        self.surface_config
+            .usage
+            .contains(wgpu::TextureUsages::COPY_SRC)
     }
 
     /// Returns the texture format to use when creating render pipelines.

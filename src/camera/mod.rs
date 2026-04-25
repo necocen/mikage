@@ -117,4 +117,19 @@ pub trait InteractiveCamera: Camera {
 
     /// Returns whether camera input is enabled.
     fn is_enabled(&self) -> bool;
+
+    /// Returns the camera state exposed through the native agent HTTP API.
+    #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+    fn agent_snapshot(&self) -> crate::agent::CameraSnapshot {
+        crate::agent::CameraSnapshot::Generic {
+            position: self.position().to_array(),
+            enabled: self.is_enabled(),
+        }
+    }
+
+    /// Applies a camera command received through the native agent HTTP API.
+    #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+    fn apply_agent_command(&mut self, command: &crate::agent::AgentCommand) -> Result<(), String> {
+        crate::agent::apply_basic_camera_command(self, command)
+    }
 }

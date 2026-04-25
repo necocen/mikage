@@ -172,6 +172,28 @@ pub fn run<A: App>(
     event_loop.run_app(&mut handler).expect("Event loop error");
 }
 
+/// Starts the application with the native HTTP agent API enabled.
+///
+/// This is available on native builds with the `agent` feature. The regular
+/// frame loop is unchanged, but local HTTP requests can request screenshots,
+/// camera movement, redraws, and app-specific JSON commands.
+#[cfg(all(feature = "agent", not(target_family = "wasm")))]
+pub fn run_with_agent<A: App>(
+    init: impl FnOnce(&GpuContext, PhysicalSize<u32>) -> A + 'static,
+    config: RunConfig<A::Camera>,
+    agent_config: crate::agent::AgentConfig,
+) {
+    if config.init_logging {
+        crate::logging::init_logging();
+    }
+
+    let event_loop = EventLoop::new().expect("Failed to create event loop");
+    let agent = crate::agent::AgentBridge::start(agent_config, event_loop.create_proxy())
+        .expect("Failed to start mikage agent HTTP API");
+    let mut handler = AppHandler::new_with_agent(Box::new(init), config, agent);
+    event_loop.run_app(&mut handler).expect("Event loop error");
+}
+
 /// Starts the application (WASM).
 ///
 /// Uses `EventLoop::spawn_app` for non-blocking execution.
@@ -204,6 +226,8 @@ struct RunState<C: InteractiveCamera> {
     /// Whether pointer events were suppressed (egui capturing) in the previous event.
     /// Used to detect suppress transitions and send on_drag_end.
     pointer_suppressed: bool,
+    #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+    pending_screenshot: Option<std::sync::mpsc::Sender<crate::agent::AgentResponse>>,
     /// WASM: Resized イベントを render_frame の先頭まで遅延させる。
     /// 連続リサイズ中に毎イベント surface.configure() が走るのを防ぐ。
     #[cfg(target_family = "wasm")]
@@ -325,6 +349,8 @@ struct AppHandler<A: App> {
     init_fn: Option<InitFn<A>>,
     config: Option<RunConfig<A::Camera>>,
     state: Option<RunState<A::Camera>>,
+    #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+    agent: Option<crate::agent::AgentBridge>,
     /// WASM: async GPU 初期化の完了を受け取るための共有スロット
     #[cfg(target_family = "wasm")]
     pending_gpu: Option<PendingGpuInit<A::Camera>>,
@@ -349,9 +375,22 @@ impl<A: App> AppHandler<A> {
             init_fn: Some(init_fn),
             config: Some(config),
             state: None,
+            #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+            agent: None,
             #[cfg(target_family = "wasm")]
             pending_gpu: None,
         }
+    }
+
+    #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+    fn new_with_agent(
+        init_fn: InitFn<A>,
+        config: RunConfig<A::Camera>,
+        agent: crate::agent::AgentBridge,
+    ) -> Self {
+        let mut handler = Self::new(init_fn, config);
+        handler.agent = Some(agent);
+        handler
     }
 
     /// GPU 初期化完了後の共通セットアップ
@@ -376,9 +415,143 @@ impl<A: App> AppHandler<A> {
             frame_time: FrameTime::new(),
             touch_tracker: TouchTracker::default(),
             pointer_suppressed: false,
+            #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+            pending_screenshot: None,
             #[cfg(target_family = "wasm")]
             pending_resize: None,
         });
+
+        #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+        self.publish_agent_snapshot();
+    }
+
+    #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+    fn publish_agent_snapshot(&self) {
+        let Some(agent) = &self.agent else {
+            return;
+        };
+        let Some(state) = &self.state else {
+            return;
+        };
+
+        let app_status = self
+            .app
+            .as_ref()
+            .map(|app| app.agent_status())
+            .unwrap_or(serde_json::Value::Null);
+        let size = state.gpu.window_size();
+        agent.update_snapshot(|snapshot| {
+            snapshot.ready = self.app.is_some();
+            snapshot.window_size = Some([size.width, size.height]);
+            snapshot.frame_count = state.frame_time.frame_count;
+            snapshot.elapsed = state.frame_time.elapsed;
+            snapshot.screenshot_supported = state.gpu.screenshot_supported();
+            snapshot.camera = Some(state.camera.agent_snapshot());
+            snapshot.app = app_status;
+        });
+    }
+
+    #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+    fn handle_agent_requests(&mut self) {
+        let requests = match self.agent.as_mut() {
+            Some(agent) => agent.drain_requests(),
+            None => return,
+        };
+
+        for request in requests {
+            self.handle_agent_request(request);
+        }
+        self.publish_agent_snapshot();
+    }
+
+    #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+    fn handle_agent_request(&mut self, request: crate::agent::AgentRequest) {
+        match request.kind {
+            crate::agent::AgentRequestKind::Command(command) => {
+                self.handle_agent_command(command, request.respond_to);
+            }
+            crate::agent::AgentRequestKind::Screenshot => {
+                let Some(state) = self.state.as_mut() else {
+                    let _ = request
+                        .respond_to
+                        .send(crate::agent::AgentResponse::unavailable("app is not ready"));
+                    return;
+                };
+
+                if !state.gpu.screenshot_supported() {
+                    let _ = request
+                        .respond_to
+                        .send(crate::agent::AgentResponse::unavailable(
+                            "surface COPY_SRC is not supported by this adapter",
+                        ));
+                    return;
+                }
+
+                if state.pending_screenshot.is_some() {
+                    let _ = request
+                        .respond_to
+                        .send(crate::agent::AgentResponse::unavailable(
+                            "another screenshot is already pending",
+                        ));
+                    return;
+                }
+
+                state.pending_screenshot = Some(request.respond_to);
+                state.window.request_redraw();
+            }
+        }
+    }
+
+    #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+    fn handle_agent_command(
+        &mut self,
+        command: crate::agent::AgentCommand,
+        respond_to: std::sync::mpsc::Sender<crate::agent::AgentResponse>,
+    ) {
+        match command {
+            crate::agent::AgentCommand::Redraw => {
+                if let Some(state) = &self.state {
+                    state.window.request_redraw();
+                }
+                let _ = respond_to.send(crate::agent::AgentResponse::ok());
+            }
+            crate::agent::AgentCommand::AppCommand { payload } => {
+                let Some(app) = self.app.as_mut() else {
+                    let _ = respond_to
+                        .send(crate::agent::AgentResponse::unavailable("app is not ready"));
+                    return;
+                };
+                match app.on_agent_command(payload) {
+                    Ok(value) => {
+                        let _ = respond_to.send(crate::agent::AgentResponse::json(value));
+                    }
+                    Err(message) => {
+                        let _ = respond_to.send(crate::agent::AgentResponse::bad_request(message));
+                    }
+                }
+            }
+            command if command.is_camera_command() => {
+                let Some(state) = self.state.as_mut() else {
+                    let _ = respond_to
+                        .send(crate::agent::AgentResponse::unavailable("app is not ready"));
+                    return;
+                };
+                match state.camera.apply_agent_command(&command) {
+                    Ok(()) => {
+                        state.window.request_redraw();
+                        let _ = respond_to.send(crate::agent::AgentResponse::ok());
+                    }
+                    Err(message) => {
+                        let _ = respond_to.send(crate::agent::AgentResponse::bad_request(message));
+                    }
+                }
+            }
+            _ => {
+                let _ = respond_to.send(crate::agent::AgentResponse::bad_request(
+                    "unsupported agent command",
+                ));
+            }
+        }
     }
 }
 
@@ -492,6 +665,11 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
             // redraw をリクエストして初期化完了チェックを駆動
             window.request_redraw();
         }
+    }
+
+    #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
+        self.handle_agent_requests();
     }
 
     fn window_event(
@@ -700,6 +878,8 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
             WindowEvent::RedrawRequested => {
                 if let Some(app) = self.app.as_mut() {
                     render_frame(app, state);
+                    #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+                    self.publish_agent_snapshot();
                 }
             }
             ref other => {
@@ -812,8 +992,35 @@ fn render_frame<A: App>(app: &mut A, state: &mut RunState<A::Camera>) {
         },
     );
 
+    #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+    let screenshot_readback = if state.pending_screenshot.is_some() {
+        match crate::agent::ScreenshotReadback::encode(
+            &state.gpu,
+            &mut encoder,
+            &surface_texture.texture,
+            size,
+        ) {
+            Ok(readback) => Some(readback),
+            Err(message) => {
+                if let Some(respond_to) = state.pending_screenshot.take() {
+                    let _ = respond_to.send(crate::agent::AgentResponse::internal(message));
+                }
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     state.gpu.queue.submit(std::iter::once(encoder.finish()));
     surface_texture.present();
+
+    #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+    if let Some(readback) = screenshot_readback {
+        if let Some(respond_to) = state.pending_screenshot.take() {
+            let _ = respond_to.send(readback.read_png(&state.gpu.device));
+        }
+    }
 
     state.window.request_redraw();
 

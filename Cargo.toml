@@ -6,6 +6,7 @@ license = "MIT"
 
 [features]
 default = []
+agent = ["dep:image", "dep:serde", "dep:serde_json"]
 webgl = ["wgpu/webgl"]
 
 [dependencies]
@@ -17,6 +18,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 bytemuck = { version = "1", features = ["derive"] }
 glam = { version = "0.29", features = ["bytemuck"] }
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
 
 [dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
