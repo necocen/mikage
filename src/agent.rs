@@ -124,6 +124,9 @@ pub enum AgentCommand {
     /// Requests a redraw and returns immediately.
     #[serde(rename = "redraw")]
     Redraw,
+    /// Exits the application event loop after returning a response.
+    #[serde(rename = "shutdown")]
+    Shutdown,
 }
 
 impl AgentCommand {
@@ -310,7 +313,7 @@ pub(crate) fn apply_basic_camera_command<C: InteractiveCamera + ?Sized>(
         AgentCommand::CameraSet2d { .. } => {
             Err("camera.set_2d is only supported by Camera2d".to_string())
         }
-        AgentCommand::AppCommand { .. } | AgentCommand::Redraw => {
+        AgentCommand::AppCommand { .. } | AgentCommand::Redraw | AgentCommand::Shutdown => {
             Err("not a camera command".to_string())
         }
     }
@@ -734,6 +737,12 @@ mod tests {
             }
             _ => panic!("expected camera drag"),
         }
+    }
+
+    #[test]
+    fn parses_shutdown_command() {
+        let command: AgentCommand = serde_json::from_str(r#"{"op":"shutdown"}"#).unwrap();
+        assert!(matches!(command, AgentCommand::Shutdown));
     }
 
     #[test]

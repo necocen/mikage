@@ -452,23 +452,27 @@ impl<A: App> AppHandler<A> {
     }
 
     #[cfg(all(feature = "agent", not(target_family = "wasm")))]
-    fn handle_agent_requests(&mut self) {
+    fn handle_agent_requests(&mut self, event_loop: &ActiveEventLoop) {
         let requests = match self.agent.as_mut() {
             Some(agent) => agent.drain_requests(),
             None => return,
         };
 
         for request in requests {
-            self.handle_agent_request(request);
+            self.handle_agent_request(event_loop, request);
         }
         self.publish_agent_snapshot();
     }
 
     #[cfg(all(feature = "agent", not(target_family = "wasm")))]
-    fn handle_agent_request(&mut self, request: crate::agent::AgentRequest) {
+    fn handle_agent_request(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        request: crate::agent::AgentRequest,
+    ) {
         match request.kind {
             crate::agent::AgentRequestKind::Command(command) => {
-                self.handle_agent_command(command, request.respond_to);
+                self.handle_agent_command(event_loop, command, request.respond_to);
             }
             crate::agent::AgentRequestKind::Screenshot => {
                 let Some(state) = self.state.as_mut() else {
@@ -505,6 +509,7 @@ impl<A: App> AppHandler<A> {
     #[cfg(all(feature = "agent", not(target_family = "wasm")))]
     fn handle_agent_command(
         &mut self,
+        event_loop: &ActiveEventLoop,
         command: crate::agent::AgentCommand,
         respond_to: std::sync::mpsc::Sender<crate::agent::AgentResponse>,
     ) {
@@ -514,6 +519,10 @@ impl<A: App> AppHandler<A> {
                     state.window.request_redraw();
                 }
                 let _ = respond_to.send(crate::agent::AgentResponse::ok());
+            }
+            crate::agent::AgentCommand::Shutdown => {
+                let _ = respond_to.send(crate::agent::AgentResponse::ok());
+                event_loop.exit();
             }
             crate::agent::AgentCommand::AppCommand { payload } => {
                 let Some(app) = self.app.as_mut() else {
@@ -668,8 +677,8 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
     }
 
     #[cfg(all(feature = "agent", not(target_family = "wasm")))]
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
-        self.handle_agent_requests();
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, _event: ()) {
+        self.handle_agent_requests(event_loop);
     }
 
     fn window_event(

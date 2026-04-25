@@ -63,12 +63,17 @@ Supported built-in commands:
 {"op":"camera.set_orbit","yaw":0.6,"pitch":0.4,"distance":3.0}
 {"op":"camera.set_2d","position":[0.0,0.0],"zoom":2.0}
 {"op":"redraw"}
+{"op":"shutdown"}
 {"op":"app.command","payload":{"reset":true,"seed":42}}
 ```
 
 `camera.drag`, `camera.zoom`, and `camera.set_enabled` work with any
 `InteractiveCamera`. Absolute `camera.set_orbit` and `camera.set_2d` are
 implemented by mikage's built-in `OrbitCamera` and `Camera2d`.
+
+`shutdown` returns `{"ok":true}` and then exits the winit event loop. This is
+useful for smoke-test scripts that start an example, capture evidence, and then
+cleanly stop it.
 
 `app.command` calls `App::on_agent_command(payload)` so simulations can expose
 their own reset, seed, parameter, or inspection hooks without adding framework
