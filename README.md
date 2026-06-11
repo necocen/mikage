@@ -6,9 +6,10 @@ Provides GPU rendering, compute shaders, and egui UI integration for both Native
 
 ## Features
 
-- **Raw wgpu access** — The framework manages the window and surface; you manage everything else.
+- **Raw wgpu access** — The framework manages presentation; you create pipelines, buffers, and bind groups directly.
+- **Headless GPU context** — `GpuContext::headless()` supports off-screen rendering and GPU tests without a window.
 - **egui integration** — Build UI in `gui()`. Input lock between egui and camera is automatic.
-- **Camera system** — `Camera` trait (read-only) + `InteractiveCamera` trait (input handling). Built-in `OrbitCamera` and `Camera2d`.
+- **Camera system** — `Camera` trait (read-only) + `InteractiveCamera` trait (input handling). Built-in `OrbitCamera`, `Camera2d`, and `()` for camera-free apps.
 - **Compute shaders** — Encode compute passes in `encode()`, before render passes.
 - **SolidRenderer** — Opaque (lit) and transparent (unlit) pipelines for solid-colored meshes.
 - **InstanceRenderer** — GPU-instanced rendering with generic per-instance vertex data via `InstanceVertex` trait.
@@ -56,7 +57,7 @@ Each app specifies its camera type via an associated type:
 
 ```rust
 impl App for MyApp {
-    type Camera = OrbitCamera;  // or Camera2d, or your own
+    type Camera = OrbitCamera;  // or Camera2d, (), or your own
     fn update(&mut self, ctx: &mut UpdateContext<OrbitCamera>) { /* ... */ }
     fn encode(&mut self, ctx: &mut FrameContext<OrbitCamera>) { /* ... */ }
 }
@@ -99,6 +100,7 @@ winit events → InputState → egui input
 - `gpu: &GpuContext` — device / queue
 - `input: &InputState` — keyboard / mouse state
 - `camera: &mut C` — mutable camera controller
+- `window: &winit::window::Window` — window-level controls such as title/cursor changes
 
 ### `FrameContext<C: Camera>`
 - `gpu: &GpuContext` — device / queue (`gpu.device`, `gpu.queue`)
@@ -135,6 +137,9 @@ let config = RunConfig { title: "boids".to_string(), ..RunConfig::with_defaults(
 | `init_logging` | `true` | Whether to initialize the tracing logger |
 | `sample_count` | 1 | MSAA sample count |
 | `canvas` | `None` | CSS selector for existing canvas (WASM only) |
+| `redraw_policy` | `Continuous` | `Continuous` or `Reactive` redraw scheduling |
+| `pixel_scroll_per_line` | 50.0 | Pixel-wheel normalization |
+| `touch_pinch_sensitivity` | 5.0 | Touch pinch zoom multiplier |
 
 ## Agent HTTP API
 
@@ -338,8 +343,9 @@ Built-in implementations:
 |--------|----------|-------|-------|
 | `OrbitCamera` | 3D | Left drag: orbit, Right drag: pan, Scroll: zoom | 1-finger: orbit, 2-finger: pinch zoom + pan |
 | `Camera2d` | 2D | Left drag: pan, Scroll: zoom | 1-finger: pan, 2-finger: pinch zoom |
+| `()` | Camera-free apps | Ignored | Ignored |
 
-Implement `InteractiveCamera` for a custom camera and pass it via `RunConfig::camera`.
+Use `type Camera = ()` for apps that do not need camera matrices or camera input. Implement `InteractiveCamera` for a custom camera and pass it via `RunConfig::camera`.
 
 ## WASM
 

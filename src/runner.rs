@@ -7,10 +7,19 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::app::{App, FrameContext, UpdateContext};
 use crate::camera::{InteractiveCamera, OrbitCamera};
-use crate::context::GpuContext;
+use crate::context::{GpuContext, SurfaceContext};
 use crate::egui_integration::EguiIntegration;
 use crate::input::InputState;
 use crate::time::FrameTime;
+
+/// Controls when the runner requests the next frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RedrawPolicy {
+    /// Request a new frame after every rendered frame.
+    Continuous,
+    /// Request frames after input/window events or immediate egui repaint requests.
+    Reactive,
+}
 
 /// Application launch configuration.
 ///
@@ -64,26 +73,33 @@ pub struct RunConfig<C: InteractiveCamera = OrbitCamera> {
     /// If `None` (default), a canvas is created automatically and sized to fill the viewport.
     /// This option is only used on WASM; it is ignored on native platforms.
     pub canvas: Option<String>,
+    /// Redraw scheduling policy. Default: [`RedrawPolicy::Continuous`].
+    pub redraw_policy: RedrawPolicy,
+    /// Number of physical scroll pixels treated as one line unit.
+    /// Default: `50.0`.
+    pub pixel_scroll_per_line: f32,
+    /// Multiplier applied to touch pinch distance deltas. Default: `5.0`.
+    pub touch_pinch_sensitivity: f32,
 }
 
 impl Default for RunConfig<OrbitCamera> {
     fn default() -> Self {
-        Self {
-            title: "mikage".to_string(),
-            width: 1280,
-            height: 720,
-            camera: OrbitCamera::default(),
-            present_mode: wgpu::PresentMode::AutoVsync,
-            wgpu_features: wgpu::Features::empty(),
-            wgpu_limits: None,
-            init_logging: true,
-            sample_count: 1,
-            canvas: None,
-        }
+        Self::with_defaults(OrbitCamera::default())
+    }
+}
+
+impl Default for RunConfig<()> {
+    fn default() -> Self {
+        Self::with_defaults(())
     }
 }
 
 impl RunConfig<OrbitCamera> {
+    /// Creates the default config with [`OrbitCamera`].
+    pub fn default() -> Self {
+        <Self as Default>::default()
+    }
+
     /// Creates a new config with the given title and default [`OrbitCamera`].
     pub fn new(title: impl Into<String>) -> Self {
         Self {
@@ -109,11 +125,16 @@ impl<C: InteractiveCamera> RunConfig<C> {
             init_logging: true,
             sample_count: 1,
             canvas: None,
+            redraw_policy: RedrawPolicy::Continuous,
+            pixel_scroll_per_line: InputState::DEFAULT_PIXEL_SCROLL_PER_LINE,
+            touch_pinch_sensitivity: TouchTracker::DEFAULT_PINCH_SENSITIVITY,
         }
     }
 
     /// Replaces the camera, changing the type parameter.
     pub fn with_camera<C2: InteractiveCamera>(self, camera: C2) -> RunConfig<C2> {
+        // Keep this exhaustive: changing the type parameter requires rebuilding
+        // the struct, so newly added fields must be carried over here.
         RunConfig {
             title: self.title,
             width: self.width,
@@ -125,6 +146,9 @@ impl<C: InteractiveCamera> RunConfig<C> {
             init_logging: self.init_logging,
             sample_count: self.sample_count,
             canvas: self.canvas,
+            redraw_policy: self.redraw_policy,
+            pixel_scroll_per_line: self.pixel_scroll_per_line,
+            touch_pinch_sensitivity: self.touch_pinch_sensitivity,
         }
     }
 
@@ -150,6 +174,24 @@ impl<C: InteractiveCamera> RunConfig<C> {
     /// Sets the canvas CSS selector (WASM only).
     pub fn with_canvas(mut self, selector: impl Into<String>) -> Self {
         self.canvas = Some(selector.into());
+        self
+    }
+
+    /// Sets the redraw policy.
+    pub fn with_redraw_policy(mut self, policy: RedrawPolicy) -> Self {
+        self.redraw_policy = policy;
+        self
+    }
+
+    /// Sets how many physical scroll pixels correspond to one line unit.
+    pub fn with_pixel_scroll_per_line(mut self, pixels: f32) -> Self {
+        self.pixel_scroll_per_line = pixels.max(1.0);
+        self
+    }
+
+    /// Sets the touch pinch zoom sensitivity multiplier.
+    pub fn with_touch_pinch_sensitivity(mut self, sensitivity: f32) -> Self {
+        self.touch_pinch_sensitivity = sensitivity.max(0.0);
         self
     }
 }
@@ -218,11 +260,13 @@ pub fn run<A: App>(
 struct RunState<C: InteractiveCamera> {
     window: Arc<Window>,
     gpu: GpuContext,
+    surface: SurfaceContext,
     egui: EguiIntegration,
     input: InputState,
     camera: C,
     frame_time: FrameTime,
     touch_tracker: TouchTracker,
+    redraw_policy: RedrawPolicy,
     /// Whether pointer events were suppressed (egui capturing) in the previous event.
     /// Used to detect suppress transitions and send on_drag_end.
     pointer_suppressed: bool,
@@ -237,7 +281,6 @@ struct RunState<C: InteractiveCamera> {
 // --- タッチ・ジェスチャー入力 ---
 
 /// Tracks touch gestures: one-finger drag (orbit) and two-finger pinch/pan.
-#[derive(Default)]
 struct TouchTracker {
     /// Active touch points.
     touches: std::collections::HashMap<u64, (f64, f64)>,
@@ -245,6 +288,18 @@ struct TouchTracker {
     prev_pinch_distance: Option<f64>,
     /// Previous midpoint of two fingers (for two-finger pan).
     prev_midpoint: Option<(f64, f64)>,
+    pinch_sensitivity: f32,
+}
+
+impl Default for TouchTracker {
+    fn default() -> Self {
+        Self {
+            touches: std::collections::HashMap::new(),
+            prev_pinch_distance: None,
+            prev_midpoint: None,
+            pinch_sensitivity: Self::DEFAULT_PINCH_SENSITIVITY,
+        }
+    }
 }
 
 enum TouchGestureAction {
@@ -263,6 +318,15 @@ enum TouchGestureAction {
 }
 
 impl TouchTracker {
+    const DEFAULT_PINCH_SENSITIVITY: f32 = 5.0;
+
+    fn new(pinch_sensitivity: f32) -> Self {
+        Self {
+            pinch_sensitivity,
+            ..Default::default()
+        }
+    }
+
     fn handle_touch(&mut self, touch: &winit::event::Touch) -> Option<TouchGestureAction> {
         use winit::event::TouchPhase;
         match touch.phase {
@@ -296,7 +360,7 @@ impl TouchTracker {
                         let (dist, mid) = self.two_finger_state();
                         let scroll_delta = self
                             .prev_pinch_distance
-                            .map(|prev| ((dist / prev) - 1.0) as f32 * 5.0)
+                            .map(|prev| ((dist / prev) - 1.0) as f32 * self.pinch_sensitivity)
                             .unwrap_or(0.0);
                         let (pan_dx, pan_dy) = self
                             .prev_midpoint
@@ -361,11 +425,16 @@ struct AppHandler<A: App> {
 struct PendingGpuInit<C: InteractiveCamera> {
     window: Arc<Window>,
     camera: C,
-    slot: std::rc::Rc<std::cell::RefCell<Option<GpuContext>>>,
+    slot: std::rc::Rc<
+        std::cell::RefCell<Option<Result<(GpuContext, SurfaceContext), crate::GpuInitError>>>,
+    >,
     /// GPU 初期化中に届いた最新の Resized イベントをバッファリングする。
     /// winit の ResizeObserver は非同期に発火するため、初期化完了前に
     /// 正しいサイズの Resized が届くことがある。
     buffered_resize: Option<PhysicalSize<u32>>,
+    redraw_policy: RedrawPolicy,
+    pixel_scroll_per_line: f32,
+    touch_pinch_sensitivity: f32,
 }
 
 impl<A: App> AppHandler<A> {
@@ -394,9 +463,18 @@ impl<A: App> AppHandler<A> {
     }
 
     /// GPU 初期化完了後の共通セットアップ
-    fn complete_init(&mut self, window: Arc<Window>, gpu: GpuContext, camera: A::Camera) {
-        let egui = EguiIntegration::new(&window, &gpu);
-        let size = gpu.window_size();
+    fn complete_init(
+        &mut self,
+        window: Arc<Window>,
+        gpu: GpuContext,
+        surface: SurfaceContext,
+        camera: A::Camera,
+        redraw_policy: RedrawPolicy,
+        pixel_scroll_per_line: f32,
+        touch_pinch_sensitivity: f32,
+    ) {
+        let egui = EguiIntegration::new(&window, &gpu, &surface);
+        let size = surface.window_size();
 
         tracing::info!("App init with size: {}x{}", size.width, size.height);
         let init_fn = self.init_fn.take().expect("init_fn already consumed");
@@ -407,13 +485,15 @@ impl<A: App> AppHandler<A> {
         camera.set_viewport_size(size.width, size.height);
 
         self.state = Some(RunState {
-            window,
+            window: window.clone(),
             gpu,
+            surface,
             egui,
-            input: InputState::default(),
+            input: InputState::new(pixel_scroll_per_line),
             camera,
             frame_time: FrameTime::new(),
-            touch_tracker: TouchTracker::default(),
+            touch_tracker: TouchTracker::new(touch_pinch_sensitivity),
+            redraw_policy,
             pointer_suppressed: false,
             #[cfg(all(feature = "agent", not(target_family = "wasm")))]
             pending_screenshot: None,
@@ -423,6 +503,8 @@ impl<A: App> AppHandler<A> {
 
         #[cfg(all(feature = "agent", not(target_family = "wasm")))]
         self.publish_agent_snapshot();
+
+        window.request_redraw();
     }
 
     #[cfg(all(feature = "agent", not(target_family = "wasm")))]
@@ -439,13 +521,13 @@ impl<A: App> AppHandler<A> {
             .as_ref()
             .map(|app| app.agent_status())
             .unwrap_or(serde_json::Value::Null);
-        let size = state.gpu.window_size();
+        let size = state.surface.window_size();
         agent.update_snapshot(|snapshot| {
             snapshot.ready = self.app.is_some();
             snapshot.window_size = Some([size.width, size.height]);
             snapshot.frame_count = state.frame_time.frame_count;
             snapshot.elapsed = state.frame_time.elapsed;
-            snapshot.screenshot_supported = state.gpu.screenshot_supported();
+            snapshot.screenshot_supported = state.surface.screenshot_supported();
             snapshot.camera = Some(state.camera.agent_snapshot());
             snapshot.app = app_status;
         });
@@ -481,15 +563,6 @@ impl<A: App> AppHandler<A> {
                         .send(crate::agent::AgentResponse::unavailable("app is not ready"));
                     return;
                 };
-
-                if !state.gpu.screenshot_supported() {
-                    let _ = request
-                        .respond_to
-                        .send(crate::agent::AgentResponse::unavailable(
-                            "surface COPY_SRC is not supported by this adapter",
-                        ));
-                    return;
-                }
 
                 if state.pending_screenshot.is_some() {
                     let _ = request
@@ -631,14 +704,23 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
         // Native: 同期的に GPU 初期化
         #[cfg(not(target_family = "wasm"))]
         {
-            let gpu = pollster::block_on(GpuContext::new(
+            let (gpu, surface) = pollster::block_on(GpuContext::new_for_window(
                 window.clone(),
                 config.present_mode,
                 config.wgpu_features,
                 config.wgpu_limits.clone(),
                 config.sample_count,
-            ));
-            self.complete_init(window, gpu, config.camera);
+            ))
+            .expect("Failed to initialize GPU");
+            self.complete_init(
+                window,
+                gpu,
+                surface,
+                config.camera,
+                config.redraw_policy,
+                config.pixel_scroll_per_line,
+                config.touch_pinch_sensitivity,
+            );
         }
 
         // WASM: 非同期に GPU 初期化
@@ -653,7 +735,7 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
             let wgpu_limits = config.wgpu_limits.clone();
             let sample_count = config.sample_count;
             wasm_bindgen_futures::spawn_local(async move {
-                let gpu = GpuContext::new(
+                let result = GpuContext::new_for_window(
                     window_clone,
                     present_mode,
                     wgpu_features,
@@ -661,7 +743,7 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                     sample_count,
                 )
                 .await;
-                *slot_clone.borrow_mut() = Some(gpu);
+                *slot_clone.borrow_mut() = Some(result);
             });
 
             self.pending_gpu = Some(PendingGpuInit {
@@ -669,6 +751,9 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                 camera: config.camera,
                 slot,
                 buffered_resize: None,
+                redraw_policy: config.redraw_policy,
+                pixel_scroll_per_line: config.pixel_scroll_per_line,
+                touch_pinch_sensitivity: config.touch_pinch_sensitivity,
             });
 
             // redraw をリクエストして初期化完了チェックを駆動
@@ -700,13 +785,30 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
             }
 
             if let Some(pending) = self.pending_gpu.take() {
-                if let Some(mut gpu) = pending.slot.borrow_mut().take() {
+                let result = { pending.slot.borrow_mut().take() };
+                if let Some(result) = result {
+                    let (gpu, mut surface) = match result {
+                        Ok(pair) => pair,
+                        Err(err) => {
+                            tracing::error!("GPU initialization failed: {err}");
+                            show_wasm_gpu_error(&pending.window, &err.to_string());
+                            return;
+                        }
+                    };
                     // 初期化完了: バッファされた Resized を適用
                     if let Some(size) = pending.buffered_resize {
-                        gpu.resize(size);
+                        surface.resize(&gpu.device, size);
                     }
                     let window = pending.window.clone();
-                    self.complete_init(pending.window, gpu, pending.camera);
+                    self.complete_init(
+                        pending.window,
+                        gpu,
+                        surface,
+                        pending.camera,
+                        pending.redraw_policy,
+                        pending.pixel_scroll_per_line,
+                        pending.touch_pinch_sensitivity,
+                    );
                     tracing::info!("GPU initialization complete (WASM)");
                     window.request_redraw();
                 } else {
@@ -724,6 +826,13 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
         let Some(state) = self.state.as_mut() else {
             return;
         };
+        #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+        let mut publish_agent_snapshot = false;
+        let redraw_after_event = state.redraw_policy == RedrawPolicy::Reactive
+            && !matches!(
+                event,
+                WindowEvent::RedrawRequested | WindowEvent::CloseRequested
+            );
 
         // ---------------------------------------------------------------
         // Event routing: egui → filter → InputState / camera / app
@@ -867,7 +976,7 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                     }
                     #[cfg(not(target_family = "wasm"))]
                     {
-                        state.gpu.resize(new_size);
+                        state.surface.resize(&state.gpu.device, new_size);
                         state.egui.resize(
                             new_size.width,
                             new_size.height,
@@ -886,9 +995,17 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
             }
             WindowEvent::RedrawRequested => {
                 if let Some(app) = self.app.as_mut() {
-                    render_frame(app, state);
+                    let outcome = render_frame(app, state);
+                    if outcome.exit {
+                        event_loop.exit();
+                    }
+                    if outcome.request_redraw {
+                        state.window.request_redraw();
+                    }
                     #[cfg(all(feature = "agent", not(target_family = "wasm")))]
-                    self.publish_agent_snapshot();
+                    {
+                        publish_agent_snapshot = true;
+                    }
                 }
             }
             ref other => {
@@ -897,18 +1014,32 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                 }
             }
         }
+
+        if redraw_after_event {
+            state.window.request_redraw();
+        }
+
+        #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+        if publish_agent_snapshot {
+            self.publish_agent_snapshot();
+        }
     }
 }
 
 // --- レンダリング ---
 
-fn render_frame<A: App>(app: &mut A, state: &mut RunState<A::Camera>) {
+struct RenderFrameOutcome {
+    request_redraw: bool,
+    exit: bool,
+}
+
+fn render_frame<A: App>(app: &mut A, state: &mut RunState<A::Camera>) -> RenderFrameOutcome {
     state.frame_time.tick();
 
     // WASM: Resized イベントで蓄積されたリサイズをここで一括適用
     #[cfg(target_family = "wasm")]
     if let Some(new_size) = state.pending_resize.take() {
-        state.gpu.resize(new_size);
+        state.surface.resize(&state.gpu.device, new_size);
         state.egui.resize(
             new_size.width,
             new_size.height,
@@ -920,7 +1051,7 @@ fn render_frame<A: App>(app: &mut A, state: &mut RunState<A::Camera>) {
         app.resize(&state.gpu, new_size);
     }
 
-    let size = state.gpu.window_size();
+    let size = state.surface.window_size();
 
     // カメラ更新
     state.camera.update(state.frame_time.dt);
@@ -934,41 +1065,70 @@ fn render_frame<A: App>(app: &mut A, state: &mut RunState<A::Camera>) {
             gpu: &state.gpu,
             input: &state.input,
             camera: &mut state.camera,
+            window: &state.window,
         };
         app.update(&mut update_ctx);
     }
 
-    let surface_texture = match state.gpu.surface_texture() {
-        Ok(tex) => tex,
-        Err(wgpu::SurfaceError::Lost) => {
-            state.gpu.resize(size);
-            state.window.request_redraw();
-            return;
-        }
-        Err(wgpu::SurfaceError::OutOfMemory) => {
-            tracing::error!("Out of GPU memory, retrying next frame");
-            state.window.request_redraw();
-            return;
-        }
-        Err(e) => {
-            tracing::warn!("Surface error: {e:?}");
-            state.window.request_redraw();
-            return;
+    #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+    let render_screenshot_offscreen =
+        state.pending_screenshot.is_some() && !state.surface.surface_copy_supported();
+    #[cfg(not(all(feature = "agent", not(target_family = "wasm"))))]
+    let render_screenshot_offscreen = false;
+
+    let offscreen_texture = if render_screenshot_offscreen {
+        Some(create_offscreen_frame_texture(&state.gpu, size))
+    } else {
+        None
+    };
+
+    let surface_texture = if offscreen_texture.is_some() {
+        None
+    } else {
+        match state.surface.surface_texture() {
+            Ok(tex) => Some(tex),
+            Err(wgpu::SurfaceError::Lost) => {
+                state.surface.resize(&state.gpu.device, size);
+                return RenderFrameOutcome {
+                    request_redraw: true,
+                    exit: false,
+                };
+            }
+            Err(wgpu::SurfaceError::OutOfMemory) => {
+                tracing::error!("Out of GPU memory; exiting render loop");
+                return RenderFrameOutcome {
+                    request_redraw: false,
+                    exit: true,
+                };
+            }
+            Err(e) => {
+                tracing::warn!("Surface error: {e:?}");
+                return RenderFrameOutcome {
+                    request_redraw: true,
+                    exit: false,
+                };
+            }
         }
     };
 
-    let surface_view = surface_texture
-        .texture
-        .create_view(&wgpu::TextureViewDescriptor {
-            // render_format は sRGB view format（WebGPU で view_formats 経由）
-            format: Some(state.gpu.render_format()),
-            ..Default::default()
-        });
+    let target_view = if let Some(texture) = &offscreen_texture {
+        texture.create_view(&wgpu::TextureViewDescriptor::default())
+    } else {
+        surface_texture
+            .as_ref()
+            .expect("surface texture must exist for surface rendering")
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor {
+                // render_format は sRGB view format（WebGPU で view_formats 経由）
+                format: Some(state.surface.render_format()),
+                ..Default::default()
+            })
+    };
 
     // MSAA: App は msaa_view に描画し、surface_view に resolve する。
-    // sample_count == 1 の場合は surface_view に直接描画。
-    let render_view = state.gpu.msaa_view().unwrap_or(&surface_view);
-    let resolve_target = state.gpu.msaa_view().map(|_| &surface_view);
+    // sample_count == 1 の場合は target_view に直接描画。
+    let render_view = state.surface.msaa_view().unwrap_or(&target_view);
+    let resolve_target = state.surface.msaa_view().map(|_| &target_view);
 
     let mut encoder = state
         .gpu
@@ -994,8 +1154,9 @@ fn render_frame<A: App>(app: &mut A, state: &mut RunState<A::Camera>) {
     state.egui.render(
         &state.window,
         &state.gpu,
+        &state.surface,
         &mut encoder,
-        &surface_view,
+        &target_view,
         |egui_ctx| {
             app.gui(egui_ctx);
         },
@@ -1003,11 +1164,20 @@ fn render_frame<A: App>(app: &mut A, state: &mut RunState<A::Camera>) {
 
     #[cfg(all(feature = "agent", not(target_family = "wasm")))]
     let screenshot_readback = if state.pending_screenshot.is_some() {
+        let (source, format) = if let Some(texture) = &offscreen_texture {
+            (texture, state.gpu.render_format())
+        } else {
+            let surface_texture = surface_texture
+                .as_ref()
+                .expect("surface texture must exist for surface screenshot");
+            (&surface_texture.texture, state.surface.surface_format())
+        };
         match crate::agent::ScreenshotReadback::encode(
-            &state.gpu,
+            &state.gpu.device,
             &mut encoder,
-            &surface_texture.texture,
+            source,
             size,
+            format,
         ) {
             Ok(readback) => Some(readback),
             Err(message) => {
@@ -1022,7 +1192,9 @@ fn render_frame<A: App>(app: &mut A, state: &mut RunState<A::Camera>) {
     };
 
     state.gpu.queue.submit(std::iter::once(encoder.finish()));
-    surface_texture.present();
+    if let Some(surface_texture) = surface_texture {
+        surface_texture.present();
+    }
 
     #[cfg(all(feature = "agent", not(target_family = "wasm")))]
     if let Some(readback) = screenshot_readback {
@@ -1031,12 +1203,70 @@ fn render_frame<A: App>(app: &mut A, state: &mut RunState<A::Camera>) {
         }
     }
 
-    state.window.request_redraw();
+    let request_redraw = state.redraw_policy == RedrawPolicy::Continuous
+        || state.egui.has_immediate_repaint_request();
 
     // フレーム末尾で per-frame 入力状態をリセット。
     // 次フレームの window_event() で蓄積されたイベントが
     // その次の render_frame() の app.update() で見えるようにする。
     state.input.end_frame();
+
+    RenderFrameOutcome {
+        request_redraw,
+        exit: false,
+    }
+}
+
+fn create_offscreen_frame_texture(gpu: &GpuContext, size: PhysicalSize<u32>) -> wgpu::Texture {
+    gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("mikage_offscreen_frame"),
+        size: wgpu::Extent3d {
+            width: size.width.max(1),
+            height: size.height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: gpu.render_format(),
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    })
+}
+
+#[cfg(target_family = "wasm")]
+fn show_wasm_gpu_error(window: &Window, message: &str) {
+    use wasm_bindgen::JsCast;
+    use winit::platform::web::WindowExtWebSys;
+
+    let Some(canvas) = window.canvas() else {
+        return;
+    };
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return;
+    };
+    let Ok(element) = document.create_element("div") else {
+        return;
+    };
+    element.set_text_content(Some(&format!(
+        "WebGPU is not available in this browser.\n{message}"
+    )));
+    let _ = element.set_attribute(
+        "style",
+        "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;\
+         box-sizing:border-box;padding:24px;background:#101014;color:#f5f5f5;\
+         font:14px system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;\
+         line-height:1.45;text-align:center;white-space:pre-wrap;",
+    );
+
+    if let Some(parent) = canvas.parent_node() {
+        let _ = parent.append_child(&element);
+    } else if let Some(body) = document.body() {
+        let _ = body.append_child(&element);
+    }
+    let _ = canvas.dyn_ref::<web_sys::Element>().map(|canvas| {
+        canvas.set_attribute("style", "display:none;").ok();
+    });
 }
 
 #[cfg(test)]
@@ -1053,6 +1283,15 @@ mod tests {
         assert!(config.init_logging);
         assert!(config.canvas.is_none());
         assert_eq!(config.present_mode, wgpu::PresentMode::AutoVsync);
+        assert_eq!(config.redraw_policy, RedrawPolicy::Continuous);
+        assert_eq!(
+            config.pixel_scroll_per_line,
+            InputState::DEFAULT_PIXEL_SCROLL_PER_LINE
+        );
+        assert_eq!(
+            config.touch_pinch_sensitivity,
+            TouchTracker::DEFAULT_PINCH_SENSITIVITY
+        );
     }
 
     #[test]
@@ -1065,6 +1304,7 @@ mod tests {
         assert!(config.init_logging);
         assert!(config.canvas.is_none());
         assert_eq!(config.present_mode, wgpu::PresentMode::AutoVsync);
+        assert_eq!(config.redraw_policy, RedrawPolicy::Continuous);
     }
 
     #[test]
@@ -1082,10 +1322,27 @@ mod tests {
 
     #[test]
     fn with_camera_changes_type() {
-        let config = RunConfig::new("X").with_camera(crate::camera::camera2d::Camera2d::default());
+        let config = RunConfig::new("X")
+            .with_redraw_policy(RedrawPolicy::Reactive)
+            .with_pixel_scroll_per_line(100.0)
+            .with_touch_pinch_sensitivity(2.0)
+            .with_camera(crate::camera::camera2d::Camera2d::default());
         assert_eq!(config.title, "X");
+        assert_eq!(config.redraw_policy, RedrawPolicy::Reactive);
+        assert_eq!(config.pixel_scroll_per_line, 100.0);
+        assert_eq!(config.touch_pinch_sensitivity, 2.0);
         // Verify the camera field exists and is accessible
         let _camera: &crate::camera::camera2d::Camera2d = &config.camera;
+    }
+
+    #[test]
+    fn unit_camera_config_supports_default() {
+        let config: RunConfig<()> = RunConfig {
+            title: "No Camera".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(config.title, "No Camera");
+        assert_eq!(config.camera, ());
     }
 
     #[test]

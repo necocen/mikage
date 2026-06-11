@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.5.0
+
+### Added
+
+- **Headless GPU context** — `GpuContext::headless()` creates a device/queue without a window or surface for off-screen rendering and GPU tests.
+- **Camera-free apps** — `type Camera = ()` is supported for apps that do not need camera matrices or input.
+- **Redraw policy** — `RunConfig::redraw_policy` supports `Continuous` and `Reactive` rendering.
+- **Configurable input sensitivity** — `RunConfig::pixel_scroll_per_line` and `touch_pinch_sensitivity` replace fixed scroll/pinch constants.
+- **Window access in updates** — `UpdateContext::window` exposes the winit window for title, cursor, and other window-level controls.
+
+### Changed
+
+- **Surface state split** — Presentation state now lives in `SurfaceContext`, leaving `GpuContext` focused on device/queue/render target configuration.
+- **Renderer API cleanup** — Removed the hidden `from_parts` / `*_raw` renderer helpers; integration tests now use the public `GpuContext`-based API.
+- **Agent screenshots** — Screenshot capture falls back to an off-screen frame texture when the surface does not support `COPY_SRC`.
+- **Camera trait bounds** — Removed unnecessary `Send + Sync` bounds from `Camera`.
+- **WASM GPU init failure** — WebGPU initialization errors now render a canvas fallback message instead of leaving a blank page.
+- **Surface out-of-memory handling** — `SurfaceError::OutOfMemory` exits the render loop instead of retrying indefinitely.
+
+### Fixed
+
+- **Shader import parsing** — Selective imports with deeper paths such as `a::b::c::{X}` resolve correctly.
+- **Shader comment handling** — `#import` directives inside block comments are ignored.
+
 ## v0.4.0
 
 ### Added

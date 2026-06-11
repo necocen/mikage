@@ -17,7 +17,6 @@ use winit::dpi::PhysicalSize;
 use winit::event_loop::EventLoopProxy;
 
 use crate::camera::InteractiveCamera;
-use crate::context::GpuContext;
 
 /// Configuration for the local HTTP agent API.
 #[derive(Clone, Debug)]
@@ -329,19 +328,16 @@ pub(crate) struct ScreenshotReadback {
 
 impl ScreenshotReadback {
     pub(crate) fn encode(
-        gpu: &GpuContext,
+        device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         source: &wgpu::Texture,
         size: PhysicalSize<u32>,
+        format: wgpu::TextureFormat,
     ) -> Result<Self, String> {
-        if !gpu.screenshot_supported() {
-            return Err("surface was not configured with COPY_SRC support".to_string());
-        }
-
         let width = size.width.max(1);
         let height = size.height.max(1);
         let bytes_per_row = align_to(width * 4, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-        let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("mikage_agent_screenshot_readback"),
             size: (bytes_per_row * height) as u64,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
@@ -375,7 +371,7 @@ impl ScreenshotReadback {
             width,
             height,
             bytes_per_row,
-            format: gpu.surface_format(),
+            format,
         })
     }
 

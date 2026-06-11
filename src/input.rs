@@ -15,7 +15,6 @@ use winit::keyboard::KeyCode;
 /// `keys_pressed` / `mouse_buttons_pressed` contain keys/buttons that were
 /// newly pressed this frame (trigger detection).
 /// `keys_down` / `mouse_buttons_down` contain keys/buttons currently held (continuous detection).
-#[derive(Default)]
 pub struct InputState {
     pub keys_down: HashSet<KeyCode>,
     pub keys_pressed: HashSet<KeyCode>,
@@ -34,6 +33,27 @@ pub struct InputState {
 
     // Internal: previous mouse position for delta calculation
     prev_mouse_position: Option<(f64, f64)>,
+    pixel_scroll_per_line: f32,
+}
+
+impl Default for InputState {
+    fn default() -> Self {
+        Self {
+            keys_down: HashSet::new(),
+            keys_pressed: HashSet::new(),
+            keys_released: HashSet::new(),
+            mouse_position: (0.0, 0.0),
+            mouse_delta: (0.0, 0.0),
+            mouse_buttons_down: MouseButtons::default(),
+            mouse_buttons_pressed: MouseButtons::default(),
+            mouse_buttons_released: MouseButtons::default(),
+            scroll_delta: 0.0,
+            event_mouse_delta: (0.0, 0.0),
+            event_scroll_delta: 0.0,
+            prev_mouse_position: None,
+            pixel_scroll_per_line: Self::DEFAULT_PIXEL_SCROLL_PER_LINE,
+        }
+    }
 }
 
 /// Mouse button state.
@@ -45,6 +65,16 @@ pub struct MouseButtons {
 }
 
 impl InputState {
+    pub const DEFAULT_PIXEL_SCROLL_PER_LINE: f32 = 50.0;
+
+    /// Creates an input state with custom pixel-scroll normalization.
+    pub fn new(pixel_scroll_per_line: f32) -> Self {
+        Self {
+            pixel_scroll_per_line: pixel_scroll_per_line.max(1.0),
+            ..Default::default()
+        }
+    }
+
     /// Resets per-frame transient state (pressed/released/deltas).
     ///
     /// Called automatically at the end of each frame, after rendering.
@@ -123,7 +153,9 @@ impl InputState {
             WindowEvent::MouseWheel { delta, .. } => {
                 let scroll = match delta {
                     MouseScrollDelta::LineDelta(_, y) => *y,
-                    MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 50.0,
+                    MouseScrollDelta::PixelDelta(pos) => {
+                        pos.y as f32 / self.pixel_scroll_per_line.max(1.0)
+                    }
                 };
                 self.event_scroll_delta = scroll;
                 self.scroll_delta += scroll;
@@ -331,6 +363,18 @@ mod tests {
         };
         state.handle_event(&event);
         assert_eq!(state.scroll_delta, 150.0 / 50.0);
+    }
+
+    #[test]
+    fn scroll_pixel_delta_uses_configured_scale() {
+        let mut state = InputState::new(100.0);
+        let event = WindowEvent::MouseWheel {
+            device_id: DeviceId::dummy(),
+            delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, 150.0)),
+            phase: TouchPhase::Moved,
+        };
+        state.handle_event(&event);
+        assert_eq!(state.scroll_delta, 1.5);
     }
 
     #[test]

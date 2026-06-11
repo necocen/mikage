@@ -181,46 +181,16 @@ impl InstanceRenderer<InstanceData> {
         indices: &[u32],
         config: InstanceRendererConfig,
     ) -> Self {
-        Self::from_parts(
-            &gpu.device,
-            gpu.render_format(),
-            scene_bind_group_layout,
-            positions,
-            normals,
-            indices,
-            gpu.sample_count(),
-            config,
-        )
-    }
-
-    /// Low-level constructor with built-in shader. Prefer [`new`](Self::new) which takes `&GpuContext`.
-    ///
-    /// This method is `pub` for integration testing only and is **not** part of
-    /// the stable API. It may be changed or removed without a semver bump.
-    #[doc(hidden)]
-    #[allow(clippy::too_many_arguments)]
-    pub fn from_parts(
-        device: &wgpu::Device,
-        render_format: wgpu::TextureFormat,
-        scene_bind_group_layout: &wgpu::BindGroupLayout,
-        positions: &[[f32; 3]],
-        normals: &[[f32; 3]],
-        indices: &[u32],
-        sample_count: u32,
-        config: InstanceRendererConfig,
-    ) -> Self {
         let resolved = mikage_shader_processor()
             .resolve(SHADER_SOURCE)
             .expect("failed to resolve instancing shader imports");
-        Self::with_shader_from_parts(
-            device,
-            render_format,
+        Self::with_shader(
+            gpu,
             scene_bind_group_layout,
             positions,
             normals,
             indices,
             &resolved,
-            sample_count,
             config,
         )
     }
@@ -243,36 +213,7 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
         shader_source: &str,
         config: InstanceRendererConfig,
     ) -> Self {
-        Self::with_shader_from_parts(
-            &gpu.device,
-            gpu.render_format(),
-            scene_bind_group_layout,
-            positions,
-            normals,
-            indices,
-            shader_source,
-            gpu.sample_count(),
-            config,
-        )
-    }
-
-    /// Low-level constructor. Prefer [`with_shader`](Self::with_shader) which takes `&GpuContext`.
-    ///
-    /// This method is `pub` for integration testing only and is **not** part of
-    /// the stable API. It may be changed or removed without a semver bump.
-    #[doc(hidden)]
-    #[allow(clippy::too_many_arguments)]
-    pub fn with_shader_from_parts(
-        device: &wgpu::Device,
-        render_format: wgpu::TextureFormat,
-        scene_bind_group_layout: &wgpu::BindGroupLayout,
-        positions: &[[f32; 3]],
-        normals: &[[f32; 3]],
-        indices: &[u32],
-        shader_source: &str,
-        sample_count: u32,
-        config: InstanceRendererConfig,
-    ) -> Self {
+        let device = &gpu.device;
         let mesh = MeshBuffers::from_position_normal(device, positions, normals, indices);
 
         let instance_stride = std::mem::size_of::<V>() as u64;
@@ -338,7 +279,7 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
             },
             depth_stencil,
             multisample: wgpu::MultisampleState {
-                count: sample_count,
+                count: gpu.sample_count(),
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
@@ -347,7 +288,7 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
                 entry_point: Some(config.fragment_entry),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: render_format,
+                    format: gpu.render_format(),
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -371,20 +312,6 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
 
     /// Updates instance data from CPU. Resizes the GPU buffer if needed.
     pub fn update_instances(&mut self, gpu: &crate::GpuContext, instances: &[V]) {
-        self.update_instances_raw(&gpu.device, &gpu.queue, instances);
-    }
-
-    /// Updates instance data from CPU (low-level, raw wgpu types).
-    ///
-    /// This method is `pub` for integration testing only and is **not** part of
-    /// the stable API. It may be changed or removed without a semver bump.
-    #[doc(hidden)]
-    pub fn update_instances_raw(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        instances: &[V],
-    ) {
         self.instance_count = instances.len() as u32;
         if self.instance_count == 0 {
             return;
@@ -399,7 +326,7 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
                 .max(1024)
                 .checked_next_power_of_two()
                 .unwrap_or(self.instance_count);
-            self.instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            self.instance_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("instance_data_buffer"),
                 size: (new_cap as u64) * instance_stride,
                 usage: self.instance_buffer_usage,
@@ -408,7 +335,8 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
             self.instance_capacity = new_cap;
         }
 
-        queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(instances));
+        gpu.queue
+            .write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(instances));
     }
 
     /// Returns a reference to the instance buffer.

@@ -1,17 +1,17 @@
-use mikage::{App, FrameContext, OrbitCamera, RunConfig, UpdateContext};
+use mikage::{App, FrameContext, RunConfig, UpdateContext};
 
 struct ClearApp {
     time: f64,
 }
 
 impl App for ClearApp {
-    type Camera = OrbitCamera;
+    type Camera = ();
 
-    fn update(&mut self, ctx: &mut UpdateContext<OrbitCamera>) {
+    fn update(&mut self, ctx: &mut UpdateContext<()>) {
         self.time = ctx.elapsed;
     }
 
-    fn encode(&mut self, ctx: &mut FrameContext<OrbitCamera>) {
+    fn encode(&mut self, ctx: &mut FrameContext<()>) {
         // Cycle through colors over time
         let t = self.time as f32;
         let r = (t * 0.3).sin() * 0.5 + 0.5;

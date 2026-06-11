@@ -106,8 +106,8 @@ impl ShaderProcessor {
         }
 
         // Strip #import and #define_import_path lines from the root source
-        for line in source.lines() {
-            let trimmed = line.trim_start();
+        for (line, active_line) in Self::with_comment_stripped_lines(source) {
+            let trimmed = active_line.trim_start();
             if trimmed.starts_with("#import") || trimmed.starts_with("#define_import_path") {
                 continue;
             }
@@ -121,33 +121,17 @@ impl ShaderProcessor {
     /// Collects `#import` module names from a source string.
     fn collect_imports(source: &str) -> Vec<String> {
         let mut imports = Vec::new();
-        for line in source.lines() {
+        for (_, active_line) in Self::with_comment_stripped_lines(source) {
+            let line = active_line.as_str();
             let trimmed = line.trim_start();
             if let Some(rest) = trimmed.strip_prefix("#import") {
                 let rest = rest.trim();
                 // Strip selective imports: `module::{Item1, Item2}` -> `module`
-                let name = if let Some(idx) = rest.find("::") {
-                    // Check if after :: we have { — meaning selective import from this module
-                    let after_colons = &rest[idx + 2..];
-                    if after_colons.starts_with('{') {
-                        // Selective import from base module: `module::{...}`
-                        &rest[..idx]
-                    } else if let Some(next_idx) = after_colons.find("::") {
-                        // Might have deeper path like `a::b::{...}`
-                        let deeper = &after_colons[next_idx + 2..];
-                        if deeper.starts_with('{') {
-                            // `a::b::{...}` -> module is `a::b`
-                            &rest[..idx + 2 + next_idx]
-                        } else {
-                            // No braces; could be `a::b::c` — take the whole thing as module name
-                            rest
-                        }
-                    } else {
-                        // Simple qualified name like `module::name`
-                        rest
-                    }
+                let token = rest.split_whitespace().next().unwrap_or("");
+                let name = if let Some(idx) = token.find("::{") {
+                    &token[..idx]
                 } else {
-                    rest
+                    token
                 };
                 if !name.is_empty() {
                     imports.push(name.to_string());
@@ -155,6 +139,66 @@ impl ShaderProcessor {
             }
         }
         imports
+    }
+
+    fn with_comment_stripped_lines(source: &str) -> Vec<(&str, String)> {
+        let stripped = Self::strip_comments_preserve_newlines(source);
+        let stripped_lines: Vec<&str> = stripped.split('\n').collect();
+        source
+            .lines()
+            .enumerate()
+            .map(|(index, line)| {
+                (
+                    line,
+                    stripped_lines
+                        .get(index)
+                        .copied()
+                        .unwrap_or_default()
+                        .to_string(),
+                )
+            })
+            .collect()
+    }
+
+    fn strip_comments_preserve_newlines(source: &str) -> String {
+        let mut out = String::with_capacity(source.len());
+        let mut chars = source.chars().peekable();
+        let mut in_block = false;
+
+        while let Some(ch) = chars.next() {
+            if in_block {
+                if ch == '\n' {
+                    out.push('\n');
+                } else if ch == '*' && chars.peek() == Some(&'/') {
+                    chars.next();
+                    in_block = false;
+                }
+                continue;
+            }
+
+            if ch == '/' {
+                match chars.peek() {
+                    Some('/') => {
+                        chars.next();
+                        for next in chars.by_ref() {
+                            if next == '\n' {
+                                out.push('\n');
+                                break;
+                            }
+                        }
+                    }
+                    Some('*') => {
+                        chars.next();
+                        in_block = true;
+                    }
+                    _ => out.push(ch),
+                }
+            } else {
+                out.push(ch);
+            }
+        }
+
+        out
     }
 
     /// Recursively resolves a module and its dependencies.
@@ -199,11 +243,11 @@ impl ShaderProcessor {
         stack.pop();
 
         // Strip #import / #define_import_path lines from the module body
-        let clean: String = source
-            .lines()
-            .filter(|l| {
-                let t = l.trim_start();
-                !t.starts_with("#import") && !t.starts_with("#define_import_path")
+        let clean: String = Self::with_comment_stripped_lines(source)
+            .into_iter()
+            .filter_map(|(line, active_line)| {
+                let t = active_line.trim_start();
+                (!t.starts_with("#import") && !t.starts_with("#define_import_path")).then_some(line)
             })
             .collect::<Vec<_>>()
             .join("\n");
@@ -304,6 +348,28 @@ mod tests {
         assert!(result.contains("struct Particle"));
         assert!(result.contains("struct Params"));
         assert!(!result.contains("#import"));
+    }
+
+    #[test]
+    fn selective_import_with_deep_module_path() {
+        let mut sp = ShaderProcessor::new();
+        sp.register("a::b::c", "struct Deep { x: f32 };");
+
+        let source = "#import a::b::c::{Deep}\nfn main() {}";
+        let result = sp.resolve(source).unwrap();
+
+        assert!(result.contains("// --- begin a::b::c ---"));
+        assert!(result.contains("struct Deep"));
+    }
+
+    #[test]
+    fn ignores_imports_inside_block_comments() {
+        let sp = ShaderProcessor::new();
+        let source = "/*\n#import missing\n*/\nfn main() {}";
+        let result = sp.resolve(source).unwrap();
+
+        assert!(result.contains("#import missing"));
+        assert!(result.contains("fn main()"));
     }
 
     #[test]

@@ -1,13 +1,14 @@
 use winit::event::WindowEvent;
 use winit::window::Window;
 
-use crate::context::GpuContext;
+use crate::context::{GpuContext, SurfaceContext};
 
 pub struct EguiIntegration {
     ctx: egui::Context,
     state: egui_winit::State,
     pub(crate) renderer: egui_wgpu::Renderer,
     pub(crate) screen_descriptor: egui_wgpu::ScreenDescriptor,
+    immediate_repaint_requested: bool,
 }
 
 /// egui の prepare 結果。render pass に描画するために使う。
@@ -25,7 +26,7 @@ impl EguiPreparedFrame {
 }
 
 impl EguiIntegration {
-    pub fn new(window: &Window, gpu: &GpuContext) -> Self {
+    pub fn new(window: &Window, gpu: &GpuContext, surface: &SurfaceContext) -> Self {
         let ctx = egui::Context::default();
         let viewport_id = ctx.viewport_id();
         let state = egui_winit::State::new(ctx.clone(), viewport_id, window, None, None, None);
@@ -35,7 +36,7 @@ impl EguiIntegration {
             egui_wgpu::RendererOptions::default(),
         );
 
-        let size = gpu.window_size();
+        let size = surface.window_size();
         let pixels_per_point = Self::compute_pixels_per_point(window);
         let screen_descriptor = egui_wgpu::ScreenDescriptor {
             size_in_pixels: [size.width, size.height],
@@ -47,6 +48,7 @@ impl EguiIntegration {
             state,
             renderer,
             screen_descriptor,
+            immediate_repaint_requested: false,
         }
     }
 
@@ -59,6 +61,11 @@ impl EguiIntegration {
     /// egui がポインタ入力を要求しているか。
     pub fn wants_pointer_input(&self) -> bool {
         self.ctx.wants_pointer_input()
+    }
+
+    /// Returns whether the last egui pass requested another frame immediately.
+    pub fn has_immediate_repaint_request(&self) -> bool {
+        self.immediate_repaint_requested
     }
 
     /// リサイズ時にスクリーン情報を更新。
@@ -81,11 +88,12 @@ impl EguiIntegration {
         &mut self,
         window: &Window,
         gpu: &GpuContext,
+        surface: &SurfaceContext,
         encoder: &mut wgpu::CommandEncoder,
         surface_view: &wgpu::TextureView,
         gui_fn: impl FnMut(&egui::Context),
     ) {
-        let prepared = self.prepare(window, gpu, encoder, gui_fn);
+        let prepared = self.prepare(window, gpu, surface, encoder, gui_fn);
 
         {
             let mut render_pass = encoder
@@ -117,15 +125,20 @@ impl EguiIntegration {
         &mut self,
         window: &Window,
         gpu: &GpuContext,
+        surface: &SurfaceContext,
         encoder: &mut wgpu::CommandEncoder,
         gui_fn: impl FnMut(&egui::Context),
     ) -> EguiPreparedFrame {
         // 毎フレーム screen_descriptor をサーフェスの実サイズで更新
-        let surface_size = gpu.window_size();
+        let surface_size = surface.window_size();
         self.screen_descriptor.size_in_pixels = [surface_size.width, surface_size.height];
 
         let raw_input = self.state.take_egui_input(window);
         let full_output = self.ctx.run(raw_input, gui_fn);
+        self.immediate_repaint_requested = full_output
+            .viewport_output
+            .get(&self.ctx.viewport_id())
+            .is_some_and(|output| output.repaint_delay.is_zero());
 
         self.state
             .handle_platform_output(window, full_output.platform_output);

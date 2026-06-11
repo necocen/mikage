@@ -78,7 +78,9 @@ mod time;
 pub use agent::{AgentCommand, AgentConfig, AgentMouseButton, CameraSnapshot};
 pub use app::{App, FrameContext, UpdateContext};
 pub use camera::{Camera, Camera2d, InteractiveCamera, OrbitCamera};
-pub use context::{GpuContext, RenderTargetConfig};
+pub use context::{
+    GpuContext, GpuContextDescriptor, GpuInitError, RenderTargetConfig, SurfaceContext,
+};
 pub use helpers::{
     CubeMesh, DEPTH_FORMAT, IcoSphereMesh, MeshBuffers, POSITION_NORMAL_LAYOUT, PlaneMesh,
     QuadMesh2d, RegularPolygonMesh, SceneBinding, SceneUniform, UniformBuffer,
@@ -91,7 +93,7 @@ pub use instance_renderer::{
 };
 #[cfg(all(feature = "agent", not(target_family = "wasm")))]
 pub use runner::run_with_agent;
-pub use runner::{RunConfig, run};
+pub use runner::{RedrawPolicy, RunConfig, run};
 pub use shader_processor::{
     COLOR_UTILS_WGSL, LIGHTING_WGSL, MATH_WGSL, SCENE_TYPES_WGSL, ShaderError, ShaderProcessor,
 };

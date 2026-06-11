@@ -63,7 +63,69 @@ impl RenderTargetConfig {
     }
 }
 
-/// GPU context holding wgpu Device, Queue, and Surface.
+/// Options for creating a headless [`GpuContext`].
+#[derive(Debug, Clone)]
+pub struct GpuContextDescriptor {
+    /// Backends to consider while selecting an adapter.
+    pub backends: wgpu::Backends,
+    /// Adapter power preference.
+    pub power_preference: wgpu::PowerPreference,
+    /// Required wgpu features. Default: empty.
+    pub required_features: wgpu::Features,
+    /// Required wgpu limits. `None` uses downlevel defaults resolved against
+    /// the selected adapter.
+    pub required_limits: Option<wgpu::Limits>,
+    /// Texture format expected by render pipelines.
+    pub render_format: wgpu::TextureFormat,
+    /// MSAA sample count. Must be 1 or 4.
+    pub sample_count: u32,
+}
+
+impl Default for GpuContextDescriptor {
+    fn default() -> Self {
+        Self {
+            backends: default_backends(),
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            required_features: wgpu::Features::empty(),
+            required_limits: None,
+            render_format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            sample_count: 1,
+        }
+    }
+}
+
+/// Error returned when GPU initialization fails.
+#[derive(Debug)]
+pub enum GpuInitError {
+    /// MSAA sample count was not supported by mikage's built-in targets.
+    InvalidSampleCount(u32),
+    /// The winit window surface could not be created.
+    CreateSurface(String),
+    /// No compatible adapter was available.
+    AdapterUnavailable,
+    /// Device creation failed.
+    RequestDevice(wgpu::RequestDeviceError),
+    /// The surface reported no usable color formats.
+    NoSurfaceFormats,
+}
+
+impl std::fmt::Display for GpuInitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidSampleCount(sample_count) => {
+                write!(f, "sample_count must be 1 or 4, got {sample_count}")
+            }
+            Self::CreateSurface(message) => write!(f, "failed to create surface: {message}"),
+            Self::AdapterUnavailable => write!(f, "failed to find a suitable GPU adapter"),
+            Self::RequestDevice(err) => write!(f, "failed to create device: {err}"),
+            Self::NoSurfaceFormats => write!(f, "surface reported no supported formats"),
+        }
+    }
+}
+
+impl std::error::Error for GpuInitError {}
+
+/// GPU context holding the wgpu Device and Queue.
 ///
 /// Created and managed by the framework. Passed to [`App`](crate::App) methods.
 /// The `device` and `queue` fields are public so you can create
@@ -73,6 +135,14 @@ pub struct GpuContext {
     pub device: wgpu::Device,
     /// The wgpu queue. Use for submitting commands and writing buffers.
     pub queue: wgpu::Queue,
+    render_target: RenderTargetConfig,
+}
+
+/// Window surface state paired with a [`GpuContext`] by the runner.
+///
+/// This owns only presentation-specific resources: the wgpu surface, its
+/// configuration, and the framework-managed MSAA target.
+pub struct SurfaceContext {
     /// The texture format to use for render pipelines (may differ from surface config format on WASM).
     render_format: wgpu::TextureFormat,
     surface: wgpu::Surface<'static>,
@@ -84,54 +154,71 @@ pub struct GpuContext {
 }
 
 impl GpuContext {
-    pub(crate) async fn new(
+    /// Creates a headless GPU context without a window or surface.
+    ///
+    /// Use this for off-screen rendering, compute work, and integration tests.
+    pub async fn headless(
+        render_format: wgpu::TextureFormat,
+        sample_count: u32,
+    ) -> Result<Self, GpuInitError> {
+        Self::headless_with(GpuContextDescriptor {
+            render_format,
+            sample_count,
+            ..Default::default()
+        })
+        .await
+    }
+
+    /// Creates a headless GPU context with explicit adapter/device options.
+    pub async fn headless_with(descriptor: GpuContextDescriptor) -> Result<Self, GpuInitError> {
+        validate_sample_count(descriptor.sample_count)?;
+
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: descriptor.backends,
+            ..Default::default()
+        });
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: descriptor.power_preference,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            })
+            .await
+            .map_err(|_| GpuInitError::AdapterUnavailable)?;
+
+        tracing::info!("Headless adapter: {:?}", adapter.get_info());
+
+        let (device, queue) = request_device(
+            &adapter,
+            descriptor.required_features,
+            descriptor.required_limits,
+        )
+        .await?;
+
+        Ok(Self::from_device_queue(
+            device,
+            queue,
+            RenderTargetConfig {
+                color_format: descriptor.render_format,
+                depth_format: crate::DEPTH_FORMAT,
+                sample_count: descriptor.sample_count,
+            },
+        ))
+    }
+
+    pub(crate) async fn new_for_window(
         window: Arc<Window>,
         present_mode: wgpu::PresentMode,
         required_features: wgpu::Features,
         required_limits: Option<wgpu::Limits>,
         sample_count: u32,
-    ) -> Self {
-        assert!(
-            sample_count == 1 || sample_count == 4,
-            "sample_count must be 1 or 4, got {sample_count}"
-        );
+    ) -> Result<(Self, SurfaceContext), GpuInitError> {
+        validate_sample_count(sample_count)?;
 
         let size = window.inner_size();
         tracing::info!("Initial window size: {}x{}", size.width, size.height);
 
-        #[cfg(not(target_family = "wasm"))]
-        let backends = wgpu::Backends::PRIMARY;
-
-        // WASM (webgl feature 無効): WebGPU のみ
-        #[cfg(all(target_family = "wasm", not(feature = "webgl")))]
-        let backends = wgpu::Backends::BROWSER_WEBGPU;
-
-        // WASM (webgl feature 有効): WebGPU を優先し、アダプタが取れなければ WebGL2。
-        // surface 作成前にバックエンドを決定する必要がある（canvas は一度コンテキストを
-        // 取得すると他の種類のコンテキストを取得できないため）。
-        #[cfg(all(target_family = "wasm", feature = "webgl"))]
-        let backends = {
-            let probe = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-                backends: wgpu::Backends::BROWSER_WEBGPU,
-                ..Default::default()
-            });
-            let has_webgpu = probe
-                .request_adapter(&wgpu::RequestAdapterOptions {
-                    power_preference: wgpu::PowerPreference::HighPerformance,
-                    compatible_surface: None,
-                    force_fallback_adapter: false,
-                })
-                .await
-                .is_ok();
-            if has_webgpu {
-                tracing::info!("Using WebGPU backend");
-                wgpu::Backends::BROWSER_WEBGPU
-            } else {
-                tracing::info!("WebGPU not available, using WebGL2 backend");
-                wgpu::Backends::GL
-            }
-        };
-
+        let backends = select_window_backends().await;
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends,
             ..Default::default()
@@ -139,7 +226,7 @@ impl GpuContext {
 
         let surface = instance
             .create_surface(window.clone())
-            .expect("Failed to create surface");
+            .map_err(|err| GpuInitError::CreateSurface(err.to_string()))?;
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -148,31 +235,73 @@ impl GpuContext {
                 force_fallback_adapter: false,
             })
             .await
-            .expect("Failed to find a suitable GPU adapter");
+            .map_err(|_| GpuInitError::AdapterUnavailable)?;
 
         tracing::info!("Adapter: {:?}", adapter.get_info());
 
-        let default_limits = if adapter.get_info().backend == wgpu::Backend::Gl {
-            wgpu::Limits::downlevel_webgl2_defaults()
-        } else {
-            wgpu::Limits::downlevel_defaults()
-        };
+        let (device, queue) = request_device(&adapter, required_features, required_limits).await?;
+        let surface_context =
+            SurfaceContext::new(surface, &adapter, &device, size, present_mode, sample_count)?;
+        let gpu = Self::from_device_queue(device, queue, surface_context.render_target_config());
 
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("mikage_device"),
-                required_features,
-                required_limits: required_limits
-                    .unwrap_or(default_limits)
-                    .using_resolution(adapter.limits()),
-                memory_hints: wgpu::MemoryHints::MemoryUsage,
-                ..Default::default()
-            })
-            .await
-            .expect("Failed to create device");
+        Ok((gpu, surface_context))
+    }
 
-        let surface_caps = surface.get_capabilities(&adapter);
+    fn from_device_queue(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        render_target: RenderTargetConfig,
+    ) -> Self {
+        Self {
+            device,
+            queue,
+            render_target,
+        }
+    }
+
+    /// Returns the texture format to use when creating render pipelines.
+    ///
+    /// On WASM (WebGPU), this may be an sRGB view format that differs from
+    /// the underlying surface configuration format, ensuring correct
+    /// gamma correction across platforms.
+    pub fn render_format(&self) -> wgpu::TextureFormat {
+        self.render_target.color_format
+    }
+
+    /// Returns the MSAA sample count configured for this context.
+    ///
+    /// Use this value in `MultisampleState::count` when creating render pipelines.
+    pub fn sample_count(&self) -> u32 {
+        self.render_target.sample_count
+    }
+
+    /// Returns the render target configuration for building pipelines.
+    ///
+    /// Bundles color format, depth format, and sample count so that
+    /// custom pipeline creation stays consistent with the framework.
+    pub fn render_target_config(&self) -> RenderTargetConfig {
+        self.render_target
+    }
+}
+
+impl SurfaceContext {
+    fn new(
+        surface: wgpu::Surface<'static>,
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        size: PhysicalSize<u32>,
+        present_mode: wgpu::PresentMode,
+        sample_count: u32,
+    ) -> Result<Self, GpuInitError> {
+        validate_sample_count(sample_count)?;
+
+        let surface_caps = surface.get_capabilities(adapter);
         tracing::info!("Surface formats: {:?}", surface_caps.formats);
+        let first_format = surface_caps
+            .formats
+            .first()
+            .copied()
+            .ok_or(GpuInitError::NoSurfaceFormats)?;
 
         // sRGB フォーマットを優先（正しいガンマ補正のため）
         // WebGPU では sRGB フォーマットが直接利用できない場合がある。
@@ -184,7 +313,7 @@ impl GpuContext {
             (srgb, srgb)
         } else {
             // sRGB がない（WebGPU の場合）: 非sRGB で configure + sRGB view
-            let base = surface_caps.formats[0];
+            let base = first_format;
             // Bgra8Unorm → Bgra8UnormSrgb, Rgba8Unorm → Rgba8UnormSrgb
             let srgb_view = match base {
                 wgpu::TextureFormat::Bgra8Unorm => wgpu::TextureFormat::Bgra8UnormSrgb,
@@ -229,11 +358,11 @@ impl GpuContext {
             view_formats,
             desired_maximum_frame_latency: 2,
         };
-        surface.configure(&device, &surface_config);
+        surface.configure(device, &surface_config);
 
         let msaa_texture_view = if sample_count > 1 {
             Some(Self::create_msaa_texture(
-                &device,
+                device,
                 view_format,
                 width,
                 height,
@@ -243,26 +372,24 @@ impl GpuContext {
             None
         };
 
-        Self {
-            device,
-            queue,
+        Ok(Self {
             // パイプライン作成に使うフォーマットは sRGB ビュー側
             render_format: view_format,
             surface,
             surface_config,
             msaa_texture_view,
             sample_count,
-        }
+        })
     }
 
-    pub(crate) fn resize(&mut self, new_size: PhysicalSize<u32>) {
+    pub(crate) fn resize(&mut self, device: &wgpu::Device, new_size: PhysicalSize<u32>) {
         if new_size.width > 0 && new_size.height > 0 {
             self.surface_config.width = new_size.width;
             self.surface_config.height = new_size.height;
-            self.surface.configure(&self.device, &self.surface_config);
+            self.surface.configure(device, &self.surface_config);
             if self.sample_count > 1 {
                 self.msaa_texture_view = Some(Self::create_msaa_texture(
-                    &self.device,
+                    device,
                     self.render_format,
                     new_size.width,
                     new_size.height,
@@ -282,10 +409,19 @@ impl GpuContext {
     }
 
     /// Returns whether the current surface can be copied for screenshot readback.
-    pub fn screenshot_supported(&self) -> bool {
+    #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+    pub(crate) fn surface_copy_supported(&self) -> bool {
         self.surface_config
             .usage
             .contains(wgpu::TextureUsages::COPY_SRC)
+    }
+
+    /// Returns whether screenshots can be produced.
+    ///
+    /// Screenshot readback uses the surface when it supports `COPY_SRC`, and
+    /// otherwise renders the requested frame into an off-screen texture.
+    pub fn screenshot_supported(&self) -> bool {
+        true
     }
 
     /// Returns the texture format to use when creating render pipelines.
@@ -351,5 +487,92 @@ impl GpuContext {
             view_formats: &[],
         });
         texture.create_view(&wgpu::TextureViewDescriptor::default())
+    }
+}
+
+fn validate_sample_count(sample_count: u32) -> Result<(), GpuInitError> {
+    if sample_count == 1 || sample_count == 4 {
+        Ok(())
+    } else {
+        Err(GpuInitError::InvalidSampleCount(sample_count))
+    }
+}
+
+async fn request_device(
+    adapter: &wgpu::Adapter,
+    required_features: wgpu::Features,
+    required_limits: Option<wgpu::Limits>,
+) -> Result<(wgpu::Device, wgpu::Queue), GpuInitError> {
+    let default_limits = if adapter.get_info().backend == wgpu::Backend::Gl {
+        wgpu::Limits::downlevel_webgl2_defaults()
+    } else {
+        wgpu::Limits::downlevel_defaults()
+    };
+
+    adapter
+        .request_device(&wgpu::DeviceDescriptor {
+            label: Some("mikage_device"),
+            required_features,
+            required_limits: required_limits
+                .unwrap_or(default_limits)
+                .using_resolution(adapter.limits()),
+            memory_hints: wgpu::MemoryHints::MemoryUsage,
+            ..Default::default()
+        })
+        .await
+        .map_err(GpuInitError::RequestDevice)
+}
+
+fn default_backends() -> wgpu::Backends {
+    #[cfg(not(target_family = "wasm"))]
+    {
+        wgpu::Backends::PRIMARY
+    }
+    #[cfg(all(target_family = "wasm", not(feature = "webgl")))]
+    {
+        wgpu::Backends::BROWSER_WEBGPU
+    }
+    #[cfg(all(target_family = "wasm", feature = "webgl"))]
+    {
+        wgpu::Backends::BROWSER_WEBGPU
+    }
+}
+
+async fn select_window_backends() -> wgpu::Backends {
+    #[cfg(not(target_family = "wasm"))]
+    {
+        wgpu::Backends::PRIMARY
+    }
+
+    // WASM (webgl feature 無効): WebGPU のみ
+    #[cfg(all(target_family = "wasm", not(feature = "webgl")))]
+    {
+        wgpu::Backends::BROWSER_WEBGPU
+    }
+
+    // WASM (webgl feature 有効): WebGPU を優先し、アダプタが取れなければ WebGL2。
+    // surface 作成前にバックエンドを決定する必要がある（canvas は一度コンテキストを
+    // 取得すると他の種類のコンテキストを取得できないため）。
+    #[cfg(all(target_family = "wasm", feature = "webgl"))]
+    {
+        let probe = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::BROWSER_WEBGPU,
+            ..Default::default()
+        });
+        let has_webgpu = probe
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            })
+            .await
+            .is_ok();
+        if has_webgpu {
+            tracing::info!("Using WebGPU backend");
+            wgpu::Backends::BROWSER_WEBGPU
+        } else {
+            tracing::info!("WebGPU not available, using WebGL2 backend");
+            wgpu::Backends::GL
+        }
     }
 }

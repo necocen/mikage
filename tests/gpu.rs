@@ -8,10 +8,10 @@ use std::path::Path;
 use image::{ImageBuffer, Rgba, RgbaImage};
 use mikage::wgpu;
 use mikage::{
-    CubeMesh, DEPTH_FORMAT, IcoSphereMesh, InstanceData, InstanceRenderer, InstanceRendererConfig,
-    PlaneMesh, QuadMesh2d, RegularPolygonMesh, SceneBinding, SceneUniform, ShaderProcessor,
-    SolidRenderer, UniformBuffer, create_compute_pipeline, create_storage_buffer_init,
-    storage_buffer_entry,
+    CubeMesh, DEPTH_FORMAT, GpuContext, IcoSphereMesh, InstanceData, InstanceRenderer,
+    InstanceRendererConfig, PlaneMesh, QuadMesh2d, RegularPolygonMesh, SceneBinding, SceneUniform,
+    ShaderProcessor, SolidRenderer, UniformBuffer, create_compute_pipeline,
+    create_storage_buffer_init, storage_buffer_entry,
 };
 use wgpu::util::DeviceExt;
 
@@ -19,31 +19,13 @@ use wgpu::util::DeviceExt;
 // Headless GPU setup
 // ---------------------------------------------------------------------------
 
-struct GpuTest {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-}
+type GpuTest = GpuContext;
 
 /// Render format used across all headless tests (no surface, so we pick a common sRGB format).
 const RENDER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 fn setup_gpu() -> Option<GpuTest> {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::PRIMARY,
-        ..Default::default()
-    });
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::default(),
-        compatible_surface: None,
-        force_fallback_adapter: false,
-    }))
-    .ok()?;
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("test_device"),
-        ..Default::default()
-    }))
-    .ok()?;
-    Some(GpuTest { device, queue })
+    pollster::block_on(GpuContext::headless(RENDER_FORMAT, 1)).ok()
 }
 
 /// Run `body` if a GPU is available; skip otherwise.
@@ -266,14 +248,12 @@ fn instance_renderer_2d_creation() {
     gpu_test!(|gpu: GpuTest| {
         let scene = SceneBinding::new(&gpu.device);
         let quad = QuadMesh2d::generate();
-        let _renderer = InstanceRenderer::from_parts(
-            &gpu.device,
-            RENDER_FORMAT,
+        let _renderer = InstanceRenderer::new(
+            &gpu,
             scene.layout(),
             &quad.positions,
             &quad.normals,
             &quad.indices,
-            1,
             InstanceRendererConfig::default_2d(),
         );
     });
@@ -284,14 +264,12 @@ fn instance_renderer_3d_creation() {
     gpu_test!(|gpu: GpuTest| {
         let scene = SceneBinding::new(&gpu.device);
         let sphere = IcoSphereMesh::generate(1);
-        let _renderer = InstanceRenderer::from_parts(
-            &gpu.device,
-            RENDER_FORMAT,
+        let _renderer = InstanceRenderer::new(
+            &gpu,
             scene.layout(),
             &sphere.positions,
             &sphere.normals,
             &sphere.indices,
-            1,
             InstanceRendererConfig::default_3d(),
         );
     });
@@ -301,7 +279,7 @@ fn instance_renderer_3d_creation() {
 fn solid_renderer_creation() {
     gpu_test!(|gpu: GpuTest| {
         let scene = SceneBinding::new(&gpu.device);
-        let _solid = SolidRenderer::from_parts(&gpu.device, RENDER_FORMAT, scene.layout(), 1);
+        let _solid = SolidRenderer::new(&gpu, scene.layout());
     });
 }
 
@@ -309,11 +287,11 @@ fn solid_renderer_creation() {
 fn solid_renderer_add_and_update_object() {
     gpu_test!(|gpu: GpuTest| {
         let scene = SceneBinding::new(&gpu.device);
-        let mut solid = SolidRenderer::from_parts(&gpu.device, RENDER_FORMAT, scene.layout(), 1);
+        let mut solid = SolidRenderer::new(&gpu, scene.layout());
         let cube = CubeMesh::generate();
-        let id = solid.add_object_raw(&gpu.device, &cube.positions, &cube.normals, &cube.indices);
-        solid.update_object_raw(
-            &gpu.queue,
+        let id = solid.add_object(&gpu, &cube.positions, &cube.normals, &cube.indices);
+        solid.update_object(
+            &gpu,
             id,
             glam::Mat4::from_scale(glam::Vec3::splat(2.0)),
             glam::Vec4::new(1.0, 0.0, 0.0, 1.0),
@@ -386,14 +364,12 @@ fn instance_renderer_draws_pixels() {
         let normals: Vec<[f32; 3]> = vec![[0.0, 0.0, 1.0]; 4];
         let indices: Vec<u32> = vec![0, 1, 2, 0, 2, 3];
 
-        let mut renderer = InstanceRenderer::from_parts(
-            &gpu.device,
-            RENDER_FORMAT,
+        let mut renderer = InstanceRenderer::new(
+            &gpu,
             scene.layout(),
             &positions,
             &normals,
             &indices,
-            1,
             InstanceRendererConfig::default_2d(),
         );
 
@@ -402,7 +378,7 @@ fn instance_renderer_draws_pixels() {
             pos_scale: [0.0, 0.0, 0.0, 1.0],
             color: [0.0, 1.0, 0.0, 1.0],
         }];
-        renderer.update_instances_raw(&gpu.device, &gpu.queue, &instances);
+        renderer.update_instances(&gpu, &instances);
 
         let (tex, color_view) = create_color_texture(&gpu.device, w, h);
 
@@ -454,7 +430,7 @@ fn solid_renderer_draws_pixels() {
         let uniform = SceneUniform::new(glam::Mat4::IDENTITY, glam::Vec3::ZERO);
         scene.update(&gpu.queue, &uniform);
 
-        let mut solid = SolidRenderer::from_parts(&gpu.device, RENDER_FORMAT, scene.layout(), 1);
+        let mut solid = SolidRenderer::new(&gpu, scene.layout());
 
         // Full-screen quad facing camera
         let positions: Vec<[f32; 3]> = vec![
@@ -466,10 +442,10 @@ fn solid_renderer_draws_pixels() {
         let normals: Vec<[f32; 3]> = vec![[0.0, 0.0, 1.0]; 4];
         let indices: Vec<u32> = vec![0, 1, 2, 0, 2, 3];
 
-        let id = solid.add_object_raw(&gpu.device, &positions, &normals, &indices);
+        let id = solid.add_object(&gpu, &positions, &normals, &indices);
         // Transparent (alpha < 1.0) so it uses the unlit pipeline (direct color)
-        solid.update_object_raw(
-            &gpu.queue,
+        solid.update_object(
+            &gpu,
             id,
             glam::Mat4::IDENTITY,
             glam::Vec4::new(0.0, 0.0, 1.0, 0.5),
@@ -523,14 +499,12 @@ fn instance_renderer_update_and_regrow() {
     gpu_test!(|gpu: GpuTest| {
         let scene = SceneBinding::new(&gpu.device);
         let hex = RegularPolygonMesh::generate(6);
-        let mut renderer = InstanceRenderer::from_parts(
-            &gpu.device,
-            RENDER_FORMAT,
+        let mut renderer = InstanceRenderer::new(
+            &gpu,
             scene.layout(),
             &hex.positions,
             &hex.normals,
             &hex.indices,
-            1,
             InstanceRendererConfig::default_2d(),
         );
 
@@ -541,7 +515,7 @@ fn instance_renderer_update_and_regrow() {
                 color: [1.0, 1.0, 1.0, 1.0],
             })
             .collect();
-        renderer.update_instances_raw(&gpu.device, &gpu.queue, &small);
+        renderer.update_instances(&gpu, &small);
 
         // Grow past initial capacity (1024)
         let large: Vec<InstanceData> = (0..2000)
@@ -550,7 +524,7 @@ fn instance_renderer_update_and_regrow() {
                 color: [1.0, 0.0, 0.0, 1.0],
             })
             .collect();
-        renderer.update_instances_raw(&gpu.device, &gpu.queue, &large);
+        renderer.update_instances(&gpu, &large);
         assert!(renderer.instance_capacity() >= 2000);
     });
 }
@@ -677,11 +651,11 @@ fn render_solid(
     gpu: &GpuTest,
     w: u32,
     h: u32,
-    setup: impl FnOnce(&mut SolidRenderer, &SceneBinding, &wgpu::Device, &wgpu::Queue),
+    setup: impl FnOnce(&mut SolidRenderer, &SceneBinding, &GpuContext),
 ) -> Vec<u8> {
     let scene = SceneBinding::new(&gpu.device);
-    let mut solid = SolidRenderer::from_parts(&gpu.device, RENDER_FORMAT, scene.layout(), 1);
-    setup(&mut solid, &scene, &gpu.device, &gpu.queue);
+    let mut solid = SolidRenderer::new(gpu, scene.layout());
+    setup(&mut solid, &scene, gpu);
 
     let (tex, color_view) = create_color_texture(&gpu.device, w, h);
     let depth_view = create_depth_texture(&gpu.device, w, h);
@@ -730,17 +704,15 @@ fn render_instances_2d(
     let scene = SceneBinding::new(&gpu.device);
     scene.update(&gpu.queue, scene_uniform);
 
-    let mut renderer = InstanceRenderer::from_parts(
-        &gpu.device,
-        RENDER_FORMAT,
+    let mut renderer = InstanceRenderer::new(
+        gpu,
         scene.layout(),
         positions,
         normals,
         indices,
-        1,
         InstanceRendererConfig::default_2d(),
     );
-    renderer.update_instances_raw(&gpu.device, &gpu.queue, instances);
+    renderer.update_instances(gpu, instances);
 
     let (tex, color_view) = create_color_texture(&gpu.device, w, h);
     let mut encoder = gpu.device.create_command_encoder(&Default::default());
@@ -777,7 +749,7 @@ const SNAP_MATCH: f64 = 98.0;
 #[test]
 fn snapshot_solid_cube() {
     gpu_test!(|gpu: GpuTest| {
-        let pixels = render_solid(&gpu, SNAP_SIZE, SNAP_SIZE, |solid, scene, device, queue| {
+        let pixels = render_solid(&gpu, SNAP_SIZE, SNAP_SIZE, |solid, scene, gpu| {
             // Perspective camera looking at origin
             let view = glam::Mat4::look_at_rh(
                 glam::Vec3::new(2.0, 2.0, 2.0),
@@ -786,12 +758,12 @@ fn snapshot_solid_cube() {
             );
             let proj = glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 100.0);
             let uniform = SceneUniform::new(proj * view, glam::Vec3::new(2.0, 2.0, 2.0));
-            scene.update(queue, &uniform);
+            scene.update(&gpu.queue, &uniform);
 
             let cube = CubeMesh::generate();
-            let id = solid.add_object_raw(device, &cube.positions, &cube.normals, &cube.indices);
-            solid.update_object_raw(
-                queue,
+            let id = solid.add_object(gpu, &cube.positions, &cube.normals, &cube.indices);
+            solid.update_object(
+                gpu,
                 id,
                 glam::Mat4::IDENTITY,
                 glam::Vec4::new(1.0, 0.0, 0.0, 1.0),
@@ -811,7 +783,7 @@ fn snapshot_solid_cube() {
 #[test]
 fn snapshot_solid_sphere() {
     gpu_test!(|gpu: GpuTest| {
-        let pixels = render_solid(&gpu, SNAP_SIZE, SNAP_SIZE, |solid, scene, device, queue| {
+        let pixels = render_solid(&gpu, SNAP_SIZE, SNAP_SIZE, |solid, scene, gpu| {
             let view = glam::Mat4::look_at_rh(
                 glam::Vec3::new(0.0, 0.0, 3.0),
                 glam::Vec3::ZERO,
@@ -819,13 +791,12 @@ fn snapshot_solid_sphere() {
             );
             let proj = glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 100.0);
             let uniform = SceneUniform::new(proj * view, glam::Vec3::new(0.0, 0.0, 3.0));
-            scene.update(queue, &uniform);
+            scene.update(&gpu.queue, &uniform);
 
             let sphere = IcoSphereMesh::generate(2);
-            let id =
-                solid.add_object_raw(device, &sphere.positions, &sphere.normals, &sphere.indices);
-            solid.update_object_raw(
-                queue,
+            let id = solid.add_object(gpu, &sphere.positions, &sphere.normals, &sphere.indices);
+            solid.update_object(
+                gpu,
                 id,
                 glam::Mat4::IDENTITY,
                 glam::Vec4::new(0.2, 0.6, 1.0, 1.0),
@@ -845,7 +816,7 @@ fn snapshot_solid_sphere() {
 #[test]
 fn snapshot_solid_plane() {
     gpu_test!(|gpu: GpuTest| {
-        let pixels = render_solid(&gpu, SNAP_SIZE, SNAP_SIZE, |solid, scene, device, queue| {
+        let pixels = render_solid(&gpu, SNAP_SIZE, SNAP_SIZE, |solid, scene, gpu| {
             let view = glam::Mat4::look_at_rh(
                 glam::Vec3::new(0.0, 2.0, 1.0),
                 glam::Vec3::ZERO,
@@ -853,12 +824,12 @@ fn snapshot_solid_plane() {
             );
             let proj = glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 100.0);
             let uniform = SceneUniform::new(proj * view, glam::Vec3::new(0.0, 2.0, 1.0));
-            scene.update(queue, &uniform);
+            scene.update(&gpu.queue, &uniform);
 
             let plane = PlaneMesh::generate();
-            let id = solid.add_object_raw(device, &plane.positions, &plane.normals, &plane.indices);
-            solid.update_object_raw(
-                queue,
+            let id = solid.add_object(gpu, &plane.positions, &plane.normals, &plane.indices);
+            solid.update_object(
+                gpu,
                 id,
                 glam::Mat4::from_scale(glam::Vec3::splat(3.0)),
                 glam::Vec4::new(0.0, 0.8, 0.2, 1.0),
@@ -962,9 +933,9 @@ fn snapshot_instanced_quad_grid() {
 #[test]
 fn snapshot_solid_transparent() {
     gpu_test!(|gpu: GpuTest| {
-        let pixels = render_solid(&gpu, SNAP_SIZE, SNAP_SIZE, |solid, scene, device, queue| {
+        let pixels = render_solid(&gpu, SNAP_SIZE, SNAP_SIZE, |solid, scene, gpu| {
             let uniform = SceneUniform::new(glam::Mat4::IDENTITY, glam::Vec3::ZERO);
-            scene.update(queue, &uniform);
+            scene.update(&gpu.queue, &uniform);
 
             // Full-screen quad
             let positions: Vec<[f32; 3]> = vec![
@@ -976,10 +947,10 @@ fn snapshot_solid_transparent() {
             let normals: Vec<[f32; 3]> = vec![[0.0, 0.0, 1.0]; 4];
             let indices: Vec<u32> = vec![0, 1, 2, 0, 2, 3];
 
-            let id = solid.add_object_raw(device, &positions, &normals, &indices);
+            let id = solid.add_object(gpu, &positions, &normals, &indices);
             // Semi-transparent blue (uses unlit pipeline)
-            solid.update_object_raw(
-                queue,
+            solid.update_object(
+                gpu,
                 id,
                 glam::Mat4::IDENTITY,
                 glam::Vec4::new(0.0, 0.5, 1.0, 0.5),

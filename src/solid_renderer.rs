@@ -21,14 +21,18 @@
 //! transparency ordering is required, sort objects externally or use an
 //! OIT (order-independent transparency) technique.
 //!
+//! Objects cannot be removed after registration. [`SolidObjectId`] values are
+//! stable indices into the renderer's internal object list; create a new
+//! renderer if you need to rebuild the set.
+//!
 //! # Example
 //!
 //! ```ignore
 //! let mut solid = SolidRenderer::new(&ctx, &scene_bind_group_layout);
 //!
 //! let cube = mikage::CubeMesh::generate();
-//! let id = solid.add_object(&device, &cube.positions, &cube.normals, &cube.indices);
-//! solid.update_object(&queue, id, Mat4::IDENTITY, Vec4::ONE);
+//! let id = solid.add_object(&ctx, &cube.positions, &cube.normals, &cube.indices);
+//! solid.update_object(&ctx, id, Mat4::IDENTITY, Vec4::ONE);
 //!
 //! // In render pass (scene bind group already set at group 0):
 //! solid.render(&mut pass);
@@ -107,25 +111,7 @@ impl SolidRenderer {
     /// a [`SceneUniform`](crate::SceneUniform) buffer. This must match the
     /// bind group you set at group 0 before calling [`render`](SolidRenderer::render).
     pub fn new(gpu: &crate::GpuContext, scene_bind_group_layout: &wgpu::BindGroupLayout) -> Self {
-        Self::from_parts(
-            &gpu.device,
-            gpu.render_format(),
-            scene_bind_group_layout,
-            gpu.sample_count(),
-        )
-    }
-
-    /// Low-level constructor. Prefer [`new`](Self::new) which takes `&GpuContext`.
-    ///
-    /// This method is `pub` for integration testing only and is **not** part of
-    /// the stable API. It may be changed or removed without a semver bump.
-    #[doc(hidden)]
-    pub fn from_parts(
-        device: &wgpu::Device,
-        render_format: wgpu::TextureFormat,
-        scene_bind_group_layout: &wgpu::BindGroupLayout,
-        sample_count: u32,
-    ) -> Self {
+        let device = &gpu.device;
         // Model bind group layout: single uniform buffer at binding 0
         let model_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -177,7 +163,7 @@ impl SolidRenderer {
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState {
-                count: sample_count,
+                count: gpu.sample_count(),
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
@@ -186,7 +172,7 @@ impl SolidRenderer {
                 entry_point: Some("fragment_lit"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: render_format,
+                    format: gpu.render_format(),
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -222,7 +208,7 @@ impl SolidRenderer {
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState {
-                count: sample_count,
+                count: gpu.sample_count(),
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
@@ -231,7 +217,7 @@ impl SolidRenderer {
                 entry_point: Some("fragment_unlit"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: render_format,
+                    format: gpu.render_format(),
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -266,21 +252,7 @@ impl SolidRenderer {
         normals: &[[f32; 3]],
         indices: &[u32],
     ) -> SolidObjectId {
-        self.add_object_raw(&gpu.device, positions, normals, indices)
-    }
-
-    /// Registers a new mesh object (low-level, raw wgpu types).
-    ///
-    /// This method is `pub` for integration testing only and is **not** part of
-    /// the stable API. It may be changed or removed without a semver bump.
-    #[doc(hidden)]
-    pub fn add_object_raw(
-        &mut self,
-        device: &wgpu::Device,
-        positions: &[[f32; 3]],
-        normals: &[[f32; 3]],
-        indices: &[u32],
-    ) -> SolidObjectId {
+        let device = &gpu.device;
         let mesh = MeshBuffers::from_position_normal(device, positions, normals, indices);
 
         let uniform = ModelUniform::new(Mat4::IDENTITY, Vec4::ONE);
@@ -329,28 +301,14 @@ impl SolidRenderer {
         model: Mat4,
         color: Vec4,
     ) {
-        self.update_object_raw(&gpu.queue, id, model, color);
-    }
-
-    /// Updates an object's model matrix and RGBA color (low-level, raw wgpu types).
-    ///
-    /// This method is `pub` for integration testing only and is **not** part of
-    /// the stable API. It may be changed or removed without a semver bump.
-    #[doc(hidden)]
-    pub fn update_object_raw(
-        &mut self,
-        queue: &wgpu::Queue,
-        id: SolidObjectId,
-        model: Mat4,
-        color: Vec4,
-    ) {
         let obj = self
             .objects
             .get_mut(id.0)
             .expect("invalid SolidObjectId: object not found");
         obj.alpha = color.w;
         let uniform = ModelUniform::new(model, color);
-        queue.write_buffer(&obj.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
+        gpu.queue
+            .write_buffer(&obj.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
     }
 
     /// Renders all objects.

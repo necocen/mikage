@@ -1,4 +1,5 @@
 use winit::dpi::PhysicalSize;
+use winit::window::Window;
 
 use crate::camera::{Camera, InteractiveCamera};
 use crate::context::GpuContext;
@@ -57,6 +58,8 @@ pub struct UpdateContext<'a, C: InteractiveCamera> {
     pub input: &'a InputState,
     /// The active camera controller (mutable). Provides both view matrices and input control.
     pub camera: &'a mut C,
+    /// The current winit window. Use for title/cursor updates and other window-level controls.
+    pub window: &'a Window,
 }
 
 /// The core application trait.

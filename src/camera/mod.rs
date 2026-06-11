@@ -5,8 +5,7 @@
 //! and [`Camera2d`] implement both.
 //!
 //! [`App::Camera`](crate::App::Camera) requires [`InteractiveCamera`].
-//! For a camera that ignores all input, implement `InteractiveCamera` with
-//! no-op methods (the framework calls them automatically).
+//! Use `type Camera = ()` for apps that do not need a camera.
 
 pub mod camera2d;
 pub mod orbit;
@@ -18,7 +17,7 @@ pub use orbit::OrbitCamera;
 ///
 /// This trait is exposed to [`App::encode`](crate::App::encode) via
 /// [`FrameContext::camera`](crate::FrameContext::camera).
-pub trait Camera: Send + Sync {
+pub trait Camera {
     /// Returns the view matrix (world-to-camera transform).
     fn view_matrix(&self) -> glam::Mat4;
 
@@ -32,6 +31,20 @@ pub trait Camera: Send + Sync {
 
     /// Returns the camera position in world space.
     fn position(&self) -> glam::Vec3;
+}
+
+impl Camera for () {
+    fn view_matrix(&self) -> glam::Mat4 {
+        glam::Mat4::IDENTITY
+    }
+
+    fn projection_matrix(&self, _aspect: f32) -> glam::Mat4 {
+        glam::Mat4::IDENTITY
+    }
+
+    fn position(&self) -> glam::Vec3 {
+        glam::Vec3::ZERO
+    }
 }
 
 /// Camera input controller.
@@ -131,5 +144,19 @@ pub trait InteractiveCamera: Camera {
     #[cfg(all(feature = "agent", not(target_family = "wasm")))]
     fn apply_agent_command(&mut self, command: &crate::agent::AgentCommand) -> Result<(), String> {
         crate::agent::apply_basic_camera_command(self, command)
+    }
+}
+
+impl InteractiveCamera for () {
+    fn on_mouse_drag(&mut self, _dx: f64, _dy: f64, _left: bool, _right: bool, _middle: bool) {}
+
+    fn on_scroll(&mut self, _delta: f32) {}
+
+    fn update(&mut self, _dt: f32) {}
+
+    fn set_enabled(&mut self, _enabled: bool) {}
+
+    fn is_enabled(&self) -> bool {
+        false
     }
 }
