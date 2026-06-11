@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.4.0
+
+### Added
+
+- **Native HTTP agent API** — Native apps can opt into `run_with_agent()` and expose a local HTTP control surface for agent-driven debugging.
+- **Screenshot capture** — `GET /screenshot` returns the latest rendered frame as PNG, enabling direct visual inspection from tools such as `curl`.
+- **Camera and app commands** — `POST /command` supports redraw requests, camera drag/zoom/enabled/orbit/2D controls, and app-defined command payloads.
+- **Graceful shutdown command** — `POST /command` with `{"op":"shutdown"}` exits the native event loop after returning an OK response.
+
+### Documentation
+
+- Added `docs/agent-http-api.md` with endpoint examples and agent usage guidance.
+- Documented the agent feature flag and HTTP control flow in the README.
+
 ## v0.3.4
 
 ### Fixed
