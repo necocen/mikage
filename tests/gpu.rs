@@ -1,17 +1,18 @@
 //! Headless GPU integration tests.
 //!
 //! These tests require a GPU (or software adapter). If no adapter is available,
-//! tests are skipped rather than failing.
+//! tests are skipped rather than failing, unless MIKAGE_REQUIRE_GPU=1.
+//! Other initialization errors always fail the test.
 
 use std::path::Path;
 
 use image::{ImageBuffer, Rgba, RgbaImage};
 use mikage::wgpu;
 use mikage::{
-    CubeMesh, DEPTH_FORMAT, GpuContext, IcoSphereMesh, InstanceData, InstanceRenderer,
-    InstanceRendererConfig, PlaneMesh, QuadMesh2d, RegularPolygonMesh, SceneBinding, SceneUniform,
-    ShaderProcessor, SolidRenderer, UniformBuffer, create_compute_pipeline,
-    create_storage_buffer_init, storage_buffer_entry,
+    CubeMesh, DEPTH_FORMAT, GpuContext, GpuDescriptor, GpuInitError, IcoSphereMesh, InstanceData,
+    InstanceRenderer, InstanceRendererConfig, PlaneMesh, QuadMesh2d, RegularPolygonMesh,
+    RenderTargetConfig, SceneBinding, SceneUniform, ShaderProcessor, SolidRenderer, UniformBuffer,
+    create_compute_pipeline, create_storage_buffer_init, storage_buffer_entry,
 };
 use wgpu::util::DeviceExt;
 
@@ -23,9 +24,23 @@ type GpuTest = GpuContext;
 
 /// Render format used across all headless tests (no surface, so we pick a common sRGB format).
 const RENDER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+const TARGET_CONFIG: RenderTargetConfig = RenderTargetConfig {
+    color_format: RENDER_FORMAT,
+    depth_format: DEPTH_FORMAT,
+    sample_count: 1,
+};
 
 fn setup_gpu() -> Option<GpuTest> {
-    pollster::block_on(GpuContext::headless(RENDER_FORMAT, 1)).ok()
+    match pollster::block_on(GpuContext::headless(GpuDescriptor::default())) {
+        Ok(gpu) => Some(gpu),
+        Err(GpuInitError::AdapterUnavailable(error))
+            if std::env::var("MIKAGE_REQUIRE_GPU").as_deref() != Ok("1") =>
+        {
+            eprintln!("GPU adapter unavailable: {error}");
+            None
+        }
+        Err(error) => panic!("GPU initialization failed: {error}"),
+    }
 }
 
 /// Run `body` if a GPU is available; skip otherwise.
@@ -132,10 +147,10 @@ fn readback_texture(
             submission_index: None,
             timeout: None,
         })
-        .ok();
+        .expect("GPU polling failed");
     rx.recv().unwrap().unwrap();
 
-    let data = slice.get_mapped_range();
+    let data = slice.get_mapped_range().expect("mapped GPU readback");
     // Remove row padding
     let mut pixels = Vec::with_capacity((w * h * 4) as usize);
     for row in 0..h {
@@ -148,6 +163,72 @@ fn readback_texture(
 
 fn align_to(value: u32, alignment: u32) -> u32 {
     value.div_ceil(alignment) * alignment
+}
+
+#[test]
+fn headless_capabilities_match_enabled_device() {
+    gpu_test!(|gpu: GpuTest| {
+        let caps = gpu.capabilities();
+        assert_eq!(caps.enabled_features, gpu.device.features());
+        assert_eq!(caps.enabled_limits, gpu.device.limits());
+        assert_eq!(&caps.adapter_info, gpu.adapter_info());
+        let (device, queue) = gpu.compute_handles();
+        assert_eq!(device, gpu.device);
+        assert_eq!(queue, gpu.queue);
+    });
+}
+
+#[test]
+fn offscreen_target_resolves_msaa_and_preserves_size_on_error() {
+    gpu_test!(|gpu: GpuTest| {
+        for sample_count in [1, 4] {
+            let size = mikage::dpi::PhysicalSize::new(16, 8);
+            let config = RenderTargetConfig {
+                sample_count,
+                ..TARGET_CONFIG
+            };
+            let mut target = mikage::OffscreenTarget::new(&gpu, size, config).unwrap();
+            assert_eq!(target.msaa_view().is_some(), sample_count > 1);
+            let mut encoder = gpu.device.create_command_encoder(&Default::default());
+            {
+                let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: target.color_view(),
+                        resolve_target: target.resolve_target(),
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::RED),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
+            }
+            gpu.queue.submit([encoder.finish()]);
+            let pixels = readback_texture(
+                &gpu.device,
+                &gpu.queue,
+                target.texture(),
+                size.width,
+                size.height,
+            );
+            assert!(
+                pixels
+                    .chunks_exact(4)
+                    .all(|pixel| pixel == [255, 0, 0, 255])
+            );
+            assert!(
+                target
+                    .resize(&gpu, mikage::dpi::PhysicalSize::new(0, 8))
+                    .is_err()
+            );
+            assert_eq!(target.size(), size);
+            let resized = mikage::dpi::PhysicalSize::new(8, 16);
+            target.resize(&gpu, resized).unwrap();
+            assert_eq!(target.size(), resized);
+            assert_eq!(target.render_target_config(), config);
+        }
+    });
 }
 
 // ===========================================================================
@@ -250,6 +331,7 @@ fn instance_renderer_2d_creation() {
         let quad = QuadMesh2d::generate();
         let _renderer = InstanceRenderer::new(
             &gpu,
+            TARGET_CONFIG,
             scene.layout(),
             &quad.positions,
             &quad.normals,
@@ -266,6 +348,7 @@ fn instance_renderer_3d_creation() {
         let sphere = IcoSphereMesh::generate(1);
         let _renderer = InstanceRenderer::new(
             &gpu,
+            TARGET_CONFIG,
             scene.layout(),
             &sphere.positions,
             &sphere.normals,
@@ -279,7 +362,7 @@ fn instance_renderer_3d_creation() {
 fn solid_renderer_creation() {
     gpu_test!(|gpu: GpuTest| {
         let scene = SceneBinding::new(&gpu.device);
-        let _solid = SolidRenderer::new(&gpu, scene.layout());
+        let _solid = SolidRenderer::new(&gpu, TARGET_CONFIG, scene.layout());
     });
 }
 
@@ -287,7 +370,7 @@ fn solid_renderer_creation() {
 fn solid_renderer_add_and_update_object() {
     gpu_test!(|gpu: GpuTest| {
         let scene = SceneBinding::new(&gpu.device);
-        let mut solid = SolidRenderer::new(&gpu, scene.layout());
+        let mut solid = SolidRenderer::new(&gpu, TARGET_CONFIG, scene.layout());
         let cube = CubeMesh::generate();
         let id = solid.add_object(&gpu, &cube.positions, &cube.normals, &cube.indices);
         solid.update_object(
@@ -366,6 +449,7 @@ fn instance_renderer_draws_pixels() {
 
         let mut renderer = InstanceRenderer::new(
             &gpu,
+            TARGET_CONFIG,
             scene.layout(),
             &positions,
             &normals,
@@ -430,7 +514,7 @@ fn solid_renderer_draws_pixels() {
         let uniform = SceneUniform::new(glam::Mat4::IDENTITY, glam::Vec3::ZERO);
         scene.update(&gpu.queue, &uniform);
 
-        let mut solid = SolidRenderer::new(&gpu, scene.layout());
+        let mut solid = SolidRenderer::new(&gpu, TARGET_CONFIG, scene.layout());
 
         // Full-screen quad facing camera
         let positions: Vec<[f32; 3]> = vec![
@@ -501,6 +585,7 @@ fn instance_renderer_update_and_regrow() {
         let hex = RegularPolygonMesh::generate(6);
         let mut renderer = InstanceRenderer::new(
             &gpu,
+            TARGET_CONFIG,
             scene.layout(),
             &hex.positions,
             &hex.normals,
@@ -654,7 +739,7 @@ fn render_solid(
     setup: impl FnOnce(&mut SolidRenderer, &SceneBinding, &GpuContext),
 ) -> Vec<u8> {
     let scene = SceneBinding::new(&gpu.device);
-    let mut solid = SolidRenderer::new(gpu, scene.layout());
+    let mut solid = SolidRenderer::new(gpu, TARGET_CONFIG, scene.layout());
     setup(&mut solid, &scene, gpu);
 
     let (tex, color_view) = create_color_texture(&gpu.device, w, h);
@@ -706,6 +791,7 @@ fn render_instances_2d(
 
     let mut renderer = InstanceRenderer::new(
         gpu,
+        TARGET_CONFIG,
         scene.layout(),
         positions,
         normals,
@@ -1050,10 +1136,11 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
                 submission_index: None,
                 timeout: None,
             })
-            .ok();
+            .expect("GPU polling failed");
         rx.recv().unwrap().unwrap();
 
-        let result: Vec<f32> = bytemuck::cast_slice(&slice.get_mapped_range()).to_vec();
+        let result: Vec<f32> =
+            bytemuck::cast_slice(&slice.get_mapped_range().expect("mapped GPU readback")).to_vec();
         for (i, &val) in result.iter().enumerate() {
             let expected = i as f32 * 2.0;
             assert!(
@@ -1216,10 +1303,11 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
                 submission_index: None,
                 timeout: None,
             })
-            .ok();
+            .expect("GPU polling failed");
         rx.recv().unwrap().unwrap();
 
-        let gpu_data: Vec<f32> = bytemuck::cast_slice(&slice.get_mapped_range()).to_vec();
+        let gpu_data: Vec<f32> =
+            bytemuck::cast_slice(&slice.get_mapped_range().expect("mapped GPU readback")).to_vec();
 
         // Compare GPU results against CPU reference + save as snapshot image
         let mut rgba_pixels = Vec::with_capacity((w * h * 4) as usize);
@@ -1387,10 +1475,11 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
                 submission_index: None,
                 timeout: None,
             })
-            .ok();
+            .expect("GPU polling failed");
         rx.recv().unwrap().unwrap();
 
-        let data: Vec<f32> = bytemuck::cast_slice(&slice.get_mapped_range()).to_vec();
+        let data: Vec<f32> =
+            bytemuck::cast_slice(&slice.get_mapped_range().expect("mapped GPU readback")).to_vec();
 
         // Check continuity: adjacent samples should not jump too much
         let pi = std::f32::consts::PI;

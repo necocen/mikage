@@ -119,8 +119,12 @@ pub fn create_compute_pipeline(
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some(label),
-        bind_group_layouts,
-        push_constant_ranges: &[],
+        bind_group_layouts: &bind_group_layouts
+            .iter()
+            .copied()
+            .map(Some)
+            .collect::<Vec<_>>(),
+        immediate_size: 0,
     });
     device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some(label),

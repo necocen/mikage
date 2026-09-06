@@ -175,6 +175,7 @@ impl InstanceRenderer<InstanceData> {
     /// [`with_shader`](InstanceRenderer::with_shader).
     pub fn new(
         gpu: &crate::GpuContext,
+        target: crate::RenderTargetConfig,
         scene_bind_group_layout: &wgpu::BindGroupLayout,
         positions: &[[f32; 3]],
         normals: &[[f32; 3]],
@@ -186,6 +187,7 @@ impl InstanceRenderer<InstanceData> {
             .expect("failed to resolve instancing shader imports");
         Self::with_shader(
             gpu,
+            target,
             scene_bind_group_layout,
             positions,
             normals,
@@ -204,8 +206,10 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
     ///
     /// The shader must declare vertex attributes matching `V::vertex_attributes()`
     /// at the expected shader locations (starting at 2).
+    #[allow(clippy::too_many_arguments)] // Explicit target configuration keeps pipeline compatibility visible.
     pub fn with_shader(
         gpu: &crate::GpuContext,
+        target: crate::RenderTargetConfig,
         scene_bind_group_layout: &wgpu::BindGroupLayout,
         positions: &[[f32; 3]],
         normals: &[[f32; 3]],
@@ -235,8 +239,8 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("instancing_pipeline_layout"),
-            bind_group_layouts: &[scene_bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(scene_bind_group_layout)],
+            immediate_size: 0,
         });
 
         // Instance buffer layout from the vertex type
@@ -249,9 +253,9 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
 
         let depth_stencil = if config.depth {
             Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
+                format: target.depth_format,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             })
@@ -266,7 +270,7 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
                 module: &shader_module,
                 entry_point: Some(config.vertex_entry),
                 compilation_options: Default::default(),
-                buffers: &[POSITION_NORMAL_LAYOUT, instance_buffer_layout],
+                buffers: &[Some(POSITION_NORMAL_LAYOUT), Some(instance_buffer_layout)],
             },
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -279,7 +283,7 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
             },
             depth_stencil,
             multisample: wgpu::MultisampleState {
-                count: gpu.sample_count(),
+                count: target.sample_count,
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
@@ -288,12 +292,12 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
                 entry_point: Some(config.fragment_entry),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: gpu.render_format(),
+                    format: target.color_format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 

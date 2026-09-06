@@ -1,18 +1,16 @@
+use dpi::PhysicalSize;
 use wgpu::util::DeviceExt;
-use winit::dpi::PhysicalSize;
 
 use crate::camera::Camera;
 
 /// Creates a depth texture and its view.
 ///
 /// Typically called in the factory closure and
-/// [`App::resize`](crate::App::resize). Use [`DEPTH_FORMAT`] as the format.
-/// The sample count is automatically matched to
-/// [`GpuContext::sample_count`](crate::GpuContext::sample_count).
+/// [`App::resize`](crate::App::resize). Format and sample count match the explicit target.
 pub fn create_depth_texture(
     gpu: &crate::GpuContext,
     size: PhysicalSize<u32>,
-    format: wgpu::TextureFormat,
+    target: crate::RenderTargetConfig,
 ) -> (wgpu::Texture, wgpu::TextureView) {
     let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("depth_texture"),
@@ -22,9 +20,9 @@ pub fn create_depth_texture(
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
-        sample_count: gpu.sample_count(),
+        sample_count: target.sample_count,
         dimension: wgpu::TextureDimension::D2,
-        format,
+        format: target.depth_format,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });

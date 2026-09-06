@@ -1,24 +1,26 @@
+use mikage::dpi::PhysicalSize;
 use mikage::{
-    App, DEPTH_FORMAT, FrameContext, GpuContext, IcoSphereMesh, InstanceData, InstanceRenderer,
-    InstanceRendererConfig, OrbitCamera, RunConfig, SceneBinding, UpdateContext,
-    create_depth_texture,
+    App, GpuContext, IcoSphereMesh, InstanceData, InstanceRenderer, InstanceRendererConfig,
+    OrbitCamera, RenderContext, RenderTargetConfig, RenderUpdateContext, RunConfig, SceneBinding,
+    TickContext, create_depth_texture,
 };
-use winit::dpi::PhysicalSize;
 
 struct Instancing3dApp {
     renderer: InstanceRenderer,
     scene: SceneBinding,
     depth_view: wgpu::TextureView,
+    target_config: RenderTargetConfig,
     time: f64,
 }
 
 impl Instancing3dApp {
-    fn new(ctx: &GpuContext, size: PhysicalSize<u32>) -> Self {
+    fn new(ctx: &GpuContext, target: RenderTargetConfig, size: PhysicalSize<u32>) -> Self {
         let scene = SceneBinding::new(&ctx.device);
 
         let sphere = IcoSphereMesh::generate(1);
         let renderer = InstanceRenderer::new(
             ctx,
+            target,
             scene.layout(),
             &sphere.positions,
             &sphere.normals,
@@ -26,12 +28,13 @@ impl Instancing3dApp {
             InstanceRendererConfig::default_3d(),
         );
 
-        let (_, depth_view) = create_depth_texture(ctx, size, DEPTH_FORMAT);
+        let (_, depth_view) = create_depth_texture(ctx, size, target);
 
         Self {
             renderer,
             scene,
             depth_view,
+            target_config: target,
             time: 0.0,
         }
     }
@@ -40,13 +43,8 @@ impl Instancing3dApp {
 impl App for Instancing3dApp {
     type Camera = OrbitCamera;
 
-    fn update(&mut self, ctx: &mut UpdateContext<OrbitCamera>) {
+    fn tick(&mut self, ctx: &mut TickContext) {
         self.time = ctx.elapsed;
-
-        let aspect = ctx.window_size.width as f32 / ctx.window_size.height.max(1) as f32;
-        self.scene
-            .update_from_camera(&ctx.gpu.queue, &*ctx.camera, aspect);
-
         // 3D grid of spheres
         let grid = 5;
         let spacing = 2.5;
@@ -80,7 +78,13 @@ impl App for Instancing3dApp {
         self.renderer.update_instances(ctx.gpu, &instances);
     }
 
-    fn encode(&mut self, ctx: &mut FrameContext<OrbitCamera>) {
+    fn prepare_render(&mut self, ctx: &mut RenderUpdateContext<OrbitCamera>) {
+        let aspect = ctx.target_size.width as f32 / ctx.target_size.height.max(1) as f32;
+        self.scene
+            .update_from_camera(&ctx.gpu.queue, ctx.camera, aspect);
+    }
+
+    fn render(&mut self, ctx: &mut RenderContext<OrbitCamera>) {
         let color_attachment = ctx.color_attachment(wgpu::Operations {
             load: wgpu::LoadOp::Clear(wgpu::Color {
                 r: 0.02,
@@ -103,13 +107,16 @@ impl App for Instancing3dApp {
             }),
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
 
         pass.set_bind_group(0, self.scene.bind_group(), &[]);
         self.renderer.render(&mut pass);
     }
 
-    fn gui(&mut self, egui_ctx: &mikage::egui::Context) {
+    #[cfg(feature = "gui")]
+    fn gui(&mut self, ui: &mut mikage::egui::Ui) {
+        let egui_ctx = ui.ctx();
         mikage::egui::Window::new("Info").show(egui_ctx, |ui| {
             ui.label("3D Instancing Demo");
             ui.label("Left drag: orbit | Right drag: pan | Scroll: zoom");
@@ -118,7 +125,7 @@ impl App for Instancing3dApp {
     }
 
     fn resize(&mut self, ctx: &GpuContext, new_size: PhysicalSize<u32>) {
-        let (_, depth_view) = create_depth_texture(ctx, new_size, DEPTH_FORMAT);
+        let (_, depth_view) = create_depth_texture(ctx, new_size, self.target_config);
         self.depth_view = depth_view;
     }
 }
@@ -137,5 +144,6 @@ fn main() {
             camera,
             ..Default::default()
         },
-    );
+    )
+    .expect("mikage application failed");
 }

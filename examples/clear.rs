@@ -1,4 +1,4 @@
-use mikage::{App, FrameContext, RunConfig, UpdateContext};
+use mikage::{App, RenderContext, RunConfig, TickContext};
 
 struct ClearApp {
     time: f64,
@@ -7,11 +7,11 @@ struct ClearApp {
 impl App for ClearApp {
     type Camera = ();
 
-    fn update(&mut self, ctx: &mut UpdateContext<()>) {
+    fn tick(&mut self, ctx: &mut TickContext) {
         self.time = ctx.elapsed;
     }
 
-    fn encode(&mut self, ctx: &mut FrameContext<()>) {
+    fn render(&mut self, ctx: &mut RenderContext<()>) {
         // Cycle through colors over time
         let t = self.time as f32;
         let r = (t * 0.3).sin() * 0.5 + 0.5;
@@ -33,16 +33,18 @@ impl App for ClearApp {
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
     }
 }
 
 fn main() {
     mikage::run(
-        |_ctx, _size| ClearApp { time: 0.0 },
+        |_ctx, _target, _size| ClearApp { time: 0.0 },
         RunConfig {
             title: "mikage - clear example".to_string(),
             ..Default::default()
         },
-    );
+    )
+    .expect("mikage application failed");
 }

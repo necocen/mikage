@@ -4,13 +4,14 @@
 //! the compute shader writes directly to the instance buffer with no CPU readback.
 
 use bytemuck::{Pod, Zeroable};
+use mikage::dpi::PhysicalSize;
 use mikage::{
-    App, Camera, Camera2d, FrameContext, GpuContext, InstanceRenderer, InstanceRendererConfig,
-    InstanceVertex, RegularPolygonMesh, RunConfig, SceneBinding, SceneUniform, ShaderProcessor,
-    UniformBuffer, UpdateContext, create_compute_pipeline, create_storage_buffer_init,
-    storage_buffer_entry, uniform_buffer_entry,
+    App, Camera, Camera2d, GpuContext, InstanceRenderer, InstanceRendererConfig, InstanceVertex,
+    RegularPolygonMesh, RenderContext, RenderTargetConfig, RenderUpdateContext, RunConfig,
+    SceneBinding, SceneUniform, ShaderProcessor, TickContext, UniformBuffer,
+    create_compute_pipeline, create_storage_buffer_init, storage_buffer_entry,
+    uniform_buffer_entry,
 };
-use winit::dpi::PhysicalSize;
 
 // ---------------------------------------------------------------------------
 // Data structures
@@ -138,7 +139,7 @@ struct BoidsApp {
 }
 
 impl BoidsApp {
-    fn new(ctx: &GpuContext, _size: PhysicalSize<u32>) -> Self {
+    fn new(ctx: &GpuContext, target: RenderTargetConfig, _size: PhysicalSize<u32>) -> Self {
         let device = &ctx.device;
         let params = BoidParams::default();
 
@@ -152,6 +153,7 @@ impl BoidsApp {
         let mesh = RegularPolygonMesh::generate(3);
         let mut renderer = InstanceRenderer::<RotatedInstance>::with_shader(
             ctx,
+            target,
             tile_scenes[0].layout(),
             &mesh.positions,
             &mesh.normals,
@@ -261,7 +263,7 @@ impl BoidsApp {
 impl App for BoidsApp {
     type Camera = Camera2d;
 
-    fn update(&mut self, ctx: &mut UpdateContext<Camera2d>) {
+    fn tick(&mut self, ctx: &mut TickContext) {
         // Handle reset
         if self.reset_requested {
             self.reset_requested = false;
@@ -273,8 +275,35 @@ impl App for BoidsApp {
             self.frame_index = 0;
         }
 
+        // Sync FOV degrees → cosine
+        self.params.fov_cosine = (self.fov_degrees.to_radians() / 2.0).cos();
+
+        // Cap dt to prevent instability
+        self.params.dt = ctx.dt.min(1.0 / 30.0);
+        self.params_buffer.write(&ctx.gpu.queue, &self.params);
+        // Compute pass
+        if !self.paused {
+            let bg_index = (self.frame_index % 2) as usize;
+            let workgroups = self.params.num_boids.div_ceil(64);
+
+            let mut pass = ctx
+                .encoder
+                .begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("boids_compute_pass"),
+                    timestamp_writes: None,
+                });
+            pass.set_pipeline(&self.compute_pipeline);
+            pass.set_bind_group(0, &self.compute_bind_groups[bg_index], &[]);
+            pass.dispatch_workgroups(workgroups, 1, 1);
+            drop(pass);
+
+            self.frame_index += 1;
+        }
+    }
+
+    fn prepare_render(&mut self, ctx: &mut RenderUpdateContext<Camera2d>) {
         // Update 3x3 tile scene bindings centered on the camera position
-        let aspect = ctx.window_size.width as f32 / ctx.window_size.height.max(1) as f32;
+        let aspect = ctx.target_size.width as f32 / ctx.target_size.height.max(1) as f32;
         let vp = ctx.camera.view_projection_matrix(aspect);
         let camera_pos = ctx.camera.position();
         let tile_size = self.params.world_size * 2.0;
@@ -295,35 +324,9 @@ impl App for BoidsApp {
                 idx += 1;
             }
         }
-
-        // Sync FOV degrees → cosine
-        self.params.fov_cosine = (self.fov_degrees.to_radians() / 2.0).cos();
-
-        // Cap dt to prevent instability
-        self.params.dt = ctx.dt.min(1.0 / 30.0);
-        self.params_buffer.write(&ctx.gpu.queue, &self.params);
     }
 
-    fn encode(&mut self, ctx: &mut FrameContext<Camera2d>) {
-        // Compute pass
-        if !self.paused {
-            let bg_index = (self.frame_index % 2) as usize;
-            let workgroups = self.params.num_boids.div_ceil(64);
-
-            let mut pass = ctx
-                .encoder
-                .begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("boids_compute_pass"),
-                    timestamp_writes: None,
-                });
-            pass.set_pipeline(&self.compute_pipeline);
-            pass.set_bind_group(0, &self.compute_bind_groups[bg_index], &[]);
-            pass.dispatch_workgroups(workgroups, 1, 1);
-            drop(pass);
-
-            self.frame_index += 1;
-        }
-
+    fn render(&mut self, ctx: &mut RenderContext<Camera2d>) {
         // Render pass
         let color_attachment = ctx.color_attachment(wgpu::Operations {
             load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -340,6 +343,7 @@ impl App for BoidsApp {
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
 
         // Render 3x3 tiles for seamless periodic boundaries
@@ -349,10 +353,11 @@ impl App for BoidsApp {
         }
     }
 
-    fn gui(&mut self, egui_ctx: &mikage::egui::Context) {
-        mikage::egui::SidePanel::left("boids_panel")
-            .default_width(220.0)
-            .show(egui_ctx, |ui| {
+    #[cfg(feature = "gui")]
+    fn gui(&mut self, ui: &mut mikage::egui::Ui) {
+        mikage::egui::Panel::left("boids_panel")
+            .default_size(220.0)
+            .show(ui, |ui| {
                 ui.heading("Boids");
                 ui.label(format!("Entities: {}", self.params.num_boids));
                 ui.separator();
@@ -432,5 +437,6 @@ fn main() {
             title: "mikage - GPU boids (20k)".to_string(),
             ..RunConfig::with_defaults(camera)
         },
-    );
+    )
+    .expect("mikage application failed");
 }

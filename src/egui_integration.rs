@@ -1,168 +1,210 @@
-use winit::event::WindowEvent;
-use winit::window::Window;
+//! Window GUI adapter. The no-GUI implementation keeps the window driver identical.
 
-use crate::context::{GpuContext, SurfaceContext};
+#[cfg(feature = "window-gui")]
+mod enabled {
+    use crate::{App, GpuContext, RenderTargetConfig};
+    use dpi::PhysicalSize;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+    #[cfg(not(target_family = "wasm"))]
+    use std::time::Instant;
+    #[cfg(target_family = "wasm")]
+    use web_time::Instant;
+    use winit::{event::WindowEvent, window::Window};
 
-pub struct EguiIntegration {
-    ctx: egui::Context,
-    state: egui_winit::State,
-    pub(crate) renderer: egui_wgpu::Renderer,
-    pub(crate) screen_descriptor: egui_wgpu::ScreenDescriptor,
-    immediate_repaint_requested: bool,
-}
+    pub(crate) struct EguiIntegration {
+        ctx: egui::Context,
+        state: egui_winit::State,
+        renderer: egui_wgpu::Renderer,
+        repaint_after: Duration,
+        repaint_request: Arc<Mutex<Option<Instant>>>,
+    }
 
-/// egui の prepare 結果。render pass に描画するために使う。
-pub(crate) struct EguiPreparedFrame {
-    pub(crate) tris: Vec<egui::ClippedPrimitive>,
-    textures_to_free: Vec<egui::TextureId>,
-}
+    pub(crate) struct PreparedFrame {
+        output: egui::FullOutput,
+        tris: Vec<egui::ClippedPrimitive>,
+    }
 
-impl EguiPreparedFrame {
-    pub(crate) fn finish(self, renderer: &mut egui_wgpu::Renderer) {
-        for id in &self.textures_to_free {
-            renderer.free_texture(id);
+    impl Drop for PreparedFrame {
+        fn drop(&mut self) {
+            self.output.textures_delta.clear();
+        }
+    }
+
+    impl EguiIntegration {
+        pub fn new(
+            window: &Window,
+            gpu: &GpuContext,
+            target: RenderTargetConfig,
+            wake: Arc<dyn Fn() + Send + Sync>,
+        ) -> Self {
+            let ctx = egui::Context::default();
+            let repaint_request = Arc::new(Mutex::new(None::<Instant>));
+            let repaint_signal = repaint_request.clone();
+            ctx.set_request_repaint_callback(move |request| {
+                if let Some(deadline) = Instant::now().checked_add(request.delay) {
+                    let mut pending = repaint_signal.lock().unwrap();
+                    *pending = Some(pending.map_or(deadline, |old| old.min(deadline)));
+                    drop(pending);
+                    wake();
+                }
+            });
+            let state =
+                egui_winit::State::new(ctx.clone(), ctx.viewport_id(), window, None, None, None);
+            let renderer = egui_wgpu::Renderer::new(
+                &gpu.device,
+                target.color_format,
+                egui_wgpu::RendererOptions::default(),
+            );
+            Self {
+                ctx,
+                state,
+                renderer,
+                repaint_after: Duration::MAX,
+                repaint_request,
+            }
+        }
+
+        pub fn handle_window_event(&mut self, window: &Window, event: &WindowEvent) -> bool {
+            self.state.on_window_event(window, event).consumed
+        }
+
+        pub fn wants_pointer_input(&self) -> bool {
+            self.ctx.egui_wants_pointer_input()
+        }
+        pub fn repaint_after(&self) -> Duration {
+            self.repaint_after
+        }
+        pub fn take_repaint_request(&self) -> Option<Instant> {
+            self.repaint_request.lock().unwrap().take()
+        }
+
+        pub fn build<A: App>(&mut self, window: &Window, app: &mut A) -> PreparedFrame {
+            let input = self.state.take_egui_input(window);
+            let mut output = self.ctx.run_ui(input, |ui| app.gui(ui));
+            self.repaint_after = output
+                .viewport_output
+                .get(&self.ctx.viewport_id())
+                .map_or(Duration::MAX, |o| o.repaint_delay);
+            self.state
+                .handle_platform_output(window, std::mem::take(&mut output.platform_output));
+            let tris = self
+                .ctx
+                .tessellate(std::mem::take(&mut output.shapes), output.pixels_per_point);
+            PreparedFrame { output, tris }
+        }
+
+        pub fn encode(
+            &mut self,
+            gpu: &GpuContext,
+            encoder: &mut wgpu::CommandEncoder,
+            view: &wgpu::TextureView,
+            size: PhysicalSize<u32>,
+            prepared: &PreparedFrame,
+        ) -> Vec<wgpu::CommandBuffer> {
+            for (id, deltas) in &prepared.output.textures_delta.set {
+                for delta in deltas {
+                    self.renderer
+                        .update_texture(&gpu.device, &gpu.queue, *id, delta);
+                }
+            }
+            let screen = egui_wgpu::ScreenDescriptor {
+                size_in_pixels: [size.width, size.height],
+                pixels_per_point: prepared.output.pixels_per_point,
+            };
+            let extra = self.renderer.update_buffers(
+                &gpu.device,
+                &gpu.queue,
+                encoder,
+                &prepared.tris,
+                &screen,
+            );
+            {
+                let mut pass = encoder
+                    .begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("mikage_gui"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view,
+                            resolve_target: None,
+                            depth_slice: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    })
+                    .forget_lifetime();
+                self.renderer.render(&mut pass, &prepared.tris, &screen);
+            }
+            extra
+        }
+
+        // Submitted command buffers may still reference textures scheduled for deletion.
+        // wgpu retains those resources; destroy is legal only after encoding/submission.
+        pub fn finish(&mut self, mut prepared: PreparedFrame) {
+            for id in &prepared.output.textures_delta.free {
+                self.renderer.free_texture(id);
+            }
+            prepared.output.textures_delta.clear();
         }
     }
 }
 
-impl EguiIntegration {
-    pub fn new(window: &Window, gpu: &GpuContext, surface: &SurfaceContext) -> Self {
-        let ctx = egui::Context::default();
-        let viewport_id = ctx.viewport_id();
-        let state = egui_winit::State::new(ctx.clone(), viewport_id, window, None, None, None);
-        let renderer = egui_wgpu::Renderer::new(
-            &gpu.device,
-            gpu.render_format(),
-            egui_wgpu::RendererOptions::default(),
-        );
-
-        let size = surface.window_size();
-        let pixels_per_point = Self::compute_pixels_per_point(window);
-        let screen_descriptor = egui_wgpu::ScreenDescriptor {
-            size_in_pixels: [size.width, size.height],
-            pixels_per_point,
-        };
-
-        Self {
-            ctx,
-            state,
-            renderer,
-            screen_descriptor,
-            immediate_repaint_requested: false,
+#[cfg(not(feature = "window-gui"))]
+mod disabled {
+    use crate::{App, GpuContext, RenderTargetConfig};
+    use dpi::PhysicalSize;
+    use std::time::Duration;
+    use winit::{event::WindowEvent, window::Window};
+    pub(crate) struct EguiIntegration;
+    pub(crate) struct PreparedFrame;
+    impl EguiIntegration {
+        pub fn new(
+            _: &Window,
+            _: &GpuContext,
+            _: RenderTargetConfig,
+            _: std::sync::Arc<dyn Fn() + Send + Sync>,
+        ) -> Self {
+            Self
         }
-    }
-
-    /// winit イベントを egui に転送。egui が消費したら true を返す。
-    pub fn handle_window_event(&mut self, window: &Window, event: &WindowEvent) -> bool {
-        let response = self.state.on_window_event(window, event);
-        response.consumed
-    }
-
-    /// egui がポインタ入力を要求しているか。
-    pub fn wants_pointer_input(&self) -> bool {
-        self.ctx.wants_pointer_input()
-    }
-
-    /// Returns whether the last egui pass requested another frame immediately.
-    pub fn has_immediate_repaint_request(&self) -> bool {
-        self.immediate_repaint_requested
-    }
-
-    /// リサイズ時にスクリーン情報を更新。
-    pub fn resize(&mut self, width: u32, height: u32, pixels_per_point: f32) {
-        self.screen_descriptor = egui_wgpu::ScreenDescriptor {
-            size_in_pixels: [width, height],
-            pixels_per_point,
-        };
-    }
-
-    pub(crate) fn compute_pixels_per_point(window: &Window) -> f32 {
-        window.scale_factor() as f32
-    }
-
-    /// egui の UI 構築・描画を一括で行う。
-    ///
-    /// prepare (UI 構築 + GPU バッファ更新) → render pass 作成 → 描画 → テクスチャ解放
-    /// をすべてこのメソッド内で完結させる。
-    pub(crate) fn render(
-        &mut self,
-        window: &Window,
-        gpu: &GpuContext,
-        surface: &SurfaceContext,
-        encoder: &mut wgpu::CommandEncoder,
-        surface_view: &wgpu::TextureView,
-        gui_fn: impl FnMut(&egui::Context),
-    ) {
-        let prepared = self.prepare(window, gpu, surface, encoder, gui_fn);
-
-        {
-            let mut render_pass = encoder
-                .begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("egui_render_pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: surface_view,
-                        resolve_target: None,
-                        depth_slice: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                })
-                .forget_lifetime();
-            self.renderer
-                .render(&mut render_pass, &prepared.tris, &self.screen_descriptor);
+        pub fn handle_window_event(&mut self, _: &Window, _: &WindowEvent) -> bool {
+            false
         }
-
-        prepared.finish(&mut self.renderer);
-    }
-
-    /// egui の UI 構築を実行し、GPU バッファを更新する。
-    fn prepare(
-        &mut self,
-        window: &Window,
-        gpu: &GpuContext,
-        surface: &SurfaceContext,
-        encoder: &mut wgpu::CommandEncoder,
-        gui_fn: impl FnMut(&egui::Context),
-    ) -> EguiPreparedFrame {
-        // 毎フレーム screen_descriptor をサーフェスの実サイズで更新
-        let surface_size = surface.window_size();
-        self.screen_descriptor.size_in_pixels = [surface_size.width, surface_size.height];
-
-        let raw_input = self.state.take_egui_input(window);
-        let full_output = self.ctx.run(raw_input, gui_fn);
-        self.immediate_repaint_requested = full_output
-            .viewport_output
-            .get(&self.ctx.viewport_id())
-            .is_some_and(|output| output.repaint_delay.is_zero());
-
-        self.state
-            .handle_platform_output(window, full_output.platform_output);
-
-        let tris = self
-            .ctx
-            .tessellate(full_output.shapes, full_output.pixels_per_point);
-
-        for (id, image_delta) in &full_output.textures_delta.set {
-            self.renderer
-                .update_texture(&gpu.device, &gpu.queue, *id, image_delta);
+        pub fn wants_pointer_input(&self) -> bool {
+            false
         }
-
-        self.renderer.update_buffers(
-            &gpu.device,
-            &gpu.queue,
-            encoder,
-            &tris,
-            &self.screen_descriptor,
-        );
-
-        EguiPreparedFrame {
-            tris,
-            textures_to_free: full_output.textures_delta.free,
+        pub fn repaint_after(&self) -> Duration {
+            Duration::MAX
         }
+        #[cfg(not(target_family = "wasm"))]
+        pub fn take_repaint_request(&self) -> Option<std::time::Instant> {
+            None
+        }
+        #[cfg(target_family = "wasm")]
+        pub fn take_repaint_request(&self) -> Option<web_time::Instant> {
+            None
+        }
+        pub fn build<A: App>(&mut self, _: &Window, _: &mut A) -> PreparedFrame {
+            PreparedFrame
+        }
+        pub fn encode(
+            &mut self,
+            _: &GpuContext,
+            _: &mut wgpu::CommandEncoder,
+            _: &wgpu::TextureView,
+            _: PhysicalSize<u32>,
+            _: &PreparedFrame,
+        ) -> Vec<wgpu::CommandBuffer> {
+            Vec::new()
+        }
+        pub fn finish(&mut self, _: PreparedFrame) {}
     }
 }
+#[cfg(not(feature = "window-gui"))]
+pub(crate) use disabled::*;
+#[cfg(feature = "window-gui")]
+pub(crate) use enabled::*;

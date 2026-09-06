@@ -1,142 +1,164 @@
-use winit::dpi::PhysicalSize;
-use winit::window::Window;
+use dpi::PhysicalSize;
 
 use crate::camera::{Camera, InteractiveCamera};
-use crate::context::GpuContext;
-use crate::input::InputState;
+use crate::context::{GpuContext, RenderTargetConfig};
+use crate::runtime::SubmissionToken;
 
-/// Context for encoding GPU command passes (compute and render).
-///
-/// Passed to [`App::encode`]. Encode compute passes and/or render passes on `encoder`.
-/// Use [`color_attachment()`](FrameContext::color_attachment) to build the color attachment
-/// for render passes. Access device/queue via `ctx.gpu.device` / `ctx.gpu.queue`.
-pub struct FrameContext<'a, C: Camera> {
-    /// GPU context. Access `gpu.device` and `gpu.queue`.
-    pub gpu: &'a GpuContext,
-    /// Command encoder. Record compute and render passes here.
-    pub encoder: &'a mut wgpu::CommandEncoder,
-    /// The color attachment view (MSAA multisampled when enabled).
-    pub(crate) surface_view: &'a wgpu::TextureView,
-    /// The resolve target for MSAA (`Some` when enabled).
-    pub(crate) resolve_target: Option<&'a wgpu::TextureView>,
-    /// Current window size in pixels.
-    pub window_size: PhysicalSize<u32>,
-    /// The active camera (read-only). Use for view/projection matrices.
-    pub camera: &'a C,
+/// A borrowed render destination. `view` is multisampled when MSAA is enabled.
+#[derive(Clone, Copy)]
+pub struct RenderTarget<'a> {
+    pub view: &'a wgpu::TextureView,
+    pub resolve_target: Option<&'a wgpu::TextureView>,
+    pub depth_view: Option<&'a wgpu::TextureView>,
+    pub size: PhysicalSize<u32>,
+    pub config: RenderTargetConfig,
 }
 
-impl<'a, C: Camera> FrameContext<'a, C> {
-    /// Creates a [`RenderPassColorAttachment`](wgpu::RenderPassColorAttachment) that
-    /// correctly handles MSAA resolve. When `sample_count > 1`, the multisample
-    /// texture is used as the view and the surface texture is set as the resolve target.
+impl<'a> RenderTarget<'a> {
+    /// The single-sampled view used for overlays after scene rendering.
+    pub fn resolved_view(&self) -> &'a wgpu::TextureView {
+        self.resolve_target.unwrap_or(self.view)
+    }
+}
+
+/// One simulation tick, independent of rendering, window input, and wall time.
+///
+/// The runtime submits this encoder immediately after the hook returns. Queue
+/// uploads made here therefore precede this tick, including when several ticks
+/// execute before one render. Do not submit this encoder yourself.
+pub struct TickContext<'a> {
+    pub gpu: &'a GpuContext,
+    pub encoder: &'a mut wgpu::CommandEncoder,
+    /// One-based tick identity; identities never reset when an app resets itself.
+    pub tick_id: u64,
+    pub dt: f32,
+    /// Simulation time at the end of this tick, in seconds.
+    pub elapsed: f64,
+}
+
+/// View-dependent preparation; this hook never advances simulation.
+pub struct RenderUpdateContext<'a, C: Camera> {
+    pub gpu: &'a GpuContext,
+    pub camera: &'a C,
+    pub target_size: PhysicalSize<u32>,
+    pub target_config: RenderTargetConfig,
+    pub dt: f32,
+    pub elapsed: f64,
+}
+
+/// Encodes a scene or an overlay into a supplied render destination.
+pub struct RenderContext<'a, C: Camera> {
+    pub gpu: &'a GpuContext,
+    pub encoder: &'a mut wgpu::CommandEncoder,
+    /// Auxiliary command buffers, submitted in insertion order before `encoder`.
+    /// This supports egui's buffer preparation commands.
+    pub extra_command_buffers: &'a mut Vec<wgpu::CommandBuffer>,
+    pub target: RenderTarget<'a>,
+    pub camera: &'a C,
+    pub frame_id: u64,
+    pub completed_tick: u64,
+}
+
+impl<'a, C: Camera> RenderContext<'a, C> {
     pub fn color_attachment(
         &self,
         ops: wgpu::Operations<wgpu::Color>,
     ) -> wgpu::RenderPassColorAttachment<'a> {
         wgpu::RenderPassColorAttachment {
-            view: self.surface_view,
-            resolve_target: self.resolve_target,
+            view: self.target.view,
+            resolve_target: self.target.resolve_target,
             depth_slice: None,
             ops,
         }
     }
 }
 
-/// Context for per-frame logic updates.
-///
-/// Passed to [`App::update`]. Use for physics, input handling, and GPU data uploads.
-pub struct UpdateContext<'a, C: InteractiveCamera> {
-    /// Seconds elapsed since the previous frame.
-    pub dt: f32,
-    /// Total seconds elapsed since app start.
-    pub elapsed: f64,
-    /// Current window size in pixels.
-    pub window_size: PhysicalSize<u32>,
-    /// GPU context. Use `gpu.queue.write_buffer()` for data uploads.
+/// Encoder access for an ordered diagnostic command, without a simulation tick.
+pub struct CommandContext<'a> {
     pub gpu: &'a GpuContext,
-    /// Input state for the current frame.
-    pub input: &'a InputState,
-    /// The active camera controller (mutable). Provides both view matrices and input control.
-    pub camera: &'a mut C,
-    /// The current winit window. Use for title/cursor updates and other window-level controls.
-    pub window: &'a Window,
+    pub encoder: &'a mut wgpu::CommandEncoder,
+    /// Most recently submitted simulation tick, or zero before the first tick.
+    pub tick_id: u64,
 }
 
-/// The core application trait.
+/// Host input, available only when the window integration is enabled.
 ///
-/// Implement this trait to build an application on mikage.
-/// Create your app in a factory closure and pass it to [`run`](crate::run).
+/// Convert the input snapshot into app-owned controls and pending actions here.
+/// Transient input is delivered once even when zero or several ticks follow.
+#[cfg(feature = "window")]
+pub struct WindowInputContext<'a, C: InteractiveCamera> {
+    pub window: &'a winit::window::Window,
+    pub input: &'a crate::input::InputState,
+    pub camera: &'a mut C,
+}
+
+/// Portable application lifecycle, shared by windowed and headless execution.
 ///
-/// The associated type [`Camera`](App::Camera) specifies the camera controller type.
-///
-/// # Lifecycle
-///
-/// ```text
-/// factory closure → [update() → encode() → gui()]* → resize() (on resize)
-/// ```
-///
-/// - [`update`](App::update): Called every frame. Run simulation, process input, upload data.
-/// - [`encode`](App::encode): Called every frame. Encode GPU compute and render passes.
-/// - [`gui`](App::gui): Called every frame. Build egui UI.
-/// - [`resize`](App::resize): Called on window resize. Recreate size-dependent resources.
+/// Simulation belongs in `tick`; rendering, GUI, and input never implicitly
+/// advance it. A host may execute zero or several ticks between renders.
 pub trait App: 'static {
-    /// The camera controller type used by this application.
     type Camera: InteractiveCamera;
 
-    /// Called every frame for logic updates.
-    ///
-    /// Use this for simulation, input handling, and uploading data to the GPU
-    /// via `ctx.gpu.queue.write_buffer()`. The camera is available as a mutable
-    /// reference through `ctx.camera`.
-    fn update(&mut self, ctx: &mut UpdateContext<Self::Camera>);
+    fn tick(&mut self, _ctx: &mut TickContext<'_>) {}
+    fn prepare_render(&mut self, _ctx: &mut RenderUpdateContext<'_, Self::Camera>) {}
+    fn render(&mut self, _ctx: &mut RenderContext<'_, Self::Camera>) {}
 
-    /// Called every frame to encode GPU command passes.
-    ///
-    /// Encode compute passes and render passes here. Use
-    /// [`ctx.color_attachment()`](FrameContext::color_attachment) for render pass color attachments.
-    /// Access device/queue via `ctx.gpu.device` / `ctx.gpu.queue`.
-    /// The framework renders egui on top after [`gui`](App::gui), so you don't
-    /// need to handle egui rendering here.
-    fn encode(&mut self, ctx: &mut FrameContext<Self::Camera>);
+    #[cfg(feature = "window")]
+    fn on_input(&mut self, _ctx: &mut WindowInputContext<'_, Self::Camera>) {}
 
-    /// Called every frame to build egui UI.
-    ///
-    /// Use `egui::Window`, `egui::SidePanel`, etc. to create UI elements.
-    /// The default does nothing (no UI).
-    fn gui(&mut self, _egui_ctx: &egui::Context) {}
-
-    /// Called when the window is resized.
-    ///
-    /// Recreate size-dependent resources here (e.g., depth textures).
-    /// The default does nothing.
-    fn resize(&mut self, _ctx: &GpuContext, _new_size: PhysicalSize<u32>) {}
-
-    /// Called for window events not consumed by the framework or egui.
-    ///
-    /// Keyboard events are suppressed while egui has keyboard focus (e.g.
-    /// text input); pointer events are suppressed while the pointer is over
-    /// an egui area. System events (focus, file drops, etc.) are always
-    /// delivered. The default does nothing.
+    #[cfg(feature = "window")]
     fn on_window_event(&mut self, _event: &winit::event::WindowEvent) {}
 
-    /// Returns application-specific state for the agent HTTP status endpoint.
-    ///
-    /// This is only available on native builds with the `agent` feature.
+    #[cfg(feature = "gui")]
+    fn gui(&mut self, _ui: &mut egui::Ui) {}
+
+    fn resize(&mut self, _gpu: &GpuContext, _size: PhysicalSize<u32>) {}
+
+    /// Runs on the thread driving the runtime, immediately after submission.
+    fn after_submit(&mut self, _gpu: &GpuContext, _token: &SubmissionToken) {}
+
+    /// Runs on the runtime thread after completion notifications are drained.
+    fn after_complete(&mut self, _gpu: &GpuContext, _token: &SubmissionToken) {}
+
+    /// Called once before the runtime releases its GPU and worker resources.
+    fn shutdown(&mut self, _gpu: &GpuContext) {}
+
+    /// Register app-owned textures or buffers available for diagnostic capture.
+    fn capture_targets(&self, _registry: &mut crate::capture::CaptureRegistry) {}
+
     #[cfg(all(feature = "agent", not(target_family = "wasm")))]
     fn agent_status(&self) -> serde_json::Value {
         serde_json::Value::Null
     }
 
-    /// Handles an application-specific JSON command from the agent HTTP API.
-    ///
-    /// The framework handles built-in camera and screenshot commands itself.
-    /// Use this hook for simulation reset, seed changes, parameter updates,
-    /// or other app-owned debug controls.
     #[cfg(all(feature = "agent", not(target_family = "wasm")))]
     fn on_agent_command(
         &mut self,
         _payload: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
-        Err("app.command is not implemented for this app".to_string())
+        Err("app.command is not implemented for this app".to_owned())
+    }
+
+    /// Encodes a deferred diagnostic using the runtime's submission ordering.
+    #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+    fn encode_agent_command(
+        &mut self,
+        _payload: serde_json::Value,
+        _ctx: &mut CommandContext<'_>,
+    ) -> Result<serde_json::Value, String> {
+        Err("app GPU command is not implemented for this app".to_owned())
+    }
+
+    /// Finalizes a deferred response after its GPU endpoint completes and
+    /// `after_complete` has run. Drain app-owned readback results here to replace
+    /// the provisional JSON returned by `encode_agent_command`.
+    #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+    fn complete_agent_command(
+        &mut self,
+        _gpu: &GpuContext,
+        response: serde_json::Value,
+        _token: &SubmissionToken,
+    ) -> Result<serde_json::Value, String> {
+        Ok(response)
     }
 }

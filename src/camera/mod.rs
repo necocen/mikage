@@ -15,8 +15,8 @@ pub use orbit::OrbitCamera;
 
 /// Read-only camera interface: view and projection matrices.
 ///
-/// This trait is exposed to [`App::encode`](crate::App::encode) via
-/// [`FrameContext::camera`](crate::FrameContext::camera).
+/// This trait is exposed to [`App::render`](crate::App::render) via
+/// [`RenderContext::camera`](crate::RenderContext::camera).
 pub trait Camera {
     /// Returns the view matrix (world-to-camera transform).
     fn view_matrix(&self) -> glam::Mat4;
@@ -53,8 +53,8 @@ impl Camera for () {
 /// updates. The framework calls these methods automatically, forwarding
 /// input events unless egui is capturing them.
 ///
-/// Exposed to [`App::update`](crate::App::update) via
-/// [`UpdateContext::camera`](crate::UpdateContext::camera).
+/// The window adapter forwards input to this controller; the portable runtime
+/// also exposes it to custom hosts.
 pub trait InteractiveCamera: Camera {
     /// Called on mouse drag. `dx`/`dy` are pixel deltas.
     fn on_mouse_drag(&mut self, dx: f64, dy: f64, left: bool, right: bool, middle: bool);

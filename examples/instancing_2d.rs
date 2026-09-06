@@ -1,8 +1,9 @@
+use mikage::dpi::PhysicalSize;
 use mikage::{
-    App, Camera, Camera2d, FrameContext, GpuContext, InstanceData, InstanceRenderer,
-    InstanceRendererConfig, RegularPolygonMesh, RunConfig, SceneBinding, UpdateContext,
+    App, Camera, Camera2d, GpuContext, InstanceData, InstanceRenderer, InstanceRendererConfig,
+    RegularPolygonMesh, RenderContext, RenderTargetConfig, RenderUpdateContext, RunConfig,
+    SceneBinding,
 };
-use winit::dpi::PhysicalSize;
 
 struct Instancing2dApp {
     renderer: InstanceRenderer,
@@ -10,12 +11,13 @@ struct Instancing2dApp {
 }
 
 impl Instancing2dApp {
-    fn new(ctx: &GpuContext, _size: PhysicalSize<u32>) -> Self {
+    fn new(ctx: &GpuContext, target: RenderTargetConfig, _size: PhysicalSize<u32>) -> Self {
         let scene = SceneBinding::new(&ctx.device);
 
         let hex = RegularPolygonMesh::generate(6);
         let renderer = InstanceRenderer::new(
             ctx,
+            target,
             scene.layout(),
             &hex.positions,
             &hex.normals,
@@ -30,10 +32,10 @@ impl Instancing2dApp {
 impl App for Instancing2dApp {
     type Camera = Camera2d;
 
-    fn update(&mut self, ctx: &mut UpdateContext<Camera2d>) {
-        let aspect = ctx.window_size.width as f32 / ctx.window_size.height.max(1) as f32;
+    fn prepare_render(&mut self, ctx: &mut RenderUpdateContext<Camera2d>) {
+        let aspect = ctx.target_size.width as f32 / ctx.target_size.height.max(1) as f32;
         self.scene
-            .update_from_camera(&ctx.gpu.queue, &*ctx.camera, aspect);
+            .update_from_camera(&ctx.gpu.queue, ctx.camera, aspect);
 
         let vp = ctx.camera.view_projection_matrix(aspect);
 
@@ -76,7 +78,7 @@ impl App for Instancing2dApp {
         self.renderer.update_instances(ctx.gpu, &instances);
     }
 
-    fn encode(&mut self, ctx: &mut FrameContext<Camera2d>) {
+    fn render(&mut self, ctx: &mut RenderContext<Camera2d>) {
         let color_attachment = ctx.color_attachment(wgpu::Operations {
             load: wgpu::LoadOp::Clear(wgpu::Color {
                 r: 0.1,
@@ -92,13 +94,16 @@ impl App for Instancing2dApp {
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
 
         pass.set_bind_group(0, self.scene.bind_group(), &[]);
         self.renderer.render(&mut pass);
     }
 
-    fn gui(&mut self, egui_ctx: &mikage::egui::Context) {
+    #[cfg(feature = "gui")]
+    fn gui(&mut self, ui: &mut mikage::egui::Ui) {
+        let egui_ctx = ui.ctx();
         mikage::egui::Window::new("Info").show(egui_ctx, |ui| {
             ui.label("2D Instancing Demo");
             ui.label("Left drag: pan");
@@ -118,5 +123,6 @@ fn main() {
             title: "mikage - 2D instancing".to_string(),
             ..RunConfig::with_defaults(camera)
         },
-    );
+    )
+    .expect("mikage application failed");
 }

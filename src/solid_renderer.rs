@@ -110,7 +110,11 @@ impl SolidRenderer {
     /// `scene_bind_group_layout` is the layout for `@group(0)` containing
     /// a [`SceneUniform`](crate::SceneUniform) buffer. This must match the
     /// bind group you set at group 0 before calling [`render`](SolidRenderer::render).
-    pub fn new(gpu: &crate::GpuContext, scene_bind_group_layout: &wgpu::BindGroupLayout) -> Self {
+    pub fn new(
+        gpu: &crate::GpuContext,
+        target: crate::RenderTargetConfig,
+        scene_bind_group_layout: &wgpu::BindGroupLayout,
+    ) -> Self {
         let device = &gpu.device;
         // Model bind group layout: single uniform buffer at binding 0
         let model_bind_group_layout =
@@ -132,8 +136,11 @@ impl SolidRenderer {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("solid_pipeline_layout"),
-            bind_group_layouts: &[scene_bind_group_layout, &model_bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[
+                Some(scene_bind_group_layout),
+                Some(&model_bind_group_layout),
+            ],
+            immediate_size: 0,
         });
 
         // Opaque pipeline (lit fragment, depth write, back-face culling)
@@ -144,7 +151,7 @@ impl SolidRenderer {
                 module: &shader_module,
                 entry_point: Some("vertex"),
                 compilation_options: Default::default(),
-                buffers: &[POSITION_NORMAL_LAYOUT],
+                buffers: &[Some(POSITION_NORMAL_LAYOUT)],
             },
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -156,14 +163,14 @@ impl SolidRenderer {
                 conservative: false,
             },
             depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
+                format: target.depth_format,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState {
-                count: gpu.sample_count(),
+                count: target.sample_count,
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
@@ -172,12 +179,12 @@ impl SolidRenderer {
                 entry_point: Some("fragment_lit"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: gpu.render_format(),
+                    format: target.color_format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -189,7 +196,7 @@ impl SolidRenderer {
                 module: &shader_module,
                 entry_point: Some("vertex"),
                 compilation_options: Default::default(),
-                buffers: &[POSITION_NORMAL_LAYOUT],
+                buffers: &[Some(POSITION_NORMAL_LAYOUT)],
             },
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -201,14 +208,14 @@ impl SolidRenderer {
                 conservative: false,
             },
             depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::Less,
+                format: target.depth_format,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState {
-                count: gpu.sample_count(),
+                count: target.sample_count,
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
@@ -217,12 +224,12 @@ impl SolidRenderer {
                 entry_point: Some("fragment_unlit"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: gpu.render_format(),
+                    format: target.color_format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 

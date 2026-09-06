@@ -37,22 +37,19 @@
     <link data-trunk rel="rust" data-bin="mikage-wasm-demo" data-wasm-opt="z" />
     <script>
         window.addEventListener("load", () => {
-            if (!navigator.gpu) {
-                const msg = window.isSecureContext
-                    ? "WebGPU is not supported in this browser"
-                    : "WebGPU requires HTTPS (current context is not secure)";
-                document.getElementById("loading").textContent = msg;
-                return;
-            }
             // Hide loading overlay once the canvas appears
-            const observer = new MutationObserver(() => {
+            const hideLoading = () => {
                 if (document.querySelector("canvas")) {
                     const loading = document.getElementById("loading");
                     if (loading) loading.style.display = "none";
-                    observer.disconnect();
+                    return true;
                 }
+                return false;
+            };
+            const observer = new MutationObserver(() => {
+                if (hideLoading()) observer.disconnect();
             });
-            observer.observe(document.body, { childList: true, subtree: true });
+            if (!hideLoading()) observer.observe(document.body, { childList: true, subtree: true });
 
             // Catch wasm panics and show them to the user
             window.addEventListener("error", (e) => {

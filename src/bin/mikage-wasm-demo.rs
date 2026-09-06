@@ -1,19 +1,21 @@
+use mikage::dpi::PhysicalSize;
 use mikage::{
-    App, FrameContext, GpuContext, MeshBuffers, OrbitCamera, POSITION_NORMAL_LAYOUT, RunConfig,
-    SceneBinding, ShaderProcessor, UpdateContext, create_depth_texture,
+    App, GpuContext, MeshBuffers, OrbitCamera, POSITION_NORMAL_LAYOUT, RenderContext,
+    RenderTargetConfig, RenderUpdateContext, RunConfig, SceneBinding, ShaderProcessor, TickContext,
+    create_depth_texture,
 };
-use winit::dpi::PhysicalSize;
 
 struct DemoApp {
     render_pipeline: wgpu::RenderPipeline,
     mesh: MeshBuffers,
     scene: SceneBinding,
     depth_view: wgpu::TextureView,
+    target_config: RenderTargetConfig,
     time: f64,
 }
 
 impl DemoApp {
-    fn new(ctx: &GpuContext, size: PhysicalSize<u32>) -> Self {
+    fn new(ctx: &GpuContext, target: RenderTargetConfig, size: PhysicalSize<u32>) -> Self {
         let sphere = mikage::IcoSphereMesh::generate(2);
         let mesh = MeshBuffers::from_position_normal(
             &ctx.device,
@@ -22,7 +24,7 @@ impl DemoApp {
             &sphere.indices,
         );
 
-        let rt = ctx.render_target_config();
+        let rt = target;
         let scene = SceneBinding::new(&ctx.device);
 
         let sp = ShaderProcessor::new();
@@ -40,8 +42,8 @@ impl DemoApp {
             .device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("pipeline_layout"),
-                bind_group_layouts: &[scene.layout()],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(scene.layout())],
+                immediate_size: 0,
             });
 
         let render_pipeline = ctx
@@ -52,7 +54,7 @@ impl DemoApp {
                 vertex: wgpu::VertexState {
                     module: &shader,
                     entry_point: Some("vs_main"),
-                    buffers: &[POSITION_NORMAL_LAYOUT],
+                    buffers: &[Some(POSITION_NORMAL_LAYOUT)],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -69,17 +71,18 @@ impl DemoApp {
                 },
                 depth_stencil: Some(rt.depth_stencil_state()),
                 multisample: rt.multisample_state(),
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             });
 
-        let (_, depth_view) = create_depth_texture(ctx, size, rt.depth_format);
+        let (_, depth_view) = create_depth_texture(ctx, size, target);
 
         Self {
             render_pipeline,
             mesh,
             scene,
             depth_view,
+            target_config: target,
             time: 0.0,
         }
     }
@@ -88,14 +91,17 @@ impl DemoApp {
 impl App for DemoApp {
     type Camera = OrbitCamera;
 
-    fn update(&mut self, ctx: &mut UpdateContext<OrbitCamera>) {
+    fn tick(&mut self, ctx: &mut TickContext) {
         self.time = ctx.elapsed;
-        let aspect = ctx.window_size.width as f32 / ctx.window_size.height.max(1) as f32;
-        self.scene
-            .update_from_camera(&ctx.gpu.queue, &*ctx.camera, aspect);
     }
 
-    fn encode(&mut self, ctx: &mut FrameContext<OrbitCamera>) {
+    fn prepare_render(&mut self, ctx: &mut RenderUpdateContext<OrbitCamera>) {
+        let aspect = ctx.target_size.width as f32 / ctx.target_size.height.max(1) as f32;
+        self.scene
+            .update_from_camera(&ctx.gpu.queue, ctx.camera, aspect);
+    }
+
+    fn render(&mut self, ctx: &mut RenderContext<OrbitCamera>) {
         let color_attachment = ctx.color_attachment(wgpu::Operations {
             load: wgpu::LoadOp::Clear(wgpu::Color {
                 r: 0.05,
@@ -118,6 +124,7 @@ impl App for DemoApp {
             }),
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
 
         render_pass.set_pipeline(&self.render_pipeline);
@@ -127,7 +134,9 @@ impl App for DemoApp {
         render_pass.draw_indexed(0..self.mesh.index_count, 0, 0..1);
     }
 
-    fn gui(&mut self, egui_ctx: &mikage::egui::Context) {
+    #[cfg(feature = "gui")]
+    fn gui(&mut self, ui: &mut mikage::egui::Ui) {
+        let egui_ctx = ui.ctx();
         mikage::egui::Window::new("Info").show(egui_ctx, |ui| {
             ui.label("mikage WASM Demo");
             ui.label("Drag: orbit | Right drag: pan | Scroll: zoom");
@@ -136,7 +145,7 @@ impl App for DemoApp {
     }
 
     fn resize(&mut self, ctx: &GpuContext, new_size: PhysicalSize<u32>) {
-        let (_, depth_view) = create_depth_texture(ctx, new_size, mikage::DEPTH_FORMAT);
+        let (_, depth_view) = create_depth_texture(ctx, new_size, self.target_config);
         self.depth_view = depth_view;
     }
 }
@@ -171,5 +180,6 @@ fn main() {
             camera,
             ..Default::default()
         },
-    );
+    )
+    .expect("mikage application failed");
 }

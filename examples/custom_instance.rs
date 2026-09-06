@@ -5,11 +5,12 @@
 //! shader, saving bandwidth.
 
 use bytemuck::{Pod, Zeroable};
+use mikage::dpi::PhysicalSize;
 use mikage::{
-    App, Camera, Camera2d, FrameContext, GpuContext, InstanceRenderer, InstanceRendererConfig,
-    InstanceVertex, RegularPolygonMesh, RunConfig, SceneBinding, ShaderProcessor, UpdateContext,
+    App, Camera, Camera2d, GpuContext, InstanceRenderer, InstanceRendererConfig, InstanceVertex,
+    RegularPolygonMesh, RenderContext, RenderTargetConfig, RenderUpdateContext, RunConfig,
+    SceneBinding, ShaderProcessor, TickContext,
 };
-use winit::dpi::PhysicalSize;
 
 /// Custom per-instance data: position + rotation + scale (16 bytes).
 ///
@@ -41,7 +42,7 @@ struct CustomInstanceApp {
 }
 
 impl CustomInstanceApp {
-    fn new(ctx: &GpuContext, _size: PhysicalSize<u32>) -> Self {
+    fn new(ctx: &GpuContext, target: RenderTargetConfig, _size: PhysicalSize<u32>) -> Self {
         let scene = SceneBinding::new(&ctx.device);
 
         // Resolve shader imports
@@ -52,6 +53,7 @@ impl CustomInstanceApp {
         let mesh = RegularPolygonMesh::generate(5);
         let renderer = InstanceRenderer::<RotatedInstance>::with_shader(
             ctx,
+            target,
             scene.layout(),
             &mesh.positions,
             &mesh.normals,
@@ -76,12 +78,14 @@ impl CustomInstanceApp {
 impl App for CustomInstanceApp {
     type Camera = Camera2d;
 
-    fn update(&mut self, ctx: &mut UpdateContext<Camera2d>) {
+    fn tick(&mut self, ctx: &mut TickContext) {
         self.time = ctx.elapsed;
+    }
 
-        let aspect = ctx.window_size.width as f32 / ctx.window_size.height.max(1) as f32;
+    fn prepare_render(&mut self, ctx: &mut RenderUpdateContext<Camera2d>) {
+        let aspect = ctx.target_size.width as f32 / ctx.target_size.height.max(1) as f32;
         self.scene
-            .update_from_camera(&ctx.gpu.queue, &*ctx.camera, aspect);
+            .update_from_camera(&ctx.gpu.queue, ctx.camera, aspect);
 
         let vp = ctx.camera.view_projection_matrix(aspect);
         let t = self.time as f32;
@@ -118,7 +122,7 @@ impl App for CustomInstanceApp {
         self.renderer.update_instances(ctx.gpu, &instances);
     }
 
-    fn encode(&mut self, ctx: &mut FrameContext<Camera2d>) {
+    fn render(&mut self, ctx: &mut RenderContext<Camera2d>) {
         let color_attachment = ctx.color_attachment(wgpu::Operations {
             load: wgpu::LoadOp::Clear(wgpu::Color {
                 r: 0.08,
@@ -134,13 +138,16 @@ impl App for CustomInstanceApp {
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
 
         pass.set_bind_group(0, self.scene.bind_group(), &[]);
         self.renderer.render(&mut pass);
     }
 
-    fn gui(&mut self, egui_ctx: &mikage::egui::Context) {
+    #[cfg(feature = "gui")]
+    fn gui(&mut self, ui: &mut mikage::egui::Ui) {
+        let egui_ctx = ui.ctx();
         mikage::egui::Window::new("Info").show(egui_ctx, |ui| {
             ui.label("Custom InstanceVertex Demo");
             ui.label("Pentagons with per-instance 2D rotation");
@@ -162,5 +169,6 @@ fn main() {
             title: "mikage - custom instance vertex".to_string(),
             ..RunConfig::with_defaults(camera)
         },
-    );
+    )
+    .expect("mikage application failed");
 }

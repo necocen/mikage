@@ -1,0 +1,14 @@
+[package]
+name = "mikage-external-surface-fixture"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+mikage = { path = "../../..", default-features = false }
+pollster = "0.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-core-foundation = "0.3"
+objc2-quartz-core = { version = "0.3", default-features = false, features = ["std", "CALayer", "CAMetalLayer", "objc2-core-foundation"] }

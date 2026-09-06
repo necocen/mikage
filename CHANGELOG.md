@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.6.0
+
+### Changed
+
+- **Runner errors and recovery** — Return `Result<(), RunError>`, release lost surfaces before replacement, and deliver input before explicit ticks.
+
+- **Dependencies and toolchain** — Updated to wgpu 30.0.1, egui 0.36.1, and winit 0.30.13; Rust 1.95+ is required. egui-winit is vendored with a minimal WASM compatibility fix.
+- **Application lifecycle** — Replaced the mixed update/encode API with `tick`, `prepare_render`, `render`, and window-specific `on_input`. Rendering and capture no longer implicitly advance simulation. Added submission, completion, and shutdown hooks.
+- **GPU and target ownership** — `GpuContext` owns a logical GPU independently of its render destinations. Factories receive GPU, `RenderTargetConfig`, and size separately; renderer and depth helpers take the target configuration explicitly.
+- **GPU requirements** — `GpuDescriptor` separates required features/limits from optional features/preferred limits. Capabilities expose both adapter support and the enabled device contract; unsupported requirements produce structured errors.
+- **Optional window and GUI dependencies** — Default `window-gui` preserves the integrated window experience. `window`, `gui`, and `agent` can be selected independently; core/headless/external-surface use requires neither winit nor egui.
+- **Agent capture** — Screenshots use asynchronous readback and PNG workers. The synchronous `/screenshot` endpoint wraps a capture job without waiting on the render thread.
+
+### Added
+
+- **Portable application runtime** — `AppRuntime` supplies exact tick stepping, explicit rendering, bounded in-flight submissions, independent tick/frame/submission progress, and native/async completion waits.
+- **Independent simulation scheduling** — `SimulationPolicy` supports per-redraw, fixed-step, and manual operation. Fixed steps use a separate timer with bounded catch-up and reported discarded wall time.
+- **External surfaces** — Safe and unsafe surface constructors support host-owned targets, including CAMetalLayer, without creating a window or event loop. Surface attachment, resize, zero-size suspension, and recreation are explicit host operations.
+- **Headless harness and offscreen targets** — `OffscreenTarget` owns render textures independently of the GPU. `HeadlessHarness` combines exact stepping, lazy offscreen rendering, and named raw capture for tests and offline applications.
+- **Reusable readback** — `ReadbackRing` provides bounded staging slots, buffer/texture copies, map-on-submit notifications, row unpadding, cancellation, and result metadata.
+- **Capture and diagnostic jobs** — Named texture/buffer registration, `/captures`, `/jobs/{id}`, and `/jobs/{id}/result` provide PNG/raw results with TTL and capacity limits. Deferred app GPU commands and `run_until_completed` coordinate GPU endpoints; pause/resume controls manage automatic simulation.
+- **Integration examples and guides** — Added headless and agent capture examples, a standalone macOS external-surface fixture, an atomic Python capture client, runtime documentation, and the [0.5 → 0.6 migration guide](docs/migration-0.6.md).
+
 ## v0.5.0
 
 ### Added

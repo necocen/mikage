@@ -2,10 +2,10 @@ use std::collections::HashSet;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::KeyCode;
 
-/// Per-frame input state.
+/// Input state for one delivered event batch.
 ///
 /// Tracks keyboard, mouse, and scroll state. Updated automatically by the
-/// framework. Access via [`UpdateContext::input`](crate::UpdateContext::input).
+/// framework. Access via [`WindowInputContext::input`](crate::WindowInputContext::input).
 ///
 /// Events consumed by egui (e.g. keyboard input while a text field is focused,
 /// or pointer input over an egui window) are **not** reflected here. This
@@ -75,11 +75,11 @@ impl InputState {
         }
     }
 
-    /// Resets per-frame transient state (pressed/released/deltas).
+    /// Resets transient state (pressed/released/deltas) after delivery.
     ///
-    /// Called automatically at the end of each frame, after rendering.
+    /// Called after the host delivers one dirty input batch, independently of rendering.
     /// Continuous state (`keys_down`, `mouse_buttons_down`, `mouse_position`)
-    /// is preserved across frames.
+    /// is preserved across input batches.
     pub(crate) fn end_frame(&mut self) {
         self.keys_pressed.clear();
         self.keys_released.clear();
@@ -89,22 +89,26 @@ impl InputState {
         self.mouse_delta = (0.0, 0.0);
     }
 
+    fn handle_key(&mut self, key: KeyCode, state: ElementState) {
+        match state {
+            ElementState::Pressed => {
+                if self.keys_down.insert(key) {
+                    self.keys_pressed.insert(key);
+                }
+            }
+            ElementState::Released => {
+                self.keys_down.remove(&key);
+                self.keys_released.insert(key);
+            }
+        }
+    }
+
     /// Updates input state from a winit `WindowEvent`.
     pub fn handle_event(&mut self, event: &WindowEvent) {
         match event {
             WindowEvent::KeyboardInput { event, .. } => {
                 if let winit::keyboard::PhysicalKey::Code(key) = event.physical_key {
-                    match event.state {
-                        ElementState::Pressed => {
-                            if self.keys_down.insert(key) {
-                                self.keys_pressed.insert(key);
-                            }
-                        }
-                        ElementState::Released => {
-                            self.keys_down.remove(&key);
-                            self.keys_released.insert(key);
-                        }
-                    }
+                    self.handle_key(key, event.state);
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -199,38 +203,10 @@ impl InputState {
 mod tests {
     use super::*;
     use winit::dpi::PhysicalPosition;
-    use winit::event::KeyEvent;
     use winit::event::{
         DeviceId, ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
     };
-    use winit::keyboard::{KeyCode, NativeKey, PhysicalKey};
-
-    fn key_event(code: KeyCode, state: ElementState) -> WindowEvent {
-        // KeyEvent has a pub(crate) platform_specific field, so we cannot construct it directly.
-        // We create a zeroed one via unsafe and set the public fields.
-        //
-        // SAFETY: KeyEvent's hidden `platform_specific` field is a plain-data struct
-        // on every current winit platform; zeroing it produces a valid (default-like)
-        // value. All public fields are overwritten immediately after. This is fragile —
-        // if winit adds non-zero-safe fields (e.g. NonZero*, Box, Arc), this will
-        // become UB.
-        //
-        // TODO: Replace with a safe constructor if winit ever exposes one, or
-        // migrate to winit's own test helpers. Track winit issue / changelog on
-        // major version bumps.
-        let mut ke: KeyEvent = unsafe { std::mem::zeroed() };
-        ke.physical_key = PhysicalKey::Code(code);
-        ke.logical_key = winit::keyboard::Key::Unidentified(NativeKey::Unidentified);
-        ke.text = None;
-        ke.location = winit::keyboard::KeyLocation::Standard;
-        ke.state = state;
-        ke.repeat = false;
-        WindowEvent::KeyboardInput {
-            device_id: DeviceId::dummy(),
-            event: ke,
-            is_synthetic: false,
-        }
-    }
+    use winit::keyboard::KeyCode;
 
     fn cursor_moved(x: f64, y: f64) -> WindowEvent {
         WindowEvent::CursorMoved {
@@ -272,7 +248,7 @@ mod tests {
     #[test]
     fn key_press_tracked() {
         let mut state = InputState::default();
-        state.handle_event(&key_event(KeyCode::KeyW, ElementState::Pressed));
+        state.handle_key(KeyCode::KeyW, ElementState::Pressed);
         assert!(state.is_key_down(KeyCode::KeyW));
         assert!(state.is_key_pressed(KeyCode::KeyW));
     }
@@ -280,8 +256,8 @@ mod tests {
     #[test]
     fn key_release_tracked() {
         let mut state = InputState::default();
-        state.handle_event(&key_event(KeyCode::KeyW, ElementState::Pressed));
-        state.handle_event(&key_event(KeyCode::KeyW, ElementState::Released));
+        state.handle_key(KeyCode::KeyW, ElementState::Pressed);
+        state.handle_key(KeyCode::KeyW, ElementState::Released);
         assert!(!state.is_key_down(KeyCode::KeyW));
         assert!(state.keys_released.contains(&KeyCode::KeyW));
     }
@@ -289,12 +265,12 @@ mod tests {
     #[test]
     fn repeated_press_not_double_counted() {
         let mut state = InputState::default();
-        state.handle_event(&key_event(KeyCode::KeyW, ElementState::Pressed));
+        state.handle_key(KeyCode::KeyW, ElementState::Pressed);
         assert!(state.keys_pressed.contains(&KeyCode::KeyW));
         // Second press without release — keys_down.insert returns false, so
         // keys_pressed is NOT called again. The key should still be in keys_pressed
         // from the first press, and keys_down should contain it exactly once.
-        state.handle_event(&key_event(KeyCode::KeyW, ElementState::Pressed));
+        state.handle_key(KeyCode::KeyW, ElementState::Pressed);
         assert!(state.is_key_down(KeyCode::KeyW));
         assert!(state.keys_pressed.contains(&KeyCode::KeyW));
         assert_eq!(state.keys_down.len(), 1);
@@ -303,7 +279,7 @@ mod tests {
     #[test]
     fn end_frame_clears_transient() {
         let mut state = InputState::default();
-        state.handle_event(&key_event(KeyCode::KeyW, ElementState::Pressed));
+        state.handle_key(KeyCode::KeyW, ElementState::Pressed);
         state.end_frame();
         assert!(state.keys_pressed.is_empty());
         assert!(state.is_key_down(KeyCode::KeyW));

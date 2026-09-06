@@ -1,4 +1,4 @@
-use mikage::{App, FrameContext, OrbitCamera, RunConfig, UpdateContext};
+use mikage::{App, OrbitCamera, RenderContext, RunConfig};
 
 struct EguiDemoApp {
     counter: i32,
@@ -9,9 +9,7 @@ struct EguiDemoApp {
 impl App for EguiDemoApp {
     type Camera = OrbitCamera;
 
-    fn update(&mut self, _ctx: &mut UpdateContext<OrbitCamera>) {}
-
-    fn encode(&mut self, ctx: &mut FrameContext<OrbitCamera>) {
+    fn render(&mut self, ctx: &mut RenderContext<OrbitCamera>) {
         let color_attachment = ctx.color_attachment(wgpu::Operations {
             load: wgpu::LoadOp::Clear(wgpu::Color {
                 r: 0.1,
@@ -27,10 +25,13 @@ impl App for EguiDemoApp {
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
     }
 
-    fn gui(&mut self, egui_ctx: &mikage::egui::Context) {
+    #[cfg(feature = "gui")]
+    fn gui(&mut self, ui: &mut mikage::egui::Ui) {
+        let egui_ctx = ui.ctx();
         mikage::egui::Window::new("mikage egui demo").show(egui_ctx, |ui| {
             ui.heading("Hello from mikage!");
             ui.horizontal(|ui| {
@@ -54,7 +55,7 @@ impl App for EguiDemoApp {
 
 fn main() {
     mikage::run(
-        |_ctx, _size| EguiDemoApp {
+        |_ctx, _target, _size| EguiDemoApp {
             counter: 0,
             name: "World".to_string(),
             slider_value: 42.0,
@@ -63,5 +64,6 @@ fn main() {
             title: "mikage - egui demo".to_string(),
             ..Default::default()
         },
-    );
+    )
+    .expect("mikage application failed");
 }
