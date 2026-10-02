@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.6.1
+
+### Fixed
+
+- **Agent HTTP transport** — Replace handwritten HTTP parsing and socket writes with axum/Hyper on a dedicated single-thread Tokio runtime. Large capture results survive socket backpressure on macOS, and fragmented requests no longer fail on transient `WouldBlock` errors. Connection slots remain occupied until the response body is sent; transport failures are logged.
+- **Agent resource bounds** — Replace per-connection and per-job OS threads with async tasks and a bounded reply relay. Preserve public `std::mpsc` response senders, authentication, endpoint behavior, and job limits. Bound request reads, response writes, and shutdown without blocking the render thread.
+
+### Validation
+
+- Add GPU-free TCP regression tests for large results, slow readers, fragmented requests, admission limits, timeouts, cancellation, and shutdown acknowledgement. GPU capture execution was deferred for this release; see [verification notes](docs/verification-0.6.1.md).
+
 ## v0.6.0
 
 ### Changed

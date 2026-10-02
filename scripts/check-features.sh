@@ -45,6 +45,23 @@ assert_core_isolation() {
     printf '%s core contains no winit or egui-family dependencies.\n' "$label"
 }
 
+assert_http_isolation() {
+    local label=$1
+    shift
+    local dependency_tree package
+    dependency_tree=$(cargo tree --no-default-features --edges normal,build \
+        --prefix none --format '{p}' "$@")
+    while IFS= read -r package; do
+        case "$package" in
+            axum\ *|axum-core\ *|hyper\ *|hyper-util\ *|tokio\ *)
+                printf 'Unexpected HTTP dependency in %s: %s\n' "$label" "$package" >&2
+                return 1
+                ;;
+        esac
+    done <<< "$dependency_tree"
+    printf '%s contains no native HTTP runtime.\n' "$label"
+}
+
 # --all-targets checks the library, native test code, examples and demo binary.
 # Cargo honors each example/binary's required-features declaration.
 check 'native default' --all-targets
@@ -59,6 +76,8 @@ check 'native window + GUI + agent without their adapter' --no-default-features 
 check 'native default + agent' --features agent --all-targets
 check 'native all features' --all-features --all-targets
 assert_core_isolation native
+assert_http_isolation 'native core'
+assert_http_isolation 'native default without agent' --features window-gui
 
 # Native integration tests use pollster/threads; do not cross-compile that test
 # harness for browsers. Compile portable libs plus browser binaries/examples.
@@ -73,5 +92,6 @@ check 'WASM WebGL demo/examples' --target "$wasm_target" --features webgl --lib 
 check 'WASM WebGL demo/examples + agent feature' --target "$wasm_target" --features webgl,agent --lib --bins --examples
 assert_core_isolation WASM --target "$wasm_target"
 assert_core_isolation 'WASM WebGL' --target "$wasm_target" --features webgl
+assert_http_isolation 'WASM with agent feature' --target "$wasm_target" --features agent
 
 printf '\nFeature matrix and core dependency isolation passed.\n'

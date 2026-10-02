@@ -1,6 +1,6 @@
 [package]
 name = "mikage"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
@@ -10,7 +10,7 @@ default = ["window-gui"]
 window = ["dep:winit"]
 gui = ["dep:egui", "dep:egui-wgpu"]
 window-gui = ["window", "gui", "dep:egui-winit"]
-agent = ["dep:image", "dep:serde", "dep:serde_json", "wgpu/serde"]
+agent = ["dep:image", "dep:serde", "dep:serde_json", "wgpu/serde", "dep:axum", "dep:bytes", "dep:hyper", "dep:hyper-util", "dep:tokio"]
 webgl = ["wgpu/webgl"]
 
 [dependencies]
@@ -27,7 +27,15 @@ glam = { version = "0.29", features = ["bytemuck"] }
 [dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
 
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+socket2 = "0.6"
+
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"], optional = true }
+bytes = { version = "1.9", optional = true }
+hyper = { version = "1", default-features = false, features = ["http1", "server"], optional = true }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio", "service"], optional = true }
+tokio = { version = "1", features = ["rt", "net", "sync", "time", "macros"], optional = true }
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }

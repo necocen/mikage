@@ -116,6 +116,21 @@ blocking the rendering thread, copies mapped bytes, strips row padding, unmaps,
 and encodes PNG. Shutdown and device loss complete pending work with errors.
 The server stops accepting connections when its bridge is dropped.
 
+HTTP parsing and response transfer use axum/Hyper on one dedicated Tokio
+current-thread runtime. Connections close after one response; the connection
+limit includes downloads until their complete body is flushed. At capacity, the
+server handles at most one additional rejection connection at a time. Request
+headers and bodies each have a 5-second read deadline, and responses have a
+5-second transfer deadline after the handler produces a response. The application
+wait remains controlled by `request_timeout`. Shutdown allows up to one second
+for active responses before cancelling remaining connections. A failed download
+does not change a completed job; its retained result can be requested again.
+
+The public `std::mpsc::Sender<AgentResponse>` response APIs are unchanged. A
+bounded compatibility relay checks receivers every 5 ms only while replies are
+pending and sleeps on notification when idle. HTTP requests and job waits create
+no additional OS threads. Rendering and the capture worker remain independent.
+
 ## Client helper
 
 Run the example and capture a frame:

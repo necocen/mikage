@@ -3,17 +3,19 @@
 //! This module is native-only and enabled with the `agent` feature.
 
 use std::collections::HashMap;
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, mpsc};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use image::ImageEncoder;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tokio::sync::{Notify, watch};
+
+mod http;
 
 use crate::camera::InteractiveCamera;
 
@@ -284,6 +286,7 @@ pub struct AgentBridge {
     snapshot: Arc<Mutex<AgentSnapshot>>,
     jobs: Arc<JobStore>,
     stopped: Arc<AtomicBool>,
+    shutdown: watch::Sender<bool>,
     server_thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -291,6 +294,14 @@ impl AgentBridge {
     pub fn start(
         config: AgentConfig,
         wake: impl Fn() + Send + Sync + 'static,
+    ) -> std::io::Result<Self> {
+        Self::start_with_limits(config, wake, http::Limits::default())
+    }
+
+    fn start_with_limits(
+        config: AgentConfig,
+        wake: impl Fn() + Send + Sync + 'static,
+        limits: http::Limits,
     ) -> std::io::Result<Self> {
         if config.max_jobs == 0
             || config.max_connections == 0
@@ -305,9 +316,21 @@ impl AgentBridge {
         let listener = TcpListener::bind(config.bind_addr)?;
         listener.set_nonblocking(true)?;
         let bind_addr = listener.local_addr()?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()?;
+        let listener = {
+            let _entered = runtime.enter();
+            tokio::net::TcpListener::from_std(listener)?
+        };
         let snapshot = Arc::new(Mutex::new(AgentSnapshot::new(bind_addr)));
         let jobs = Arc::new(JobStore::new(&config));
         let stopped = Arc::new(AtomicBool::new(false));
+        let (shutdown, _) = watch::channel(false);
+        let replies = Arc::new(http::ResponseRelay::new(
+            config.max_jobs.saturating_add(config.max_connections),
+        ));
         let (request_tx, requests) = mpsc::sync_channel(config.max_jobs);
         if let Some(path) = &config.write_connection_file {
             let connection = json!({ "addr": bind_addr.to_string(), "auth": config.auth_token.as_ref().map(|_| "bearer") });
@@ -319,16 +342,24 @@ impl AgentBridge {
             snapshot: snapshot.clone(),
             jobs: jobs.clone(),
             stopped: stopped.clone(),
+            shutdown: shutdown.clone(),
+            replies,
             config,
         };
+        let dispatch = tracing::dispatcher::get_default(Clone::clone);
         let server_thread = thread::Builder::new()
             .name("mikage-agent-http".into())
-            .spawn(move || serve_http(listener, server))?;
+            .spawn(move || {
+                tracing::dispatcher::with_default(&dispatch, || {
+                    runtime.block_on(http::serve(listener, server, limits))
+                })
+            })?;
         Ok(Self {
             requests,
             snapshot,
             jobs,
             stopped,
+            shutdown,
             server_thread: Some(server_thread),
         })
     }
@@ -363,6 +394,7 @@ impl Drop for AgentBridge {
     fn drop(&mut self) {
         self.stopped.store(true, Ordering::Release);
         self.jobs.fail_all("application shut down");
+        self.shutdown.send_replace(true);
         if let Some(worker) = self.server_thread.take() {
             let _ = worker.join();
         }
@@ -451,7 +483,7 @@ struct JobState {
 
 struct JobStore {
     state: Mutex<JobState>,
-    changed: Condvar,
+    changed: Notify,
     max_jobs: usize,
     max_result_bytes: usize,
     ttl: Duration,
@@ -465,7 +497,7 @@ impl JobStore {
                 jobs: HashMap::new(),
                 result_bytes: 0,
             }),
-            changed: Condvar::new(),
+            changed: Notify::new(),
             max_jobs: config.max_jobs,
             max_result_bytes: config.max_result_bytes,
             ttl: config.job_ttl,
@@ -513,7 +545,7 @@ impl JobStore {
             if let Some(response) = job.response {
                 state.result_bytes = state.result_bytes.saturating_sub(response.byte_len());
             }
-            self.changed.notify_all();
+            self.changed.notify_waiters();
         }
     }
 
@@ -539,7 +571,7 @@ impl JobStore {
         }
         state.result_bytes += response.byte_len();
         state.jobs.get_mut(&id).unwrap().response = Some(response);
-        self.changed.notify_all();
+        self.changed.notify_waiters();
     }
 
     fn status(&self, id: JobId) -> Option<Value> {
@@ -574,28 +606,34 @@ impl JobStore {
             })
     }
 
-    fn wait(&self, id: JobId, timeout: Duration) -> Result<AgentResponse, AgentResponse> {
-        let mut state = self.state.lock().unwrap();
+    async fn wait(&self, id: JobId, timeout: Duration) -> Result<AgentResponse, AgentResponse> {
         let started = Instant::now();
         loop {
-            self.expire(&mut state);
-            let job = state.jobs.get(&id).ok_or_else(|| AgentResponse::Error {
-                status: 404,
-                message: "unknown or expired job".into(),
-            })?;
-            if let Some(response) = &job.response {
-                return Ok(response.clone());
-            }
-            let remaining = timeout
-                .saturating_sub(started.elapsed())
-                .min(self.ttl.saturating_sub(job.created.elapsed()));
+            // Register before checking the store so completion cannot be lost.
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            let remaining = {
+                let mut state = self.state.lock().unwrap();
+                self.expire(&mut state);
+                let job = state.jobs.get(&id).ok_or_else(|| AgentResponse::Error {
+                    status: 404,
+                    message: "unknown or expired job".into(),
+                })?;
+                if let Some(response) = &job.response {
+                    return Ok(response.clone());
+                }
+                timeout
+                    .saturating_sub(started.elapsed())
+                    .min(self.ttl.saturating_sub(job.created.elapsed()))
+            };
             if remaining.is_zero() {
                 return Err(AgentResponse::Error {
                     status: 504,
                     message: format!("job {id} is still pending; inspect /jobs/{id}"),
                 });
             }
-            state = self.changed.wait_timeout(state, remaining).unwrap().0;
+            let _ = tokio::time::timeout(remaining, changed).await;
         }
     }
 
@@ -879,53 +917,11 @@ struct Server {
     jobs: Arc<JobStore>,
     stopped: Arc<AtomicBool>,
     config: AgentConfig,
+    shutdown: watch::Sender<bool>,
+    replies: Arc<http::ResponseRelay>,
 }
 
-fn serve_http(listener: TcpListener, server: Server) {
-    tracing::info!(
-        "mikage agent HTTP API listening on {}",
-        listener.local_addr().unwrap()
-    );
-    let connections = Arc::new(AtomicUsize::new(0));
-    while !server.stopped.load(Ordering::Acquire) {
-        match listener.accept() {
-            Ok((mut stream, _)) => {
-                if connections.fetch_add(1, Ordering::AcqRel) >= server.config.max_connections {
-                    connections.fetch_sub(1, Ordering::AcqRel);
-                    let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
-                    let _ = write_http_response(
-                        &mut stream,
-                        HttpResponse::json_error(429, "too many connections"),
-                    );
-                    continue;
-                }
-                let server = server.clone();
-                let connections = connections.clone();
-                thread::spawn(move || {
-                    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-                    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
-                    let response = match read_http_request(&mut stream) {
-                        Ok(request) => handle_http_request(request, &server),
-                        Err(error) => {
-                            HttpResponse::json_error(400, &format!("invalid HTTP request: {error}"))
-                        }
-                    };
-                    let _ = write_http_response(&mut stream, response);
-                    connections.fetch_sub(1, Ordering::AcqRel);
-                });
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(10))
-            }
-            Err(error) => {
-                tracing::warn!("agent HTTP accept failed: {error}");
-                thread::sleep(Duration::from_millis(10));
-            }
-        }
-    }
-}
-
-fn handle_http_request(request: HttpRequest, server: &Server) -> HttpResponse {
+async fn handle_http_request(request: HttpRequest, server: &Server) -> HttpResponse {
     if !authorized(&request.headers, server.config.auth_token.as_deref()) {
         return HttpResponse::json_error(401, "unauthorized");
     }
@@ -975,7 +971,7 @@ fn handle_http_request(request: HttpRequest, server: &Server) -> HttpResponse {
                         Err(error) => error.into(),
                     }
                 } else {
-                    dispatch(server, AgentRequestKind::Command(command))
+                    dispatch(server, AgentRequestKind::Command(command)).await
                 }
             }
             Err(error) => HttpResponse::json_error(400, &format!("invalid command JSON: {error}")),
@@ -1001,7 +997,7 @@ fn handle_http_request(request: HttpRequest, server: &Server) -> HttpResponse {
         }
         ("GET", "/screenshot") | ("POST", "/screenshot") => {
             match enqueue_job(server, AgentRequestKind::Capture(CaptureRequest::default())) {
-                Ok(id) => match server.jobs.wait(id, server.config.request_timeout) {
+                Ok(id) => match server.jobs.wait(id, server.config.request_timeout).await {
                     Ok(response) | Err(response) => response.into(),
                 },
                 Err(error) => error.into(),
@@ -1037,6 +1033,13 @@ fn enqueue_job(server: &Server, kind: AgentRequestKind) -> Result<JobId, AgentRe
     }
     let id = server.jobs.create()?;
     let (respond_to, responses) = mpsc::channel();
+    let response = match server.replies.register(responses, server.config.job_ttl) {
+        Ok(response) => response,
+        Err(error) => {
+            server.jobs.discard(id);
+            return Err(error);
+        }
+    };
     let request = AgentRequest {
         kind,
         respond_to,
@@ -1052,30 +1055,25 @@ fn enqueue_job(server: &Server, kind: AgentRequestKind) -> Result<JobId, AgentRe
         server.jobs.discard(id);
         return Err(response);
     }
-    // At most max_jobs waiters can exist, and every waiter expires with its job.
-    // The render thread uses the same response sender for immediate and deferred work.
+    // The compatibility relay keeps the public std::mpsc sender while all
+    // waiters run on the one HTTP runtime, without one OS thread per job.
     let jobs = server.jobs.clone();
-    let ttl = server.config.job_ttl;
-    thread::spawn(move || match responses.recv_timeout(ttl) {
-        Ok(response) => jobs.complete(id, response),
-        Err(mpsc::RecvTimeoutError::Disconnected) => jobs.complete(
-            id,
-            AgentResponse::unavailable("application dropped the job"),
-        ),
-        Err(mpsc::RecvTimeoutError::Timeout) => jobs.complete(
-            id,
-            AgentResponse::Error {
-                status: 504,
-                message: "job expired".into(),
-            },
-        ),
+    tokio::spawn(async move {
+        jobs.complete(id, http::receive_reply(response).await);
     });
     (server.wake)();
     Ok(id)
 }
 
-fn dispatch(server: &Server, kind: AgentRequestKind) -> HttpResponse {
+async fn dispatch(server: &Server, kind: AgentRequestKind) -> HttpResponse {
     let (respond_to, response_rx) = mpsc::channel();
+    let response = match server
+        .replies
+        .register(response_rx, server.config.request_timeout)
+    {
+        Ok(response) => response,
+        Err(error) => return error.into(),
+    };
     if let Err(error) = server.request_tx.try_send(AgentRequest {
         kind,
         respond_to,
@@ -1091,118 +1089,13 @@ fn dispatch(server: &Server, kind: AgentRequestKind) -> HttpResponse {
         };
     }
     (server.wake)();
-    match response_rx.recv_timeout(server.config.request_timeout) {
-        Ok(response) => response.into(),
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            HttpResponse::json_error(504, "timed out waiting for application response")
-        }
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            HttpResponse::json_error(503, "application response channel closed")
-        }
-    }
+    http::receive_reply(response).await.into()
 }
 struct HttpRequest {
     method: String,
     path: String,
     headers: HashMap<String, String>,
     body: Vec<u8>,
-}
-
-fn read_http_request(stream: &mut TcpStream) -> std::io::Result<HttpRequest> {
-    let mut buffer = Vec::new();
-    let header_end = loop {
-        let mut chunk = [0; 1024];
-        let n = stream.read(&mut chunk)?;
-        if n == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "connection closed before headers",
-            ));
-        }
-        buffer.extend_from_slice(&chunk[..n]);
-        if let Some(pos) = find_header_end(&buffer) {
-            break pos;
-        }
-        if buffer.len() > 64 * 1024 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "headers too large",
-            ));
-        }
-    };
-
-    let header_bytes = &buffer[..header_end];
-    let header_text = std::str::from_utf8(header_bytes)
-        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
-    let mut lines = header_text.split("\r\n");
-    let request_line = lines
-        .next()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "empty request"))?;
-    let mut parts = request_line.split_whitespace();
-    let method = parts
-        .next()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "missing method"))?
-        .to_string();
-    let raw_path = parts
-        .next()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "missing path"))?;
-    let path = raw_path.split('?').next().unwrap_or(raw_path).to_string();
-
-    let mut headers = HashMap::new();
-    for line in lines {
-        if line.is_empty() {
-            continue;
-        }
-        if let Some((name, value)) = line.split_once(':') {
-            headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
-        }
-    }
-
-    if headers.contains_key("transfer-encoding") {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "transfer encoding is unsupported",
-        ));
-    }
-    let content_length = headers
-        .get("content-length")
-        .map(|value| value.parse::<usize>())
-        .transpose()
-        .map_err(|_| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid content length")
-        })?
-        .unwrap_or(0);
-    if content_length > 1024 * 1024 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "request body exceeds 1 MiB",
-        ));
-    }
-    let body_start = header_end + 4;
-    let mut body = buffer[body_start..].to_vec();
-    while body.len() < content_length {
-        let mut chunk = vec![0; content_length - body.len()];
-        let n = stream.read(&mut chunk)?;
-        if n == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "incomplete request body",
-            ));
-        }
-        body.extend_from_slice(&chunk[..n]);
-    }
-    body.truncate(content_length);
-
-    Ok(HttpRequest {
-        method,
-        path,
-        headers,
-        body,
-    })
-}
-
-fn find_header_end(buffer: &[u8]) -> Option<usize> {
-    buffer.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
 struct HttpResponse {
@@ -1262,38 +1155,6 @@ impl From<AgentResponse> for HttpResponse {
     }
 }
 
-fn write_http_response(stream: &mut TcpStream, response: HttpResponse) -> std::io::Result<()> {
-    write!(
-        stream,
-        "HTTP/1.1 {} {}\r\n\
-         Content-Type: {}\r\n\
-         Content-Length: {}\r\n\
-         Connection: close\r\n\
-         \r\n",
-        response.status,
-        status_text(response.status),
-        response.content_type,
-        response.body.len(),
-    )?;
-    stream.write_all(&response.body)
-}
-
-fn status_text(status: u16) -> &'static str {
-    match status {
-        200 => "OK",
-        202 => "Accepted",
-        204 => "No Content",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        404 => "Not Found",
-        429 => "Too Many Requests",
-        500 => "Internal Server Error",
-        503 => "Service Unavailable",
-        504 => "Gateway Timeout",
-        _ => "Unknown",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1334,6 +1195,11 @@ mod tests {
 
     fn test_server(config: AgentConfig) -> (Server, mpsc::Receiver<AgentRequest>) {
         let (request_tx, requests) = mpsc::sync_channel(config.max_jobs);
+        let (shutdown, _) = watch::channel(false);
+        let replies = Arc::new(http::ResponseRelay::new(
+            config.max_jobs.saturating_add(config.max_connections),
+        ));
+        tokio::spawn(replies.clone().run(shutdown.subscribe()));
         let server = Server {
             request_tx,
             wake: Arc::new(|| {}),
@@ -1341,6 +1207,8 @@ mod tests {
             jobs: Arc::new(JobStore::new(&config)),
             stopped: Arc::new(AtomicBool::new(false)),
             config,
+            shutdown,
+            replies,
         };
         (server, requests)
     }
@@ -1354,8 +1222,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn capture_returns_accepted_before_render_response_and_retains_result() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn capture_returns_accepted_before_render_response_and_retains_result() {
         let (server, requests) = test_server(AgentConfig::default());
         let response = handle_http_request(
             request(
@@ -1364,7 +1232,8 @@ mod tests {
                 json!({"target":"particles","format":"raw","exact":true,"at_tick":12}),
             ),
             &server,
-        );
+        )
+        .await;
         assert_eq!(response.status, 202);
         let json: Value = serde_json::from_slice(&response.body).unwrap();
         let id = json["id"].as_u64().unwrap();
@@ -1386,18 +1255,19 @@ mod tests {
                 metadata: json!({"tick_id":12}),
             })
             .ok();
-        assert!(server.jobs.wait(id, Duration::from_secs(1)).is_ok());
+        assert!(server.jobs.wait(id, Duration::from_secs(1)).await.is_ok());
         assert_eq!(server.jobs.status(id).unwrap()["metadata"]["tick_id"], 12);
         let result = handle_http_request(
             request("GET", &format!("/jobs/{id}/result"), Value::Null),
             &server,
-        );
+        )
+        .await;
         assert_eq!(result.status, 200);
         assert_eq!(&*result.body, &[1, 2, 3, 4]);
     }
 
-    #[test]
-    fn rejected_enqueue_releases_job_capacity_immediately() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn rejected_enqueue_releases_job_capacity_immediately() {
         let (server, requests) = test_server(AgentConfig {
             max_jobs: 1,
             ..Default::default()
@@ -1433,7 +1303,13 @@ mod tests {
         let request = requests.try_recv().unwrap();
         assert_eq!(request.job_id, Some(accepted));
         request.respond_to.send(AgentResponse::ok()).ok();
-        assert!(server.jobs.wait(accepted, Duration::from_secs(1)).is_ok());
+        assert!(
+            server
+                .jobs
+                .wait(accepted, Duration::from_secs(1))
+                .await
+                .is_ok()
+        );
 
         let (disconnected, receiver) = test_server(AgentConfig::default());
         drop(receiver);
@@ -1476,8 +1352,8 @@ mod tests {
         assert!(jobs.create().is_ok());
     }
 
-    #[test]
-    fn deferred_commands_validate_dt_and_shutdown_fails_pending_jobs() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn deferred_commands_validate_dt_and_shutdown_fails_pending_jobs() {
         let (server, requests) = test_server(AgentConfig::default());
         let invalid = handle_http_request(
             request(
@@ -1486,7 +1362,8 @@ mod tests {
                 json!({"op":"run_until_completed","target_tick":8,"dt":0.0}),
             ),
             &server,
-        );
+        )
+        .await;
         assert_eq!(invalid.status, 400);
         let valid = handle_http_request(
             request(
@@ -1495,7 +1372,8 @@ mod tests {
                 json!({"op":"run_until_completed","target_tick":8,"dt":0.01}),
             ),
             &server,
-        );
+        )
+        .await;
         assert_eq!(valid.status, 202);
         let request = requests.try_recv().unwrap();
         let id = request.job_id.unwrap();
