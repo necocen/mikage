@@ -1,9 +1,9 @@
 # 0.6.1 agent HTTP verification
 
 The HTTP transport change addresses [issue #1](https://github.com/necocen/mikage/issues/1).
-Validation runs on macOS arm64 with Rust 1.95.0. No application, GPU test,
-window, or capture/render workload is executed for this change because the GPU
-is occupied by another task.
+Validation runs on macOS arm64 with Rust 1.95.0. Initial validation was GPU-free
+because another task occupied the GPU. On 2026-10-03, permission was extended
+to light GPU use, allowing the controlled capture checks recorded below.
 
 ## Isolating the original socket failure
 
@@ -19,7 +19,8 @@ payload, then drop the stream. The client waits 100 ms before reading.
 
 This confirms the accepted-socket behavior on this host and a failure mechanism
 that occurs before the configured timeout. The exact cutoff is timing/platform
-dependent. The original GPU capture workload has not been repeated.
+dependent. The original downstream GPU workload has not been repeated; the
+follow-up below exercises capture using a controlled workload.
 
 ## GPU-free regression command
 
@@ -55,6 +56,32 @@ pass. Strict Clippy for all targets reports pre-existing
 `field_reassign_with_default` warnings in camera tests and `too_many_arguments`
 in `tests/gpu.rs`; those files are unchanged by this fix.
 
-GPU end-to-end capture validation remains deferred. After the GPU becomes
-available, repeat the high-detail PNG capture and verify complete, decodable
-downloads with both curl and urllib.
+## Light GPU capture follow-up
+
+Tested the published `v0.6.1` commit
+`5846c62f31655d25d6400a8e9bf2241004b477a5` from a separate source snapshot on
+Apple M1 Max / Metal. Built with
+`--no-default-features --features window,agent`; GUI was disabled.
+
+- Ran `agent_capture --manual --port 0 --connection-file <temporary-path>`.
+  The 1280 x 720 window capture decoded to the expected uniform RGBA color
+  `[44, 69, 85, 255]`. Both curl and urllib retrieved the completed capture job
+  and the synchronous `/screenshot` response: four matching 19,562-byte PNGs.
+- A temporary headless host used the public `AgentBridge` and
+  `AgentCaptureWorker` APIs. It uploaded a CPU-generated, deterministic
+  1024 x 1024 RGBA noise image to a GPU texture, then captured it as PNG.
+  GPU work consisted only of upload and readback; there was no compute pass.
+  Each PNG was 4,195,716 bytes, large enough to exercise the response-transfer
+  failure covered by issue #1.
+- Downloaded that completed job three times with each client, including a
+  curl download limited to 2 MiB/s. Also fetched `/screenshot` with both
+  clients. All eight downloads had HTTP 200, `image/png`, a body matching
+  `Content-Length`, and identical bytes. Every decoded pixel matched the
+  CPU-generated source. PNG SHA-256:
+  `4a968c1dbcd9be2c15a96eb40fc40457453a0a3428bd08661e401b6f631353e4`.
+- The window app's encoded, submitted, and completed simulation tick counts
+  remained zero. Both hosts acknowledged shutdown and exited successfully.
+
+No performance measurements or simulation compute workloads were run. This
+confirms complete GPU capture downloads for the tested paths while leaving
+full downstream workload and other GPU backend validation outside this run.
