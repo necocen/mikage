@@ -1,6 +1,6 @@
 [package]
 name = "mikage"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
@@ -17,8 +17,9 @@ webgl = ["wgpu/webgl"]
 wgpu = "30.0.1"
 dpi = "0.1"
 winit = { version = "0.30.13", optional = true }
-egui = { version = "=0.36.1", optional = true }
-egui-wgpu = { version = "=0.36.1", optional = true }
+# Keep the egui family on one source: PR #8516 fixes egui-winit on WASM.
+egui = { git = "https://github.com/emilk/egui", rev = "1b4a68921f5ee67a529ea29948036d5e7d034952", optional = true }
+egui-wgpu = { git = "https://github.com/emilk/egui", rev = "1b4a68921f5ee67a529ea29948036d5e7d034952", optional = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 bytemuck = { version = "1", features = ["derive"] }
@@ -31,11 +32,11 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
-egui-winit = { path = "vendor/egui-winit", optional = true }
+egui-winit = { git = "https://github.com/emilk/egui", rev = "1b4a68921f5ee67a529ea29948036d5e7d034952", optional = true }
 pollster = "0.4"
 
 [target.'cfg(target_family = "wasm")'.dependencies]
-egui-winit = { path = "vendor/egui-winit", optional = true, default-features = false, features = ["links"] }
+egui-winit = { git = "https://github.com/emilk/egui", rev = "1b4a68921f5ee67a529ea29948036d5e7d034952", optional = true, default-features = false, features = ["links"] }
 web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlCanvasElement", "HtmlElement", "Node", "ResizeObserver", "ResizeObserverEntry", "ResizeObserverSize"] }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"

@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.6.1
+
+### Changed
+
+- **egui dependency source** — Pin egui, egui-wgpu, and egui-winit to the same upstream Git revision containing PR #8516's WASM compatibility fix. Remove the local egui-winit vendor copy; consumers inherit the dependency without a root-level patch. See [the dependency record](docs/egui-dependency.md).
+
+### Validation
+
+- Check native/WASM feature combinations and confirm that every egui-family package resolves from the same Git revision. See [verification notes](docs/verification-0.6.1.md).
+
 ## v0.6.0
 
 ### Changed

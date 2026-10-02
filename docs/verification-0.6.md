@@ -70,6 +70,9 @@ status/content type and replaces the destination only after a successful result.
 
 ## Browser execution
 
+The browser observations below are from the initial 0.6 validation, before the
+subsequent PR #8516 dependency pin.
+
 ```sh
 trunk build --release false --dist target/wasm-webgpu
 trunk build --release false --features webgl --dist target/wasm-webgl
@@ -98,8 +101,18 @@ OS-triggered Surface loss were not exercised on this host; Surface reattachment
 is covered by the external consumer. The runner releases the previous Surface
 before recreating one, as required for a DX12 HWND swapchain.
 
-This checkout includes the minimal egui-winit 0.36.1 WASM patch as a direct path
-dependency. Git/path consumers use it transitively. Before publishing mikage to
-crates.io, replace it with an upstream fixed release or a published patched crate;
-see [the patch record](../vendor/egui-winit/MIKAGE-PATCH.md). No downstream
-sand-picture application or ScreenSaver product was modified.
+This checkout now pins the egui family directly to PR #8516 instead of keeping a
+local egui-winit vendor patch. See [the dependency record](egui-dependency.md) for
+the exact revision, dependency-source requirements and registry release criteria.
+No downstream sand-picture application or ScreenSaver product was modified.
+
+## PR #8516 dependency follow-up (2026-09-07)
+
+With the egui family pinned to `1b4a68921f5ee67a529ea29948036d5e7d034952`, all
+20 feature checks and 147 library/GPU/runtime tests passed again, together with
+the executable doctests. Cargo metadata confirms exactly one source for all seven
+egui-family packages and no remaining registry/vendor copy. The MSAA 4,
+fixed-step Reactive capture smoke passed against the rebuilt native example.
+An initial run alongside GPU tests encountered an HTTP read WouldBlock error;
+the standalone repeat passed. Browser rendering was not repeated for this pin;
+WASM WebGPU and WebGL builds were checked by the full feature matrix.
