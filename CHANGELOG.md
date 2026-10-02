@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.6.1
+## v0.7.0
 
 ### Fixed
 
@@ -9,7 +9,17 @@
 
 ### Validation
 
-- Add GPU-free TCP regression tests for large results, slow readers, fragmented requests, admission limits, timeouts, cancellation, and shutdown acknowledgement. GPU capture execution was deferred for this release; see [verification notes](docs/verification-0.6.1.md).
+- Add GPU-free TCP regression tests for large results, slow readers, fragmented requests, admission limits, timeouts, cancellation, and shutdown acknowledgement. Light Metal capture checks verified complete PNG downloads, including a 4 MiB image, through curl and urllib; see [verification notes](docs/verification-0.7.0.md).
+
+## v0.6.1
+
+### Changed
+
+- **egui dependency source** — Pin egui, egui-wgpu, and egui-winit to the same upstream Git revision containing PR #8516's WASM compatibility fix. Remove the local egui-winit vendor copy; consumers inherit the dependency without a root-level patch. See [the dependency record](docs/egui-dependency.md).
+
+### Validation
+
+- Check native/WASM feature combinations and confirm that every egui-family package resolves from the same Git revision. See [verification notes](docs/verification-0.6.1.md).
 
 ## v0.6.0
 

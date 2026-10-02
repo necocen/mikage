@@ -136,5 +136,5 @@ and TTL limits; `/status` reads a snapshot without waiting for GPU work.
   that requirement and handle unsupported adapters rather than silently lose work.
 
 wgpu 30.0.1 and egui 0.36.1 require API migration; the package MSRV is 1.95.
-`vendor/egui-winit/MIKAGE-PATCH.md` records the temporary upstream WASM fix and its
-removal criteria. This repository's existing untracked Cargo.lock policy remains.
+`docs/egui-dependency.md` records the egui PR #8516 commit pin and the criteria
+for returning to registry releases. This repository's existing untracked Cargo.lock policy remains.

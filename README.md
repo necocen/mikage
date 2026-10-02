@@ -11,7 +11,7 @@ for the public API changes.
 
 ## Quick start
 
-Use this checkout while the 0.6 vendored compatibility patch is in place
+Use this checkout while the temporary egui PR dependency is in place
 (adjust the path to your checkout):
 
 ```toml
@@ -391,9 +391,9 @@ trunk serve
 
 GPU initialization is asynchronous. WebGPU is used by default; enable `webgl`
 for a WebGL2 fallback when no WebGPU adapter is available. WebGL2 has no compute
-shader support, so the boids example requires WebGPU. The egui-winit dependency
-is vendored with a minimal WASM compatibility fix; see
-[vendor/egui-winit](vendor/egui-winit).
+shader support, so the boids example requires WebGPU. The egui family is pinned to
+[PR #8516](https://github.com/emilk/egui/pull/8516) for egui-winit WASM compatibility;
+see [the dependency record](docs/egui-dependency.md).
 
 ## Examples
 
