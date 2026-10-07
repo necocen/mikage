@@ -198,7 +198,7 @@ the embedding application. See the [external surface migration notes](docs/migra
 | Field | Default | Purpose |
 | --- | --- | --- |
 | `title` | `"mikage"` | Window title |
-| `width` / `height` | 1280 / 720 | Initial window size |
+| `width` / `height` | 1280 / 720 | Initial window size in logical pixels |
 | `camera` | `OrbitCamera` | Camera controller |
 | `gpu` | `GpuDescriptor::default()` | Adapter selection and feature/limit requirements |
 | `present_mode` | `AutoVsync` | Presentation mode |
@@ -210,6 +210,13 @@ the embedding application. See the [external surface migration notes](docs/migra
 | `canvas` | `None` | CSS selector for an existing WASM canvas |
 | `pixel_scroll_per_line` | 50.0 | Pixel-wheel normalization |
 | `touch_pinch_sensitivity` | 5.0 | Touch pinch zoom multiplier |
+
+`with_size(width, height)` also uses logical pixels, so the window keeps the
+same apparent size across display scale factors. For example,
+`with_size(800, 600)` requests 1600 × 1200 physical pixels on a Retina display
+with a scale factor of 2. The app factory, render targets, and `App::resize` receive the
+actual physical size for full-resolution rendering. On WASM, the canvas's CSS
+layout determines its displayed size.
 
 Fixed simulation has its own timer and bounded catch-up work, independent of
 redraw scheduling:

@@ -6,7 +6,7 @@ use crate::{
     App, AppRuntime, GpuContext, GpuDescriptor, InteractiveCamera, OrbitCamera, RenderTarget,
     RenderTargetConfig, RuntimeError, SurfaceContext, SurfaceDescriptor, WindowInputContext,
 };
-use dpi::PhysicalSize;
+use dpi::{LogicalSize, PhysicalSize};
 use std::sync::Arc;
 use std::time::Duration;
 #[cfg(not(target_family = "wasm"))]
@@ -57,7 +57,9 @@ impl SimulationPolicy {
 
 pub struct RunConfig<C: InteractiveCamera = OrbitCamera> {
     pub title: String,
+    /// Initial window width in logical pixels, scaled by the display's scale factor.
     pub width: u32,
+    /// Initial window height in logical pixels, scaled by the display's scale factor.
     pub height: u32,
     pub camera: C,
     pub gpu: GpuDescriptor,
@@ -131,6 +133,11 @@ impl<C: InteractiveCamera> RunConfig<C> {
         self.title = title.into();
         self
     }
+    /// Sets the initial window size in logical pixels.
+    ///
+    /// For example, 800 × 600 uses 1600 × 1200 physical pixels on a display
+    /// with a scale factor of 2. The app factory and resize hooks receive the
+    /// actual physical size. On WASM, the canvas's CSS layout controls its size.
     pub fn with_size(mut self, width: u32, height: u32) -> Self {
         self.width = width;
         self.height = height;
@@ -723,7 +730,7 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
         let mut attrs = WindowAttributes::default().with_title(&config.title);
         #[cfg(not(target_family = "wasm"))]
         {
-            attrs = attrs.with_inner_size(PhysicalSize::new(config.width, config.height));
+            attrs = attrs.with_inner_size(LogicalSize::new(config.width, config.height));
         }
         #[cfg(target_family = "wasm")]
         let auto_canvas = config.canvas.is_none();
@@ -761,7 +768,7 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                 attrs = attrs.with_canvas(Some(canvas));
             } else {
                 attrs = attrs
-                    .with_inner_size(PhysicalSize::new(config.width, config.height))
+                    .with_inner_size(LogicalSize::new(config.width, config.height))
                     .with_append(true);
             }
         }

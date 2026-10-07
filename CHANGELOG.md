@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.7.1
+
+### Fixed
+
+- **Window display scaling** — Interpret `RunConfig::width`, `height`, and `with_size` as logical pixels so Retina and other scaled displays create windows at the intended apparent size. Rendering and app resize hooks continue to use the actual physical pixel dimensions.
+
+### Validation
+
+- Native and WASM compilation checks passed with and without GUI integration, along with all four runner unit tests. A native startup and PNG capture smoke check at display scale factor 1 confirmed matching 1280 × 720 window and image dimensions with zero simulation ticks. Retina hardware validation remains untested.
+
 ## v0.7.0
 
 ### Fixed
