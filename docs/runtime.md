@@ -31,6 +31,59 @@ without changing the upload strategy could make all dispatches read the final
 uniform value. There is no GPU wait between ticks unless an explicitly blocking
 headless operation reaches its configured in-flight capacity.
 
+## Reactive window rendering
+
+Select `RedrawPolicy::Reactive` to draw on input, explicit invalidation, camera
+animation, and GUI repaint requests. `Camera2d` reports smooth zoom and released
+pan inertia; `OrbitCamera` reports released orbit inertia. Held drags do not
+request animation frames on their own. Disabled input still allows existing
+inertia to finish. Once animations settle, the runner waits for the next event.
+Custom cameras should override `InteractiveCamera::needs_redraw()` when their
+`update(dt)` has more animation to perform; the default is `false`.
+
+The camera uses its own clock. New animation after idle starts from the input
+event, and continuous animation uses elapsed presentation time capped at 250 ms.
+Time spent idle, suspended, or occluded is not integrated into a new animation.
+Simulation timing remains controlled separately by `SimulationPolicy`:
+`PerRedraw` ticks on camera animation frames, `Fixed` has its own timer, and
+`Manual` never ticks automatically. A static interactive viewer can combine
+`Reactive` and `Manual`.
+
+Apps receive a cloneable `RedrawRequest` once at window startup, before lifecycle
+hooks run. Store it to invalidate app-owned visible state from a hook or a worker:
+
+```rust
+use mikage::{App, Camera2d, RedrawRequest};
+
+#[derive(Default)]
+struct Viewer {
+    redraw: Option<RedrawRequest>,
+}
+
+impl App for Viewer {
+    type Camera = Camera2d;
+
+    fn set_redraw_request(&mut self, request: RedrawRequest) {
+        self.redraw = Some(request);
+    }
+}
+
+impl Viewer {
+    fn invalidate(&self) {
+        if let Some(request) = &self.redraw {
+            request.request_redraw();
+        }
+    }
+}
+```
+
+The handle works with the `window` feature alone and can be cloned into a worker
+after arranging synchronization for that worker's app data. Requests coalesce
+until handled, wake an idle event loop, and remain pending when requested during
+rendering or while the surface is suspended. A redraw respects submission
+capacity and does not introduce a tick in `Manual` mode. External/headless hosts
+continue to own their presentation scheduling.
+
 ## Exact headless stepping
 
 Create the GPU and app without a window, then explicitly choose both tick count

@@ -56,7 +56,8 @@ pub struct Camera2d {
     pub damping: f32,
     /// Smoothing factor for zoom animation (0.0 = instant, 0.2–0.3 = smooth).
     /// Controls what fraction of the remaining zoom distance is covered per
-    /// 1/60s reference frame. Frame-rate independent.
+    /// 1/60s reference frame. Frame-rate independent. Positive values too small
+    /// to represent a smoothing step in `f32` are applied instantly.
     pub zoom_smoothing: f32,
 
     /// Whether camera input is enabled. Use [`set_enabled`](InteractiveCamera::set_enabled)
@@ -74,6 +75,8 @@ pub struct Camera2d {
     cursor_pos: Vec2,
     /// Target zoom for smooth animation. `None` when no animation is active.
     target_zoom: Option<f32>,
+    /// Fractional zoom progress below the precision of the public `f32` zoom.
+    zoom_remainder: f64,
     /// Screen-space anchor point for zoom animation (preserves world point here).
     zoom_anchor: Vec2,
 }
@@ -97,6 +100,7 @@ impl Default for Camera2d {
             viewport_height: 720.0,
             cursor_pos: Vec2::ZERO,
             target_zoom: None,
+            zoom_remainder: 0.0,
             zoom_anchor: Vec2::new(640.0, 360.0),
         }
     }
@@ -121,6 +125,9 @@ impl Camera2d {
     /// When `zoom_smoothing > 0`, sets `target_zoom` and defers the actual
     /// zoom change to [`update`](InteractiveCamera::update). Otherwise applies instantly.
     fn zoom_around(&mut self, delta: f32, origin: Vec2) {
+        if self.target_zoom.is_none() {
+            self.zoom_remainder = 0.0;
+        }
         let base = self.target_zoom.unwrap_or(self.zoom);
         let new_target =
             (base * (1.0 + delta * self.zoom_speed)).clamp(self.min_zoom, self.max_zoom);
@@ -133,6 +140,7 @@ impl Camera2d {
             let after = self.screen_to_world(origin);
             self.position += before - after;
             self.target_zoom = None;
+            self.zoom_remainder = 0.0;
         } else {
             self.target_zoom = Some(new_target);
         }
@@ -172,6 +180,7 @@ impl Camera for Camera2d {
 /// 0.5 gives a half-life of ~1 event — fast convergence while still
 /// smoothing out noisy final deltas on release.
 const VELOCITY_SMOOTHING: f32 = 0.5;
+const MIN_VELOCITY_SQUARED: f32 = 1e-12;
 
 impl InteractiveCamera for Camera2d {
     fn on_mouse_drag(&mut self, dx: f64, dy: f64, left: bool, _right: bool, _middle: bool) {
@@ -232,6 +241,7 @@ impl InteractiveCamera for Camera2d {
             self.zoom =
                 (base * (1.0 + zoom_delta * self.zoom_speed)).clamp(self.min_zoom, self.max_zoom);
             self.target_zoom = None;
+            self.zoom_remainder = 0.0;
             let after = self.screen_to_world(origin);
             self.position += before - after;
         }
@@ -250,19 +260,37 @@ impl InteractiveCamera for Camera2d {
 
         // Smooth zoom animation (runs regardless of drag/damping state).
         if let Some(target) = self.target_zoom {
-            let gap = self.zoom - target;
-            if gap.abs() > 1e-6 {
-                let before = self.screen_to_world(self.zoom_anchor);
-                let factor = dt / REFERENCE_DT;
-                let retain = (1.0 - self.zoom_smoothing).powf(factor);
-                self.zoom = target + gap * retain;
-                let after = self.screen_to_world(self.zoom_anchor);
-                self.position += before - after;
+            // Keep the stopping tolerance independent of dt so a tiny first
+            // update does not immediately finish the animation.
+            let tolerance = 1e-6_f32.max(2.0 * f32::EPSILON * target.abs());
+            let before = self.screen_to_world(self.zoom_anchor);
+            let gap = self.zoom as f64 + self.zoom_remainder - target as f64;
+            let reference_retain = 1.0 - self.zoom_smoothing;
+            if self.zoom_smoothing <= 0.0 || reference_retain == 1.0 {
+                // Configuration is public and can change during animation.
+                // Zero, or a value below f32's step precision, must not leave
+                // a pending target with a retain factor of one forever.
+                self.zoom = target;
+            } else if gap.abs() > tolerance as f64 {
+                let factor = dt as f64 / REFERENCE_DT as f64;
+                let retain = (1.0 - self.zoom_smoothing as f64).powf(factor);
+                // Preserve sub-ULP changes instead of losing them each frame.
+                // At high refresh rates, rounding every interpolation back to
+                // f32 without this remainder can stall before the target.
+                let next_zoom = target as f64 + gap * retain;
+                self.zoom = next_zoom as f32;
+                self.zoom_remainder = next_zoom - self.zoom as f64;
             }
-            if (self.zoom - target).abs() <= 1e-6 {
+            if self.zoom == target
+                || (self.zoom as f64 + self.zoom_remainder - target as f64).abs()
+                    <= tolerance as f64
+            {
                 self.zoom = target;
                 self.target_zoom = None;
+                self.zoom_remainder = 0.0;
             }
+            let after = self.screen_to_world(self.zoom_anchor);
+            self.position += before - after;
         }
 
         // Pan inertia
@@ -274,7 +302,7 @@ impl InteractiveCamera for Camera2d {
         // velocity is a per-reference-frame delta (reference = 60fps).
         // Use exact geometric series to compute displacement over `factor`
         // reference frames, ensuring identical results at any frame rate.
-        if self.velocity.length_squared() > 1e-12 {
+        if self.velocity.length_squared() > MIN_VELOCITY_SQUARED {
             let factor = dt / REFERENCE_DT;
             let decay = self.damping.powf(factor);
             let movement_scale = if (1.0 - self.damping).abs() > 1e-6 {
@@ -285,6 +313,13 @@ impl InteractiveCamera for Camera2d {
             self.position += self.velocity * movement_scale;
             self.velocity *= decay;
         }
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.target_zoom.is_some()
+            || (self.damping > 0.0
+                && !self.is_dragging
+                && self.velocity.length_squared() > MIN_VELOCITY_SQUARED)
     }
 
     fn set_enabled(&mut self, enabled: bool) {
@@ -314,6 +349,7 @@ impl InteractiveCamera for Camera2d {
                 if let Some(zoom) = zoom {
                     self.zoom = zoom.clamp(self.min_zoom, self.max_zoom);
                     self.target_zoom = None;
+                    self.zoom_remainder = 0.0;
                 }
                 Ok(())
             }
@@ -578,6 +614,53 @@ mod tests {
     }
 
     #[test]
+    fn redraw_follows_pan_inertia_until_it_settles() {
+        let mut cam = Camera2d::default();
+        cam.damping = 0.9;
+        assert!(!cam.needs_redraw());
+
+        cam.on_mouse_drag(100.0, 50.0, true, false, false);
+        assert!(!cam.needs_redraw(), "drag input requests its own frames");
+        cam.on_drag_end();
+        assert!(cam.needs_redraw());
+
+        cam.set_enabled(false);
+        assert!(cam.needs_redraw(), "disabling input preserves inertia");
+        let position = cam.position;
+        cam.update(1.0 / 60.0);
+        assert_ne!(cam.position, position);
+
+        for _ in 0..300 {
+            if !cam.needs_redraw() {
+                break;
+            }
+            cam.update(1.0 / 60.0);
+        }
+        assert!(!cam.needs_redraw());
+        let settled_position = cam.position;
+        cam.update(1.0 / 60.0);
+        assert_eq!(cam.position, settled_position);
+    }
+
+    #[test]
+    fn pan_without_damping_does_not_request_more_frames() {
+        let mut cam = Camera2d::default();
+        cam.on_mouse_drag(100.0, 50.0, true, false, false);
+        cam.on_drag_end();
+        assert!(!cam.needs_redraw());
+        let position = cam.position;
+        cam.update(1.0 / 60.0);
+        assert_eq!(cam.position, position);
+    }
+
+    #[test]
+    fn instant_zoom_does_not_request_more_frames() {
+        let mut cam = Camera2d::default();
+        cam.on_scroll(1.0);
+        assert!(!cam.needs_redraw());
+    }
+
+    #[test]
     fn set_viewport_size_updates_fields() {
         let mut cam = Camera2d::default();
         cam.set_viewport_size(1920, 1080);
@@ -644,6 +727,115 @@ mod tests {
         }
         assert_approx!(cam.zoom, target);
         assert!(cam.target_zoom.is_none(), "animation should have completed");
+    }
+
+    #[test]
+    fn one_scroll_requests_frames_until_smooth_zoom_settles() {
+        let mut cam = Camera2d::default();
+        cam.zoom_smoothing = 0.2;
+        assert!(!cam.needs_redraw());
+        cam.on_scroll(1.0);
+        assert!(cam.needs_redraw());
+        let target = cam.target_zoom.unwrap();
+
+        // Input may stop, or be disabled, while the animation still runs.
+        cam.set_enabled(false);
+        cam.update(0.0);
+        assert_eq!(cam.zoom, 1.0);
+        assert!(cam.needs_redraw());
+        let mut frames = 0;
+        while cam.needs_redraw() && frames < 300 {
+            cam.update(1.0 / 60.0);
+            frames += 1;
+        }
+        assert!(frames > 1);
+        assert!(!cam.needs_redraw());
+        assert_eq!(cam.zoom, target);
+    }
+
+    #[test]
+    fn smooth_zoom_at_large_magnification_finishes_despite_rounding() {
+        for smoothing in [0.2, 0.01] {
+            for fps in [60, 360, 1000] {
+                let mut cam = Camera2d::default();
+                cam.zoom = 999.0;
+                cam.zoom_smoothing = smoothing;
+                cam.set_cursor_position(1200.0, 200.0);
+                let world_before = cam.screen_to_world(cam.cursor_pos);
+                cam.on_scroll(1.0);
+                assert_eq!(cam.target_zoom, Some(1000.0));
+                cam.update(0.0);
+                assert_eq!(cam.zoom, 999.0);
+                cam.update(1e-6);
+                assert!(cam.needs_redraw());
+                assert!(cam.zoom < 1000.0, "tiny dt must not finish the zoom");
+
+                for _ in 0..60 * fps {
+                    if !cam.needs_redraw() {
+                        break;
+                    }
+                    cam.update(1.0 / fps as f32);
+                }
+                assert!(!cam.needs_redraw(), "smoothing={smoothing}, fps={fps}");
+                assert_eq!(cam.zoom, 1000.0);
+                assert_eq!(cam.zoom_remainder, 0.0);
+                let world_after = cam.screen_to_world(cam.cursor_pos);
+                assert_approx!(world_before.x, world_after.x);
+                assert_approx!(world_before.y, world_after.y);
+            }
+        }
+    }
+
+    #[test]
+    fn smooth_zoom_finishes_at_high_refresh_rates() {
+        for fps in [360, 1000] {
+            let mut cam = Camera2d::default();
+            cam.zoom_smoothing = 0.2;
+            cam.on_scroll(1.0);
+            let target = cam.target_zoom.unwrap();
+            for _ in 0..10 * fps {
+                if !cam.needs_redraw() {
+                    break;
+                }
+                cam.update(1.0 / fps as f32);
+            }
+            assert!(!cam.needs_redraw(), "fps={fps}");
+            assert_eq!(cam.zoom, target);
+            assert_eq!(cam.zoom_remainder, 0.0);
+        }
+    }
+
+    #[test]
+    fn disabling_smoothing_mid_animation_applies_pending_target() {
+        for smoothing in [0.0, -0.2, 1e-8] {
+            let mut cam = Camera2d::default();
+            cam.zoom = 1000.0;
+            cam.zoom_smoothing = 0.2;
+            cam.set_cursor_position(1200.0, 200.0);
+            let world_before = cam.screen_to_world(cam.cursor_pos);
+            cam.on_scroll(-100.0);
+            assert_eq!(cam.target_zoom, Some(cam.min_zoom));
+            assert!(cam.needs_redraw());
+
+            cam.zoom_smoothing = smoothing;
+            cam.update(1.0 / 60.0);
+            assert_eq!(cam.zoom, cam.min_zoom);
+            assert!(!cam.needs_redraw(), "smoothing={smoothing}");
+            let world_after = cam.screen_to_world(cam.cursor_pos);
+            assert_approx!(world_before.x, world_after.x);
+            assert_approx!(world_before.y, world_after.y);
+        }
+    }
+
+    #[test]
+    fn smoothing_below_step_precision_applies_pending_target() {
+        let mut cam = Camera2d::default();
+        cam.zoom = 1000.0;
+        cam.zoom_smoothing = 1e-8;
+        cam.on_scroll(-100.0);
+        cam.update(1.0 / 60.0);
+        assert_eq!(cam.zoom, cam.min_zoom);
+        assert!(!cam.needs_redraw());
     }
 
     #[test]

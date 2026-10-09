@@ -162,6 +162,7 @@ pub(super) fn pump<A: App>(
                         state.diagnostics.paused = false;
                         state.backlog = Duration::ZERO;
                         state.last_render = Instant::now();
+                        state.camera_clock = super::CameraClock::new(Instant::now());
                         state.last_schedule = Instant::now();
                         state.redraw_pending = true;
                         let _ = respond.send(AgentResponse::ok());
@@ -218,6 +219,7 @@ pub(super) fn pump<A: App>(
                     }
                 }
                 command => {
+                    state.before_camera_change();
                     let result = state
                         .runtime
                         .camera

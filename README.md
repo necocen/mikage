@@ -231,6 +231,18 @@ let config = mikage::RunConfig::new("fixed steps")
 `SimulationPolicy::Manual` advances only through explicit requests.
 Capture-only redraws do not introduce an extra tick.
 
+`RedrawPolicy::Reactive` keeps drawing while the built-in cameras have pan/orbit
+inertia or smooth zoom pending, then sleeps when the camera and GUI settle.
+Camera animation starts at the new input, excluding preceding idle time. Custom
+cameras can override `InteractiveCamera::needs_redraw()` (default: `false`).
+
+For app-owned changes, store the `RedrawRequest` supplied to
+`App::set_redraw_request` and call `request_redraw()` after changing visible state.
+The handle can be cloned into a background worker and wakes a sleeping runner
+without egui. Requests made during rendering schedule another frame. Reactive
+camera frames still follow `simulation_policy`; use `Manual` for a static viewer
+that should never tick automatically. See the [reactive rendering guide](docs/runtime.md#reactive-window-rendering).
+
 ## Captures and agent HTTP API
 
 `ReadbackRing` records buffer/texture copies and maps them after submission. Its

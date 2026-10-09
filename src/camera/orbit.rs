@@ -2,6 +2,8 @@ use glam::{Mat4, Vec3};
 
 use super::{Camera, InteractiveCamera};
 
+const MIN_ANGULAR_VELOCITY: f32 = 1e-6;
+
 /// 3D orbit camera that rotates around a target point.
 ///
 /// Supports orbit (rotation), pan (target translation), and zoom (distance).
@@ -165,7 +167,9 @@ impl InteractiveCamera for OrbitCamera {
         // Velocities are per-reference-frame deltas (reference = 60fps).
         // Use exact geometric series to compute displacement over `factor`
         // reference frames, ensuring identical results at any frame rate.
-        if self.velocity_yaw.abs() > 1e-6 || self.velocity_pitch.abs() > 1e-6 {
+        if self.velocity_yaw.abs() > MIN_ANGULAR_VELOCITY
+            || self.velocity_pitch.abs() > MIN_ANGULAR_VELOCITY
+        {
             const REFERENCE_DT: f32 = 1.0 / 60.0;
             let factor = dt / REFERENCE_DT;
             let decay = self.damping.powf(factor);
@@ -181,6 +185,13 @@ impl InteractiveCamera for OrbitCamera {
             self.velocity_yaw *= decay;
             self.velocity_pitch *= decay;
         }
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.damping > 0.0
+            && !self.is_dragging
+            && (self.velocity_yaw.abs() > MIN_ANGULAR_VELOCITY
+                || self.velocity_pitch.abs() > MIN_ANGULAR_VELOCITY)
     }
 
     fn set_enabled(&mut self, enabled: bool) {
@@ -492,6 +503,50 @@ mod tests {
 
         assert_approx!(cam.yaw, yaw_after);
         assert_approx!(cam.pitch, pitch_after);
+    }
+
+    #[test]
+    fn redraw_follows_orbit_inertia_until_it_settles() {
+        let mut cam = OrbitCamera::default();
+        cam.damping = 0.9;
+        assert!(!cam.needs_redraw());
+
+        cam.on_mouse_drag(100.0, 50.0, true, false, false);
+        assert!(!cam.needs_redraw(), "drag input requests its own frames");
+        cam.on_drag_end();
+        assert!(cam.needs_redraw());
+
+        cam.set_enabled(false);
+        assert!(cam.needs_redraw(), "disabling input preserves inertia");
+        let yaw = cam.yaw;
+        cam.update(1.0 / 60.0);
+        assert_ne!(cam.yaw, yaw);
+
+        for _ in 0..300 {
+            if !cam.needs_redraw() {
+                break;
+            }
+            cam.update(1.0 / 60.0);
+        }
+        assert!(!cam.needs_redraw());
+        let settled = (cam.yaw, cam.pitch);
+        cam.update(1.0 / 60.0);
+        assert_eq!((cam.yaw, cam.pitch), settled);
+    }
+
+    #[test]
+    fn orbit_without_damping_does_not_request_more_frames() {
+        let mut cam = OrbitCamera::default();
+        cam.on_mouse_drag(100.0, 50.0, true, false, false);
+        cam.on_drag_end();
+        assert!(!cam.needs_redraw());
+    }
+
+    #[test]
+    fn instant_zoom_does_not_request_more_frames() {
+        let mut cam = OrbitCamera::default();
+        cam.on_scroll(1.0);
+        assert!(!cam.needs_redraw());
     }
 
     #[test]

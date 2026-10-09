@@ -109,6 +109,13 @@ pub trait App: 'static {
     #[cfg(feature = "window")]
     fn on_window_event(&mut self, _event: &winit::event::WindowEvent) {}
 
+    /// Called once during window startup. Store the handle to invalidate visible
+    /// state from lifecycle hooks or background work without depending on egui.
+    /// A request wakes a sleeping reactive runner; it does not tick a manual
+    /// simulation. Headless/external hosts manage their own redraw scheduling.
+    #[cfg(feature = "window")]
+    fn set_redraw_request(&mut self, _request: crate::runner::RedrawRequest) {}
+
     #[cfg(feature = "gui")]
     fn gui(&mut self, _ui: &mut egui::Ui) {}
 

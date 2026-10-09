@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.7.2
+
+### Fixed
+
+- **Reactive camera animation** — Continue drawing while `Camera2d` smooth zoom/pan inertia or `OrbitCamera` inertia is pending, and sleep once the camera settles. Start newly activated camera motion at its input event so preceding idle time cannot cause a jump. Keep simulation timing independent.
+- **Smooth zoom settling** — Preserve fractional interpolation progress and use a zoom-relative floating-point tolerance so animation settles at large zoom levels and high refresh rates.
+
+### Added
+
+- **Animation and redraw hooks** — Add defaulted `InteractiveCamera::needs_redraw()` for custom cameras and `App::set_redraw_request` with a cloneable, thread-safe `RedrawRequest` for app invalidation without egui. Requests wake the runner and survive rendering and suspension.
+
+### Validation
+
+- Pass 143 CPU-only library tests, executable/compile-fail doctests, strict library Clippy, 20 native/WASM feature configurations, dependency isolation, and light native Reactive/Manual smoke checks. Camera regressions include 60/360/1000 Hz timesteps and long idle transitions. See [verification notes](docs/verification-0.7.2.md).
+
 ## v0.7.1
 
 ### Fixed

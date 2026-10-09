@@ -8,6 +8,7 @@ use crate::{
 };
 use dpi::{LogicalSize, PhysicalSize};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 #[cfg(not(target_family = "wasm"))]
 use std::time::Instant;
@@ -24,9 +25,85 @@ mod agent_driver;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RedrawPolicy {
+    /// Draw continuously, including when the camera and GUI are idle.
     #[default]
     Continuous,
+    /// Draw on input or invalidation, and while camera/GUI animations are active.
     Reactive,
+}
+
+/// A cloneable, thread-safe request to redraw the window, independent of egui.
+///
+/// The runner supplies this handle through [`App::set_redraw_request`]. Store it
+/// in the app or a background worker and call [`request_redraw`](Self::request_redraw)
+/// after changing visible state. Requests are coalesced until the runner handles
+/// them, including requests made during rendering. This does not advance a
+/// `Manual` simulation or bypass GPU submission limits.
+#[derive(Clone)]
+pub struct RedrawRequest {
+    pending: Arc<AtomicBool>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl RedrawRequest {
+    fn new(wake: Arc<dyn Fn() + Send + Sync>) -> Self {
+        Self {
+            pending: Arc::new(AtomicBool::new(false)),
+            wake,
+        }
+    }
+
+    pub fn request_redraw(&self) {
+        if !self.pending.swap(true, Ordering::AcqRel) {
+            (self.wake)();
+        }
+    }
+
+    fn take_pending(&self) -> bool {
+        self.pending.swap(false, Ordering::AcqRel)
+    }
+}
+
+/// Camera time excludes reactive idle time, independently of simulation time.
+struct CameraClock {
+    last_update: Option<Instant>,
+}
+
+impl CameraClock {
+    fn new(now: Instant) -> Self {
+        Self {
+            last_update: Some(now),
+        }
+    }
+
+    fn before_change(&mut self, now: Instant, animating: bool) {
+        // In particular, releasing a held drag starts inertia *now*, even if
+        // the last drag/render happened a long time ago.
+        if !animating {
+            self.last_update = Some(now);
+        }
+    }
+
+    fn advance(&mut self, now: Instant) -> Duration {
+        let dt = self.last_update.map_or(Duration::ZERO, |last| {
+            now.duration_since(last).min(Duration::from_millis(250))
+        });
+        self.last_update = Some(now);
+        dt
+    }
+
+    fn finish_frame(
+        &mut self,
+        policy: RedrawPolicy,
+        camera_animating: bool,
+        repaint: Duration,
+    ) -> bool {
+        let keep_updating = policy == RedrawPolicy::Continuous || camera_animating;
+        if !keep_updating {
+            self.last_update = None;
+        }
+        keep_updating || repaint.is_zero()
+    }
 }
 
 /// Simulation scheduling is independent of presentation scheduling.
@@ -325,6 +402,8 @@ struct RunState<A: App> {
     occluded: bool,
     suspended: bool,
     redraw_pending: bool,
+    redraw_request: RedrawRequest,
+    camera_clock: CameraClock,
     last_render: Instant,
     last_schedule: Instant,
     backlog: Duration,
@@ -332,6 +411,15 @@ struct RunState<A: App> {
     gui_deadline: Option<Instant>,
     #[cfg(all(feature = "agent", not(target_family = "wasm")))]
     diagnostics: agent_driver::Diagnostics,
+}
+
+impl<A: App> RunState<A> {
+    fn before_camera_change(&mut self) {
+        if self.redraw_policy == RedrawPolicy::Reactive {
+            self.camera_clock
+                .before_change(Instant::now(), self.runtime.camera.needs_redraw());
+        }
+    }
 }
 /// Tracks touch gestures: one-finger drag (orbit) and two-finger pinch/pan.
 struct TouchTracker {
@@ -530,11 +618,16 @@ impl<A: App> AppHandler<A> {
         config: RunConfig<A::Camera>,
     ) -> Result<(), RunError> {
         let descriptor = surface.descriptor().clone();
-        let app = self.init_fn.take().expect("factory called once")(
+        let mut app = self.init_fn.take().expect("factory called once")(
             &gpu,
             surface.render_target_config(),
             surface.size(),
         );
+        let redraw_proxy = self.proxy.clone();
+        let redraw_request = RedrawRequest::new(Arc::new(move || {
+            let _ = redraw_proxy.send_event(());
+        }));
+        app.set_redraw_request(redraw_request.clone());
         let gui_proxy = self.proxy.clone();
         let egui = EguiIntegration::new(
             &window,
@@ -570,6 +663,8 @@ impl<A: App> AppHandler<A> {
             occluded: false,
             suspended: false,
             redraw_pending: true,
+            redraw_request,
+            camera_clock: CameraClock::new(Instant::now()),
             last_render: Instant::now(),
             last_schedule: Instant::now(),
             backlog: Duration::ZERO,
@@ -620,6 +715,9 @@ impl<A: App> AppHandler<A> {
             return;
         }
         let now = Instant::now();
+        if state.redraw_request.take_pending() {
+            state.redraw_pending = true;
+        }
         if let Some(deadline) = state.egui.take_repaint_request() {
             state.gui_deadline = Some(
                 state
@@ -719,6 +817,7 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
             state.suspended = false;
             state.last_schedule = Instant::now();
             state.last_render = Instant::now();
+            state.camera_clock = CameraClock::new(Instant::now());
             state.redraw_pending = true;
             state.window.request_redraw();
             return;
@@ -893,6 +992,9 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
         let Some(state) = &mut self.state else {
             return;
         };
+        if !matches!(event, WindowEvent::RedrawRequested) {
+            state.before_camera_change();
+        }
         let egui_consumed = state.egui.handle_window_event(&state.window, &event);
         // Determine whether this event should be suppressed from the app.
         let is_keyboard_event = matches!(
@@ -1035,11 +1137,13 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                 state.redraw_pending = true;
                 state.last_schedule = Instant::now();
                 state.last_render = Instant::now();
+                state.camera_clock = CameraClock::new(Instant::now());
             }
             WindowEvent::Occluded(value) => {
                 state.occluded = value;
                 state.backlog = Duration::ZERO;
                 state.last_render = Instant::now();
+                state.camera_clock = CameraClock::new(Instant::now());
                 state.last_schedule = Instant::now();
                 if !value {
                     state.redraw_pending = true;
@@ -1066,6 +1170,7 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                 state.runtime.app.resize(&state.runtime.gpu, size);
                 state.backlog = Duration::ZERO;
                 state.last_render = Instant::now();
+                state.camera_clock = CameraClock::new(Instant::now());
                 state.last_schedule = Instant::now();
                 state.redraw_pending = true;
             }
@@ -1093,6 +1198,7 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
 
 fn deliver_input<A: App>(state: &mut RunState<A>) {
     if state.input_dirty {
+        state.before_camera_change();
         state.runtime.app.on_input(&mut WindowInputContext {
             window: &state.window,
             input: &state.input,
@@ -1212,7 +1318,8 @@ fn render_frame<A: App>(state: &mut RunState<A>) -> Result<(), RunError> {
     {
         state.runtime.try_tick(dt)?;
     }
-    state.runtime.camera.update(dt.as_secs_f32());
+    let camera_dt = state.camera_clock.advance(now);
+    state.runtime.camera.update(camera_dt.as_secs_f32());
     let prepared = state.egui.build(&state.window, &mut state.runtime.app);
     let config = state
         .surface
@@ -1318,13 +1425,140 @@ fn render_frame<A: App>(state: &mut RunState<A>) -> Result<(), RunError> {
     } else {
         Instant::now().checked_add(repaint)
     };
-    state.redraw_pending = state.redraw_policy == RedrawPolicy::Continuous || repaint.is_zero();
+    state.redraw_pending = state.camera_clock.finish_frame(
+        state.redraw_policy,
+        state.runtime.camera.needs_redraw(),
+        repaint,
+    );
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reactive_scroll_after_idle_animates_then_sleeps() {
+        let mut camera = crate::Camera2d::default();
+        camera.zoom_smoothing = 0.2;
+        let start = Instant::now();
+        let mut clock = CameraClock::new(start);
+        assert!(!clock.finish_frame(RedrawPolicy::Reactive, camera.needs_redraw(), Duration::MAX));
+
+        let input_time = start + Duration::from_secs(60);
+        clock.before_change(input_time, camera.needs_redraw());
+        camera.on_scroll(1.0);
+        let frame_dt = Duration::from_secs_f32(1.0 / 60.0);
+        let first_frame = input_time + frame_dt;
+        camera.update(clock.advance(first_frame).as_secs_f32());
+        assert!(
+            (camera.zoom - 1.02).abs() < 1e-5,
+            "idle time must not advance the new zoom"
+        );
+        assert!(clock.finish_frame(RedrawPolicy::Reactive, camera.needs_redraw(), Duration::MAX));
+
+        let mut settled = false;
+        for frame in 2..300 {
+            camera.update(clock.advance(input_time + frame_dt * frame).as_secs_f32());
+            if !clock.finish_frame(RedrawPolicy::Reactive, camera.needs_redraw(), Duration::MAX) {
+                settled = true;
+                break;
+            }
+        }
+        assert!(
+            settled,
+            "one-shot input must settle without further input or GUI repaint"
+        );
+        assert!((camera.zoom - 1.1).abs() < 1e-6);
+        assert_eq!(
+            clock.advance(input_time + Duration::from_secs(120)),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn held_drag_does_not_add_idle_time_to_release_inertia() {
+        let start = Instant::now();
+        let mut clock = CameraClock::new(start);
+        let mut camera = crate::Camera2d::default();
+        camera.damping = 0.95;
+        clock.before_change(start, camera.needs_redraw());
+        camera.on_mouse_drag(20.0, 0.0, true, false, false);
+        camera.update(clock.advance(start).as_secs_f32());
+        assert!(!clock.finish_frame(RedrawPolicy::Reactive, camera.needs_redraw(), Duration::MAX));
+        let position = camera.position;
+
+        let release = start + Duration::from_secs(60);
+        clock.before_change(release, camera.needs_redraw());
+        camera.on_drag_end();
+        camera.update(clock.advance(release).as_secs_f32());
+        assert_eq!(camera.position, position);
+        assert!(clock.finish_frame(RedrawPolicy::Reactive, camera.needs_redraw(), Duration::MAX));
+        camera.update(
+            clock
+                .advance(release + Duration::from_millis(16))
+                .as_secs_f32(),
+        );
+        assert_ne!(camera.position, position);
+    }
+
+    #[test]
+    fn active_camera_time_survives_unrelated_input_and_is_bounded() {
+        let start = Instant::now();
+        let mut clock = CameraClock::new(start);
+        clock.before_change(start + Duration::from_millis(10), true);
+        assert_eq!(
+            clock.advance(start + Duration::from_millis(16)),
+            Duration::from_millis(16)
+        );
+        assert_eq!(
+            clock.advance(start + Duration::from_secs(60)),
+            Duration::from_millis(250)
+        );
+    }
+
+    #[test]
+    fn continuous_and_gui_redraws_preserve_camera_idle_policy() {
+        let start = Instant::now();
+        let mut clock = CameraClock::new(start);
+        assert!(clock.finish_frame(RedrawPolicy::Continuous, false, Duration::MAX));
+        assert_eq!(
+            clock.advance(start + Duration::from_millis(16)),
+            Duration::from_millis(16)
+        );
+        assert!(clock.finish_frame(RedrawPolicy::Reactive, false, Duration::ZERO));
+        assert_eq!(
+            clock.advance(start + Duration::from_secs(60)),
+            Duration::ZERO
+        );
+        assert!(!clock.finish_frame(RedrawPolicy::Reactive, false, Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn app_redraw_requests_coalesce_and_wake_again_after_draining() {
+        use std::sync::atomic::AtomicUsize;
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let counter = wakes.clone();
+        let request = RedrawRequest::new(Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }));
+        let worker = request.clone();
+        std::thread::spawn(move || {
+            worker.request_redraw();
+            worker.request_redraw();
+        })
+        .join()
+        .unwrap();
+        assert_eq!(wakes.load(Ordering::SeqCst), 1);
+        assert!(request.take_pending());
+        assert!(!request.take_pending());
+        // A request from a render hook after the pump drained pending work
+        // must remain available to schedule a subsequent frame.
+        request.request_redraw();
+        assert_eq!(wakes.load(Ordering::SeqCst), 2);
+        assert!(request.take_pending());
+    }
+
     #[test]
     fn default_values() {
         let c = RunConfig::default();

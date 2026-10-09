@@ -65,6 +65,16 @@ pub trait InteractiveCamera: Camera {
     /// Called every frame. Use for damping or animation.
     fn update(&mut self, dt: f32);
 
+    /// Returns whether another frame is needed for camera animation.
+    ///
+    /// Reactive window hosts keep redrawing while this returns `true`. Override
+    /// this for damping or other time-dependent motion, and return `false` once
+    /// the camera settles. Input events already request their own redraw.
+    /// Camera input may be disabled while an existing animation continues.
+    fn needs_redraw(&self) -> bool {
+        false
+    }
+
     /// Called when a mouse drag ends (button released).
     ///
     /// Use this to transition from active dragging to inertial motion.

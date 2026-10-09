@@ -53,7 +53,7 @@ pub use readback::*;
 #[cfg(all(feature = "window", feature = "agent", not(target_family = "wasm")))]
 pub use runner::run_with_agent;
 #[cfg(feature = "window")]
-pub use runner::{RedrawPolicy, RunConfig, RunError, SimulationPolicy, run};
+pub use runner::{RedrawPolicy, RedrawRequest, RunConfig, RunError, SimulationPolicy, run};
 pub use runtime::*;
 pub use shader_processor::{
     COLOR_UTILS_WGSL, LIGHTING_WGSL, MATH_WGSL, SCENE_TYPES_WGSL, ShaderError, ShaderProcessor,
