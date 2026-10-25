@@ -1,0 +1,13 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "timezone": "Asia/Tokyo",
+  "packageRules": [
+    {
+      "description": "Keep the egui family on compatible versions",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["egui", "egui-wgpu", "egui-winit"],
+      "groupName": "egui"
+    }
+  ]
+}
