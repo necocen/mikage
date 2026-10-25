@@ -90,7 +90,7 @@ jobs:
       - name: Install Lavapipe
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y libvulkan1 mesa-vulkan-drivers vulkan-tools
+          sudo apt-get install --no-install-recommends -y libvulkan1 mesa-vulkan-drivers vulkan-tools ripgrep
           icd=$(dpkg -L mesa-vulkan-drivers | rg '/lvp_icd[^/]*\.json$')
           test -f "$icd"
           echo "VK_DRIVER_FILES=$icd" >> "$GITHUB_ENV"

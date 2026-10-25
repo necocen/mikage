@@ -44,8 +44,9 @@ MIKAGE_REQUIRE_GPU=1 cargo test --lib --features agent ::gpu_ -- --test-threads=
 MIKAGE_REQUIRE_GPU=1 cargo test --features agent --test gpu --test runtime -- --test-threads=1
 ```
 
-To use Lavapipe on Ubuntu, install `libvulkan1`, `mesa-vulkan-drivers`, and
-`vulkan-tools`, then select its driver before running the GPU commands:
+To use Lavapipe on Ubuntu, install `libvulkan1`, `mesa-vulkan-drivers`,
+`vulkan-tools`, and `ripgrep`, then select its driver before running the GPU
+commands:
 
 ```sh
 export VK_DRIVER_FILES=$(dpkg -L mesa-vulkan-drivers | rg '/lvp_icd[^/]*\.json$')
