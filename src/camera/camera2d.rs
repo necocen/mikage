@@ -1,3 +1,4 @@
+use glam::camera::rh::proj::directx;
 use glam::{Mat4, Vec2, Vec3};
 
 use super::{Camera, InteractiveCamera};
@@ -166,7 +167,7 @@ impl Camera for Camera2d {
     fn projection_matrix(&self, aspect: f32) -> Mat4 {
         let half_w = aspect / self.zoom;
         let half_h = 1.0 / self.zoom;
-        Mat4::orthographic_rh(-half_w, half_w, -half_h, half_h, self.near, self.far)
+        directx::orthographic(-half_w, half_w, -half_h, half_h, self.near, self.far)
     }
 
     fn position(&self) -> Vec3 {
@@ -407,8 +408,16 @@ mod tests {
     fn projection_matrix_orthographic() {
         let cam = Camera2d::default(); // zoom=1.0
         let aspect = 2.0_f32;
-        let expected = Mat4::orthographic_rh(-2.0, 2.0, -1.0, 1.0, -1.0, 1.0);
-        assert_eq!(cam.projection_matrix(aspect), expected);
+        let projection = cam.projection_matrix(aspect);
+        // wgpu uses Y-up NDC and [0, 1] depth on every backend.
+        let lower_near = projection.project_point3(Vec3::new(-2.0, -1.0, -cam.near));
+        let upper_far = projection.project_point3(Vec3::new(2.0, 1.0, -cam.far));
+        assert_approx!(lower_near.x, -1.0);
+        assert_approx!(lower_near.y, -1.0);
+        assert_approx!(lower_near.z, 0.0);
+        assert_approx!(upper_far.x, 1.0);
+        assert_approx!(upper_far.y, 1.0);
+        assert_approx!(upper_far.z, 1.0);
     }
 
     #[test]
