@@ -9,7 +9,9 @@ use std::sync::{
 use std::time::Duration;
 
 use mikage::app::{App, RenderContext, RenderTarget, RenderUpdateContext, TickContext};
-use mikage::context::{GpuContext, GpuDescriptor, OffscreenTarget, RenderTargetConfig};
+use mikage::context::{
+    GpuContext, GpuDescriptor, GpuInitError, OffscreenTarget, RenderTargetConfig,
+};
 use mikage::runtime::{AppRuntime, RuntimeConfig, RuntimeError, SubmissionToken};
 use mikage::wgpu;
 use wgpu::util::DeviceExt;
@@ -158,10 +160,13 @@ impl App for CounterApp {
 fn runtime() -> Option<(AppRuntime<CounterApp>, Arc<AtomicUsize>)> {
     let gpu = match pollster::block_on(GpuContext::headless(GpuDescriptor::default())) {
         Ok(gpu) => gpu,
-        Err(error) => {
+        Err(GpuInitError::AdapterUnavailable(error))
+            if std::env::var("MIKAGE_REQUIRE_GPU").as_deref() != Ok("1") =>
+        {
             eprintln!("skipping runtime GPU test: {error}");
             return None;
         }
+        Err(error) => panic!("GPU initialization failed: {error}"),
     };
     let shutdowns = Arc::new(AtomicUsize::new(0));
     let app = CounterApp::new(&gpu, shutdowns.clone());
@@ -309,7 +314,9 @@ fn headless_harness_captures_named_buffers_and_the_prior_rendered_scene() {
         |gpu, _, _| CounterApp::new(gpu, shutdowns),
     )) {
         Ok(harness) => harness,
-        Err(mikage::HeadlessError::Gpu(error)) => {
+        Err(mikage::HeadlessError::Gpu(GpuInitError::AdapterUnavailable(error)))
+            if std::env::var("MIKAGE_REQUIRE_GPU").as_deref() != Ok("1") =>
+        {
             eprintln!("skipping headless GPU test: {error}");
             return;
         }

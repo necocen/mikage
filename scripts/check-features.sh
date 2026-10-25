@@ -8,6 +8,10 @@ cd -- "$mikage_root"
 
 wasm_target=wasm32-unknown-unknown
 wasm_libdir=$(rustc --print target-libdir --target "$wasm_target")
+# rustc prints a Windows path even when the script runs under Git Bash.
+if command -v cygpath >/dev/null 2>&1; then
+    wasm_libdir=$(cygpath -u "$wasm_libdir")
+fi
 if [[ ! -d "$wasm_libdir" ]]; then
     printf 'Missing Rust target %s. Install it with: rustup target add %s\n' \
         "$wasm_target" "$wasm_target" >&2

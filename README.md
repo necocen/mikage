@@ -429,3 +429,5 @@ cargo run --example agent_capture --features agent
 
 See [0.6 validation and reproducible checks](docs/verification-0.6.md) for the
 feature matrix, GPU tests, external-surface host and browser coverage.
+See [continuous integration](docs/ci.md) for the PR checks, Lavapipe GPU tests,
+failure artifacts, and local reproduction commands.

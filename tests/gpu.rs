@@ -625,8 +625,8 @@ const SNAPSHOT_DIR: &str = "tests/snapshots";
 /// - `channel_tolerance`: max allowed difference per RGBA channel (e.g., 2)
 /// - `min_match_percent`: minimum percentage of matching pixels (e.g., 99.0)
 ///
-/// If the reference file doesn't exist, the current render is saved as the
-/// new reference and the test passes (first-run behavior).
+/// Reference images must exist. Set MIKAGE_UPDATE_SNAPSHOTS=1 outside CI to
+/// explicitly create or replace them after reviewing a rendering change.
 /// On mismatch, saves `<name>_actual.png` next to the reference for debugging.
 fn assert_snapshot(
     name: &str,
@@ -643,17 +643,34 @@ fn assert_snapshot(
     let actual_img: RgbaImage =
         ImageBuffer::from_raw(w, h, pixels.to_vec()).expect("pixel data size mismatch");
 
-    if !ref_path.exists() {
+    if std::env::var("MIKAGE_UPDATE_SNAPSHOTS").as_deref() == Ok("1") {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "snapshot updates are disabled in CI"
+        );
         actual_img
             .save(&ref_path)
             .expect("failed to save reference");
         eprintln!(
-            "snapshot: created new reference '{}' ({}x{})",
+            "snapshot: updated reference '{}' ({}x{})",
             ref_path.display(),
             w,
             h
         );
         return;
+    }
+
+    if !ref_path.exists() {
+        let actual_path = snapshot_dir.join(format!("{name}_actual.png"));
+        actual_img
+            .save(&actual_path)
+            .expect("failed to save actual image");
+        panic!(
+            "missing reference snapshot '{}'; actual image saved to '{}'. \
+             Use MIKAGE_UPDATE_SNAPSHOTS=1 outside CI to create references explicitly",
+            ref_path.display(),
+            actual_path.display()
+        );
     }
 
     let ref_img = image::open(&ref_path)
