@@ -2,9 +2,10 @@
 
 0.6 intentionally changes public APIs. Update applications and any direct wgpu
 usage together: use wgpu 30.0.1 (or `mikage::wgpu`), egui 0.36.1 and Rust 1.95+.
-No old App compatibility adapter is installed. The egui family currently uses
-a fixed Git revision for PR #8516; use `mikage::egui` when possible, or align
-direct egui dependencies as described in [the dependency record](egui-dependency.md).
+No old App compatibility adapter is installed. Mikage 0.7.3 uses egui
+0.37.0 from crates.io, replacing the temporary Git revision for PR #8516.
+Use `mikage::egui` when possible, or align direct egui dependencies as described
+in [the dependency record](egui-dependency.md).
 
 ## Initialization and pipeline targets
 

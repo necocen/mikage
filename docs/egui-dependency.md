@@ -1,46 +1,67 @@
-# Temporary egui Git dependency
+# egui dependencies
 
-Mikage temporarily uses [egui PR #8516](https://github.com/emilk/egui/pull/8516),
-which fixes [egui-winit WASM compilation](https://github.com/emilk/egui/issues/8436).
-The PR was squash-merged into `main` on 2026-09-07 as
-`da7169ed1af4ab6c5487d53c6a83a5d47835a163`. At the 2026-09-16 check, no registry release contained it:
-egui 0.36.2 (published 2026-09-08) was cut from the release branch without this
-fix, and `egui-winit = "=0.36.2"` from crates.io still fails to compile for
-`wasm32-unknown-unknown` with the same `DroppedFile` trait mismatch (checked
-2026-09-16). The next release expected to include it is 0.37.0. Cargo dependencies
-use the upstream repository `https://github.com/emilk/egui`, pinned to the PR head
-commit `1b4a68921f5ee67a529ea29948036d5e7d034952` rather than a moving branch or
-PR ref.
-
-The upstream fix compiles `NativeFile` and its dropped-file event handler only
-on native targets. On WASM it ignores the path-only dropped-file event, which
-winit's web backend does not emit. It does not add browser file-drop support.
-It also adds a direct WASM compilation check for egui-winit upstream.
+Mikage uses matching **0.37.0** releases of `egui`, `egui-wgpu`, and `egui-winit`
+from crates.io. These releases include the
+[egui-winit WASM fix from PR #8516](https://github.com/emilk/egui/pull/8516),
+so the temporary Git dependency is no longer required. Rust 1.95+ and wgpu
+30.0.1 remain supported.
 
 ## Keep the dependency family together
 
-The Git workspace uses path dependencies between egui crates. Therefore mikage
-pins `egui`, `egui-wgpu` and both target-specific `egui-winit` dependencies to the
-same Git source and revision. Their emath/ecolor/epaint dependencies resolve from
-that same checkout. Mixing Git egui-winit with registry egui/egui-wgpu would
-produce distinct Rust types even when every package says version 0.36.1.
+Applications should use `mikage::egui` or select `egui = "0.37.0"` when using
+egui APIs directly. Any direct `egui-wgpu` or `egui-winit` dependencies should
+also use 0.37.0 from crates.io. Mixing Git and registry packages produces distinct
+Rust types even when their version numbers match.
 
-This revision reports egui 0.36.1 and Rust 1.95, but includes main-branch changes
-beyond the WASM fix, including vello 0.2 and smallvec 1.16 requirements. All egui-family package
-sources are pinned by Cargo.toml even though this library does not track Cargo.lock.
-When updating an older local lockfile, `cargo update -p smallvec --precise 1.16.0`
-resolves its previous 1.15.x selection without broadly updating other packages.
+[egui 0.37 no longer enables `default_fonts` by default](https://docs.rs/crate/egui/0.37.0/source/Cargo.toml.orig).
+Mikage explicitly enables it so existing GUI applications keep their bundled
+fonts and render text without installing a custom font provider.
 
-Git/path consumers of mikage inherit these direct Git dependencies; they do not
-need a root-only `[patch.crates-io]` entry. Applications should use
-`mikage::egui` or match the exact Git dependency when using egui / egui-wgpu
-APIs directly. Native and WASM egui-winit feature selections are unchanged.
-The former local vendor copy and custom patch are no longer needed.
+Native `egui-winit` keeps its default features. On WASM, default features remain
+disabled and `links` stays enabled. The WASM fix ignores winit's path-only
+dropped-file event on browsers; it does not add browser file-drop support.
 
-## Return to registry releases
+This library does not track `Cargo.lock`; downstream applications control their
+own lockfiles. No vendor copy or `[patch.crates-io]` entry is needed.
 
-Once an upstream release contains the fix, switch all three egui dependencies
-together to matching registry versions. Rerun `scripts/check-features.sh`, inspect
-the dependency tree for duplicate egui-family sources, and exercise GUI capture.
-A crates.io release of mikage still requires registry-compatible dependencies;
-using a Git PR does not by itself remove that publication constraint.
+## Previous workaround
+
+Mikage 0.6.1 through 0.7.2 pinned the egui family to upstream commit
+`1b4a68921f5ee67a529ea29948036d5e7d034952`. The 0.36.2 registry release lacked
+the WASM fix, even though it had already been merged into upstream `main`.
+The 0.37.0 update replaces all four dependency declarations together, including
+both target-specific declarations of `egui-winit`.
+
+For future updates, run `scripts/check-features.sh`, inspect the dependency tree
+for duplicate egui-family sources, and exercise GUI capture.
+
+## Validation (2026-10-25)
+
+Validation used macOS with Rust 1.95.0:
+
+```sh
+cargo fmt --all -- --check
+cargo test --offline --lib --features agent -- --skip readback::tests::gpu_
+cargo test --offline --doc --features agent
+cargo clippy --offline --lib --features agent -- -D warnings
+bash scripts/check-features.sh
+```
+
+All 143 CPU-only library tests passed; the two existing GPU readback tests were
+excluded. Doctests passed two executable examples and one compile-fail example;
+four existing examples remain ignored. Strict library Clippy passed. The HTTP
+tests used ordinary host permissions because the sandbox blocks local TCP binds.
+
+All 20 native/WASM feature configurations passed, including WebGPU/WebGL demos
+and examples. Core GUI dependency isolation and native HTTP dependency isolation
+also passed.
+
+The resolved lockfile contains exactly one registry version, 0.37.0, of each of
+`egui`, `egui-wgpu`, `egui-winit`, `emath`, `ecolor`, `epaint`, and
+`epaint_default_fonts`, with no Git dependencies.
+
+A light native smoke check launched the existing `agent_capture` example in
+manual simulation mode. Scene and GUI-composited window PNGs were both
+1280 × 720, and visual inspection confirmed readable GUI text with bundled
+fonts. Five frames completed with zero simulation ticks, and the application
+shut down cleanly. Browser interaction and other native backends were not run.

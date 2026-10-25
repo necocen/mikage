@@ -135,6 +135,7 @@ and TTL limits; `/status` reads a snapshot without waiting for GPU work.
 - `webgl`: WASM WebGL2 fallback; applications requiring compute must still declare
   that requirement and handle unsupported adapters rather than silently lose work.
 
-wgpu 30.0.1 and egui 0.36.1 require API migration; the package MSRV is 1.95.
-`docs/egui-dependency.md` records the egui PR #8516 commit pin and the criteria
-for returning to registry releases. This repository's existing untracked Cargo.lock policy remains.
+The 0.6 migration introduced wgpu 30.0.1 and egui 0.36.1; the package MSRV is 1.95.
+Mikage 0.7.3 uses egui 0.37.0. `docs/egui-dependency.md` records the return
+to matching registry releases after the temporary PR #8516 commit pin.
+This repository's existing untracked Cargo.lock policy remains.

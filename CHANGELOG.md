@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.7.3
+
+### Changed
+
+- **egui 0.37.0** — Update egui, egui-wgpu, and egui-winit together to matching crates.io releases. Remove the temporary Git revision pin now that the egui-winit WASM fix is released, and explicitly enable `default_fonts` to preserve GUI text rendering. Rust 1.95+, wgpu 30.0.1, and the native/WASM feature selections remain compatible. See [the dependency record](docs/egui-dependency.md).
+
+### Validation
+
+- Pass 143 CPU-only library tests, executable/compile-fail doctests, strict library Clippy, 20 native/WASM feature configurations, dependency isolation, and a native GUI capture smoke check. See [verification notes](docs/egui-dependency.md#validation-2026-10-25).
+
 ## v0.7.2
 
 ### Fixed

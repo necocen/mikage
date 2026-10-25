@@ -5,14 +5,13 @@ headless execution. Create pipelines, buffers, and bind groups directly through
 `mikage::wgpu`; the framework supplies application scheduling, presentation,
 cameras, rendering helpers, and optional egui and HTTP diagnostics.
 
-Version 0.6 uses **wgpu 30.0.1**, **egui 0.36.1**, and **winit 0.30.13** and
+Mikage uses **wgpu 30.0.1**, **egui 0.37.0**, and **winit 0.30.13** and
 requires **Rust 1.95+**. See the [0.5 → 0.6 migration guide](docs/migration-0.6.md)
 for the public API changes.
 
 ## Quick start
 
-Use this checkout while the temporary egui PR dependency is in place
-(adjust the path to your checkout):
+Use this checkout (adjust the path to your checkout):
 
 ```toml
 [dependencies]
@@ -410,8 +409,8 @@ trunk serve
 
 GPU initialization is asynchronous. WebGPU is used by default; enable `webgl`
 for a WebGL2 fallback when no WebGPU adapter is available. WebGL2 has no compute
-shader support, so the boids example requires WebGPU. The egui family is pinned to
-[PR #8516](https://github.com/emilk/egui/pull/8516) for egui-winit WASM compatibility;
+shader support, so the boids example requires WebGPU. The egui family uses
+matching 0.37.0 releases from crates.io, including the egui-winit WASM fix;
 see [the dependency record](docs/egui-dependency.md).
 
 ## Examples
