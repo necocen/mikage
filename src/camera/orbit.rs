@@ -1,3 +1,4 @@
+use glam::camera::rh::{proj::directx, view};
 use glam::{Mat4, Vec3};
 
 use super::{Camera, InteractiveCamera};
@@ -106,11 +107,11 @@ impl OrbitCamera {
 impl Camera for OrbitCamera {
     fn view_matrix(&self) -> Mat4 {
         let eye = self.compute_position();
-        Mat4::look_at_rh(eye, self.target, Vec3::Y)
+        view::look_at_mat4(eye, self.target, Vec3::Y)
     }
 
     fn projection_matrix(&self, aspect: f32) -> Mat4 {
-        Mat4::perspective_rh(self.fov_y, aspect, self.near, self.far)
+        directx::perspective(self.fov_y, aspect, self.near, self.far)
     }
 
     fn position(&self) -> Vec3 {
@@ -251,7 +252,7 @@ impl InteractiveCamera for OrbitCamera {
 mod tests {
     use super::*;
     use crate::camera::Camera;
-    use glam::{Mat4, Vec3};
+    use glam::Vec3;
     use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
 
     macro_rules! assert_approx {
@@ -324,27 +325,44 @@ mod tests {
 
     #[test]
     fn view_matrix_looks_at_target() {
-        let cam = OrbitCamera::default();
+        let cam = OrbitCamera {
+            target: Vec3::new(1.0, -2.0, 3.0),
+            yaw: 0.7,
+            pitch: 0.4,
+            ..Default::default()
+        };
         let view = cam.view_matrix();
-        let expected = Mat4::look_at_rh(cam.position(), cam.target, Vec3::Y);
-        let a = view.to_cols_array();
-        let b = expected.to_cols_array();
-        for i in 0..16 {
-            assert_approx!(a[i], b[i]);
-        }
+        assert!(view.transform_point3(cam.position()).length() < 1e-5);
+        let target = view.transform_point3(cam.target);
+        assert_approx!(target.x, 0.0);
+        assert_approx!(target.y, 0.0);
+        assert_approx!(target.z, -cam.distance);
+        assert!(view.transform_vector3(Vec3::Y).y > 0.0);
+        assert_approx!(view.determinant(), 1.0);
     }
 
     #[test]
     fn projection_matrix_perspective() {
-        let cam = OrbitCamera::default();
+        let cam = OrbitCamera {
+            fov_y: FRAC_PI_2,
+            near: 0.25,
+            far: 80.0,
+            ..Default::default()
+        };
         let aspect = 1.5_f32;
         let proj = cam.projection_matrix(aspect);
-        let expected = Mat4::perspective_rh(cam.fov_y, aspect, cam.near, cam.far);
-        let a = proj.to_cols_array();
-        let b = expected.to_cols_array();
-        for i in 0..16 {
-            assert_approx!(a[i], b[i]);
-        }
+        // Preserve wgpu's depth range and the 90-degree vertical field of view.
+        assert_approx!(proj.project_point3(Vec3::new(0.0, 0.0, -cam.near)).z, 0.0);
+        assert_approx!(proj.project_point3(Vec3::new(0.0, 0.0, -cam.far)).z, 1.0);
+        assert_approx!(
+            proj.project_point3(Vec3::new(cam.near * aspect, 0.0, -cam.near))
+                .x,
+            1.0
+        );
+        assert_approx!(
+            proj.project_point3(Vec3::new(0.0, cam.near, -cam.near)).y,
+            1.0
+        );
     }
 
     #[test]

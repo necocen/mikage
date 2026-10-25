@@ -6,6 +6,7 @@
 
 use std::path::Path;
 
+use glam::camera::rh::{proj::directx, view};
 use image::{ImageBuffer, Rgba, RgbaImage};
 use mikage::wgpu;
 use mikage::{
@@ -854,12 +855,12 @@ fn snapshot_solid_cube() {
     gpu_test!(|gpu: GpuTest| {
         let pixels = render_solid(&gpu, SNAP_SIZE, SNAP_SIZE, |solid, scene, gpu| {
             // Perspective camera looking at origin
-            let view = glam::Mat4::look_at_rh(
+            let view = view::look_at_mat4(
                 glam::Vec3::new(2.0, 2.0, 2.0),
                 glam::Vec3::ZERO,
                 glam::Vec3::Y,
             );
-            let proj = glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 100.0);
+            let proj = directx::perspective(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 100.0);
             let uniform = SceneUniform::new(proj * view, glam::Vec3::new(2.0, 2.0, 2.0));
             scene.update(&gpu.queue, &uniform);
 
@@ -887,12 +888,12 @@ fn snapshot_solid_cube() {
 fn snapshot_solid_sphere() {
     gpu_test!(|gpu: GpuTest| {
         let pixels = render_solid(&gpu, SNAP_SIZE, SNAP_SIZE, |solid, scene, gpu| {
-            let view = glam::Mat4::look_at_rh(
+            let view = view::look_at_mat4(
                 glam::Vec3::new(0.0, 0.0, 3.0),
                 glam::Vec3::ZERO,
                 glam::Vec3::Y,
             );
-            let proj = glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 100.0);
+            let proj = directx::perspective(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 100.0);
             let uniform = SceneUniform::new(proj * view, glam::Vec3::new(0.0, 0.0, 3.0));
             scene.update(&gpu.queue, &uniform);
 
@@ -920,12 +921,12 @@ fn snapshot_solid_sphere() {
 fn snapshot_solid_plane() {
     gpu_test!(|gpu: GpuTest| {
         let pixels = render_solid(&gpu, SNAP_SIZE, SNAP_SIZE, |solid, scene, gpu| {
-            let view = glam::Mat4::look_at_rh(
+            let view = view::look_at_mat4(
                 glam::Vec3::new(0.0, 2.0, 1.0),
                 glam::Vec3::ZERO,
                 glam::Vec3::Y,
             );
-            let proj = glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 100.0);
+            let proj = directx::perspective(std::f32::consts::FRAC_PI_4, 1.0, 0.1, 100.0);
             let uniform = SceneUniform::new(proj * view, glam::Vec3::new(0.0, 2.0, 1.0));
             scene.update(&gpu.queue, &uniform);
 
