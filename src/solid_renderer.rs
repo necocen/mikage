@@ -1,6 +1,6 @@
 //! Renders solid-colored meshes with SceneUniform lighting.
 //!
-//! Provides opaque (lit) and transparent (unlit) pipelines for rendering
+//! Provides opaque and transparent pipelines with selectable shading for rendering
 //! solid-colored meshes. Uses [`SceneUniform`](crate::SceneUniform) at
 //! `@group(0)` (the same bind group layout the application already has)
 //! and per-object model matrix + RGBA color at `@group(1)`.
@@ -14,6 +14,11 @@
 //!   culling, depth write enabled, directional + ambient lighting.
 //! - **alpha < 1.0** — drawn with the **transparent (unlit)** pipeline:
 //!   no culling, depth write disabled, alpha blending, flat color only.
+//!
+//! [`SolidRenderer::set_shading`] overrides lighting independently of alpha.
+//! [`SolidShading::Lit`] enables Lambert lighting on transparent objects;
+//! [`SolidShading::Unlit`] also works on opaque objects. Alpha still determines
+//! blending, culling, depth writes, and opaque-before-transparent ordering.
 //!
 //! Opaque objects are always rendered before transparent objects. However,
 //! **transparent objects are not depth-sorted**; overlapping transparent
@@ -74,6 +79,28 @@ impl ModelUniform {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SolidObjectId(usize);
 
+/// Per-object shading, independent of opacity and depth behavior.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum SolidShading {
+    /// Preserve the default: opaque objects are lit, transparent objects unlit.
+    #[default]
+    Auto,
+    /// Lambert lighting from [`SceneUniform`](crate::SceneUniform), at any alpha.
+    Lit,
+    /// Pass material RGB through without lighting, at any alpha.
+    Unlit,
+}
+
+impl SolidShading {
+    fn is_lit(self, alpha: f32) -> bool {
+        match self {
+            Self::Auto => alpha >= 1.0,
+            Self::Lit => true,
+            Self::Unlit => false,
+        }
+    }
+}
+
 /// Per-object GPU resources.
 struct ObjectData {
     vertex_buffer: wgpu::Buffer,
@@ -83,6 +110,7 @@ struct ObjectData {
     bind_group: wgpu::BindGroup,
     /// Current alpha value; determines opaque vs. transparent pipeline.
     alpha: f32,
+    shading: SolidShading,
 }
 
 /// Renders solid-colored meshes with SceneUniform lighting.
@@ -91,6 +119,7 @@ struct ObjectData {
 /// Objects with `alpha < 1.0` are automatically switched to the transparent
 /// (unlit) pipeline — no API call is needed to change pipelines.
 /// Opaque objects are always drawn first, then transparent objects.
+/// Use [`Self::set_shading`] to override lighting independently of alpha.
 ///
 /// **Limitation:** transparent objects are not depth-sorted; overlapping
 /// transparent geometry may exhibit order-dependent blending artifacts.
@@ -99,7 +128,9 @@ struct ObjectData {
 /// calling [`render`](SolidRenderer::render).
 pub struct SolidRenderer {
     opaque_pipeline: wgpu::RenderPipeline,
+    opaque_unlit_pipeline: wgpu::RenderPipeline,
     transparent_pipeline: wgpu::RenderPipeline,
+    transparent_lit_pipeline: wgpu::RenderPipeline,
     model_bind_group_layout: wgpu::BindGroupLayout,
     objects: Vec<ObjectData>,
 }
@@ -144,7 +175,7 @@ impl SolidRenderer {
         });
 
         // Opaque pipeline (lit fragment, depth write, back-face culling)
-        let opaque_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let mut opaque_descriptor = wgpu::RenderPipelineDescriptor {
             label: Some("solid_opaque_pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
@@ -186,10 +217,14 @@ impl SolidRenderer {
             }),
             multiview_mask: None,
             cache: None,
-        });
+        };
+        let opaque_pipeline = device.create_render_pipeline(&opaque_descriptor);
+        opaque_descriptor.label = Some("solid_opaque_unlit_pipeline");
+        opaque_descriptor.fragment.as_mut().unwrap().entry_point = Some("fragment_unlit");
+        let opaque_unlit_pipeline = device.create_render_pipeline(&opaque_descriptor);
 
         // Transparent pipeline (unlit fragment, alpha blend, no depth write, no culling)
-        let transparent_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let mut transparent_descriptor = wgpu::RenderPipelineDescriptor {
             label: Some("solid_transparent_pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
@@ -231,11 +266,21 @@ impl SolidRenderer {
             }),
             multiview_mask: None,
             cache: None,
-        });
+        };
+        let transparent_pipeline = device.create_render_pipeline(&transparent_descriptor);
+        transparent_descriptor.label = Some("solid_transparent_lit_pipeline");
+        transparent_descriptor
+            .fragment
+            .as_mut()
+            .unwrap()
+            .entry_point = Some("fragment_lit");
+        let transparent_lit_pipeline = device.create_render_pipeline(&transparent_descriptor);
 
         Self {
             opaque_pipeline,
+            opaque_unlit_pipeline,
             transparent_pipeline,
+            transparent_lit_pipeline,
             model_bind_group_layout,
             objects: Vec::new(),
         }
@@ -286,6 +331,7 @@ impl SolidRenderer {
             uniform_buffer,
             bind_group,
             alpha: 1.0,
+            shading: SolidShading::Auto,
         });
 
         id
@@ -301,6 +347,7 @@ impl SolidRenderer {
     /// The switch is automatic and takes effect on the next
     /// [`render`](SolidRenderer::render) call. Note that transparent objects
     /// are not depth-sorted; see the [module-level docs](self) for details.
+    /// An explicit [`Self::set_shading`] choice is preserved by this update.
     pub fn update_object(
         &mut self,
         gpu: &crate::GpuContext,
@@ -318,18 +365,36 @@ impl SolidRenderer {
             .write_buffer(&obj.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
     }
 
+    /// Selects lighting without changing color, alpha, transform, or draw order.
+    ///
+    /// `Lit` transparent objects retain alpha blending, no culling, and no depth
+    /// writes. Both faces use their mesh normals; back-face normals are not flipped.
+    /// The choice persists across [`Self::update_object`] calls. `Auto` restores
+    /// the original alpha-based shading choice.
+    pub fn set_shading(&mut self, id: SolidObjectId, shading: SolidShading) {
+        self.objects
+            .get_mut(id.0)
+            .expect("invalid SolidObjectId: object not found")
+            .shading = shading;
+    }
+
     /// Renders all objects.
     ///
-    /// Opaque objects (alpha >= 1.0) are drawn first with the lit pipeline,
-    /// then transparent objects (alpha < 1.0) with the unlit pipeline.
+    /// Opaque objects (alpha >= 1.0) are drawn first, then transparent objects
+    /// (alpha < 1.0), with each object's selected shading. Insertion order is
+    /// preserved within each group, including when shading differs.
     ///
     /// The caller must set the scene bind group at `@group(0)` before calling
     /// this method (via `pass.set_bind_group(0, &scene_bind_group, &[])`).
     pub fn render<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
         // Draw opaque objects first
-        pass.set_pipeline(&self.opaque_pipeline);
         for obj in &self.objects {
             if obj.alpha >= 1.0 {
+                pass.set_pipeline(if obj.shading.is_lit(obj.alpha) {
+                    &self.opaque_pipeline
+                } else {
+                    &self.opaque_unlit_pipeline
+                });
                 pass.set_vertex_buffer(0, obj.vertex_buffer.slice(..));
                 pass.set_index_buffer(obj.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 pass.set_bind_group(1, &obj.bind_group, &[]);
@@ -338,9 +403,13 @@ impl SolidRenderer {
         }
 
         // Then draw transparent objects
-        pass.set_pipeline(&self.transparent_pipeline);
         for obj in &self.objects {
             if obj.alpha < 1.0 {
+                pass.set_pipeline(if obj.shading.is_lit(obj.alpha) {
+                    &self.transparent_lit_pipeline
+                } else {
+                    &self.transparent_pipeline
+                });
                 pass.set_vertex_buffer(0, obj.vertex_buffer.slice(..));
                 pass.set_index_buffer(obj.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 pass.set_bind_group(1, &obj.bind_group, &[]);

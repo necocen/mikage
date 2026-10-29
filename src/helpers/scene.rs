@@ -33,6 +33,64 @@ pub fn create_depth_texture(
 /// Common depth format constant.
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
+/// Independent, unitless light gains applied to linear material RGB.
+///
+/// Lit color is `color * (ambient_intensity + directional_intensity *
+/// max(dot(normal, direction), 0))`. Zero disables a contribution; values above
+/// one are allowed. There is no automatic exposure or tone mapping, so an
+/// unorm render target clamps values outside its range. Negative or non-finite
+/// intensities are treated as zero when uploaded.
+///
+/// ```
+/// use mikage::{SceneLighting, SceneUniform, glam::{Mat4, Vec3}};
+/// let uniform = SceneUniform::with_lighting(Mat4::IDENTITY, Vec3::ZERO, SceneLighting {
+///     direction: Vec3::Z,
+///     ambient_intensity: 0.2,
+///     directional_intensity: 0.8,
+/// });
+/// assert_eq!(uniform.ambient, [0.2, 0.8, 1.0, 0.0]);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SceneLighting {
+    /// Direction **toward** the light; normalized on upload. A zero or invalid
+    /// direction falls back to +Y. Use zero intensity to disable the light.
+    pub direction: glam::Vec3,
+    pub ambient_intensity: f32,
+    pub directional_intensity: f32,
+}
+
+impl Default for SceneLighting {
+    fn default() -> Self {
+        Self {
+            direction: glam::Vec3::new(1.0, 2.0, 1.0),
+            ambient_intensity: 0.3,
+            directional_intensity: 0.7,
+        }
+    }
+}
+
+impl SceneLighting {
+    fn uniform_fields(self) -> [[f32; 4]; 2] {
+        let dir = self.direction.normalize_or(glam::Vec3::Y);
+        let gain = |value: f32| {
+            if value.is_finite() {
+                value.max(0.0)
+            } else {
+                0.0
+            }
+        };
+        [
+            [dir.x, dir.y, dir.z, 0.0],
+            [
+                gain(self.ambient_intensity),
+                gain(self.directional_intensity),
+                1.0,
+                0.0,
+            ],
+        ]
+    }
+}
+
 /// Scene-global uniform: camera matrices + basic lighting.
 ///
 /// Intended for simple visualization use cases.
@@ -51,7 +109,7 @@ pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 ///     view_proj: mat4x4<f32>,
 ///     camera_pos: vec4<f32>,
 ///     light_dir: vec4<f32>,   // xyz = normalized direction, w = unused
-///     ambient: vec4<f32>,     // x = ambient intensity, yzw = unused
+///     ambient: vec4<f32>,     // x = ambient, y = directional, z = independent mode
 /// };
 /// ```
 #[repr(C)]
@@ -61,7 +119,9 @@ pub struct SceneUniform {
     pub camera_pos: [f32; 4],
     /// Directional light direction (normalized). w is unused.
     pub light_dir: [f32; 4],
-    /// x = ambient intensity (0.0–1.0). yzw unused.
+    /// x = ambient intensity. When z is 1, y is independent directional
+    /// intensity; when z is 0, directional intensity is `1 - x` (legacy).
+    /// w is reserved. Prefer [`Self::set_lighting`] to encode these fields.
     pub ambient: [f32; 4],
 }
 
@@ -79,7 +139,8 @@ impl SceneUniform {
         }
     }
 
-    /// Creates a SceneUniform with custom lighting.
+    /// Creates a SceneUniform with legacy lighting: ambient plus directional
+    /// intensity `1 - ambient`. Use [`Self::with_lighting`] for independent gains.
     pub fn with_light(
         view_proj: glam::Mat4,
         camera_pos: glam::Vec3,
@@ -94,6 +155,22 @@ impl SceneUniform {
             ambient: [ambient, 0.0, 0.0, 0.0],
         }
     }
+
+    /// Creates a scene with independent ambient and directional gains.
+    pub fn with_lighting(
+        view_proj: glam::Mat4,
+        camera_pos: glam::Vec3,
+        lighting: SceneLighting,
+    ) -> Self {
+        let mut uniform = Self::new(view_proj, camera_pos);
+        uniform.set_lighting(lighting);
+        uniform
+    }
+
+    /// Changes lighting while preserving camera fields and the 112-byte layout.
+    pub fn set_lighting(&mut self, lighting: SceneLighting) {
+        [self.light_dir, self.ambient] = lighting.uniform_fields();
+    }
 }
 
 /// Bundles a [`SceneUniform`] buffer, bind group layout, and bind group.
@@ -103,17 +180,19 @@ impl SceneUniform {
 ///
 /// # Example
 ///
-/// ```ignore
-/// let scene = SceneBinding::new(&device);
-///
-/// // Pass the layout to renderers:
-/// let renderer = InstanceRenderer::new(&ctx, scene.layout(), ...);
-///
-/// // Update each frame:
-/// scene.update_from_camera(&queue, &camera, aspect);
-///
-/// // Bind in render pass:
-/// pass.set_bind_group(0, scene.bind_group(), &[]);
+/// ```no_run
+/// use mikage::{Camera, SceneBinding, SceneLighting, wgpu};
+/// # fn update_scene(device: &wgpu::Device, queue: &wgpu::Queue, camera: &impl Camera) {
+/// let scene = SceneBinding::new(device);
+/// scene.update_lighting(queue, SceneLighting {
+///     ambient_intensity: 0.2,
+///     directional_intensity: 0.8,
+///     ..Default::default()
+/// });
+/// // Each frame, retain the lighting while moving the camera:
+/// scene.update_camera(queue, camera, 16.0 / 9.0);
+/// // Use scene.layout() for pipelines and scene.bind_group() at group 0.
+/// # }
 /// ```
 pub struct SceneBinding {
     layout: wgpu::BindGroupLayout,
@@ -176,8 +255,30 @@ impl SceneBinding {
         queue.write_buffer(&self.buffer, 0, bytemuck::bytes_of(uniform));
     }
 
+    /// Updates only camera matrices and position, preserving uploaded lighting.
+    ///
+    /// This also preserves lighting supplied through [`Self::update`], including
+    /// legacy [`SceneUniform::with_light`] settings, without a CPU-side cache.
+    pub fn update_camera(&self, queue: &wgpu::Queue, camera: &(impl Camera + ?Sized), aspect: f32) {
+        let uniform = SceneUniform::new(camera.view_projection_matrix(aspect), camera.position());
+        let camera_end = std::mem::offset_of!(SceneUniform, light_dir);
+        queue.write_buffer(&self.buffer, 0, &bytemuck::bytes_of(&uniform)[..camera_end]);
+    }
+
+    /// Updates only lighting, preserving the uploaded camera matrices and position.
+    pub fn update_lighting(&self, queue: &wgpu::Queue, lighting: SceneLighting) {
+        queue.write_buffer(
+            &self.buffer,
+            std::mem::offset_of!(SceneUniform, light_dir) as u64,
+            bytemuck::bytes_of(&lighting.uniform_fields()),
+        );
+    }
+
     /// Convenience: computes the view-projection matrix from a camera and writes
     /// a [`SceneUniform`] with default lighting.
+    ///
+    /// This resets lighting for compatibility. Use [`Self::update_camera`] to
+    /// preserve configured lighting.
     pub fn update_from_camera(
         &self,
         queue: &wgpu::Queue,
@@ -239,6 +340,60 @@ mod tests {
         assert_approx!(u.light_dir[0], 0.0);
         assert_approx!(u.light_dir[1], 1.0);
         assert_approx!(u.light_dir[2], 0.0);
+    }
+
+    #[test]
+    fn lighting_retains_uniform_layout_and_legacy_encoding() {
+        assert_eq!(std::mem::size_of::<SceneUniform>(), 112);
+        assert_eq!(std::mem::offset_of!(SceneUniform, camera_pos), 64);
+        assert_eq!(std::mem::offset_of!(SceneUniform, light_dir), 80);
+        assert_eq!(std::mem::offset_of!(SceneUniform, ambient), 96);
+        assert_eq!(
+            SceneUniform::new(Mat4::IDENTITY, Vec3::ZERO).ambient,
+            [0.3, 0.0, 0.0, 0.0]
+        );
+        assert_eq!(
+            SceneUniform::with_light(Mat4::IDENTITY, Vec3::ZERO, Vec3::Z, 0.8).ambient,
+            [0.8, 0.0, 0.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn independent_lighting_preserves_camera_and_normalizes_direction() {
+        let vp = Mat4::from_translation(Vec3::new(1.0, 2.0, 3.0));
+        let mut u = SceneUniform::new(vp, Vec3::new(4.0, 5.0, 6.0));
+        u.set_lighting(SceneLighting {
+            direction: Vec3::new(0.0, 0.0, 5.0),
+            ambient_intensity: 0.2,
+            directional_intensity: 1.5,
+        });
+        assert_eq!(u.view_proj, vp.to_cols_array_2d());
+        assert_eq!(u.camera_pos, [4.0, 5.0, 6.0, 1.0]);
+        assert_eq!(u.light_dir, [0.0, 0.0, 1.0, 0.0]);
+        assert_eq!(u.ambient, [0.2, 1.5, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn independent_lighting_handles_disabled_and_invalid_inputs() {
+        for direction in [
+            Vec3::ZERO,
+            Vec3::splat(f32::NAN),
+            Vec3::splat(f32::INFINITY),
+        ] {
+            for gain in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                let u = SceneUniform::with_lighting(
+                    Mat4::IDENTITY,
+                    Vec3::ZERO,
+                    SceneLighting {
+                        direction,
+                        ambient_intensity: gain,
+                        directional_intensity: gain,
+                    },
+                );
+                assert_eq!(u.light_dir, [0.0, 1.0, 0.0, 0.0]);
+                assert_eq!(u.ambient, [0.0, 0.0, 1.0, 0.0]);
+            }
+        }
     }
 
     #[test]

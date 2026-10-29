@@ -40,7 +40,7 @@ pub use context::*;
 pub use headless::*;
 pub use helpers::{
     CubeMesh, DEPTH_FORMAT, IcoSphereMesh, MeshBuffers, POSITION_NORMAL_LAYOUT, PlaneMesh,
-    QuadMesh2d, RegularPolygonMesh, SceneBinding, SceneUniform, UniformBuffer,
+    QuadMesh2d, RegularPolygonMesh, SceneBinding, SceneLighting, SceneUniform, UniformBuffer,
     create_compute_pipeline, create_depth_texture, create_storage_buffer_init,
     storage_buffer_entry, uniform_buffer_entry,
 };
@@ -58,7 +58,7 @@ pub use runtime::*;
 pub use shader_processor::{
     COLOR_UTILS_WGSL, LIGHTING_WGSL, MATH_WGSL, SCENE_TYPES_WGSL, ShaderError, ShaderProcessor,
 };
-pub use solid_renderer::{ModelUniform, SolidObjectId, SolidRenderer};
+pub use solid_renderer::{ModelUniform, SolidObjectId, SolidRenderer, SolidShading};
 
 pub use dpi;
 /// Re-exported for building UI in [`App::gui`].

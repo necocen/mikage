@@ -1,6 +1,5 @@
 // Solid-colored mesh rendering shader.
-// Opaque objects use Lambert diffuse + ambient from SceneUniform.
-// Transparent objects are unlit (color passed through directly).
+// Shading is independent of alpha: lit uses SceneUniform, unlit passes color through.
 
 #import mikage::scene_types
 #import mikage::lighting
@@ -33,11 +32,11 @@ fn vertex(v: VertexInput) -> VertexOutput {
     return out;
 }
 
-// Lit fragment for opaque objects
+// Lit fragment for opaque or transparent objects
 @fragment
 fn fragment_lit(in: VertexOutput) -> @location(0) vec4<f32> {
     let n = normalize(in.world_normal);
-    let lit_color = lambert(model_data.color.rgb, n, scene.light_dir.xyz, scene.ambient.x);
+    let lit_color = scene_lambert(model_data.color.rgb, n, scene.light_dir.xyz, scene.ambient);
     return vec4<f32>(lit_color, model_data.color.a);
 }
 

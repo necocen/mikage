@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Selectable solid shading** — `SolidRenderer::set_shading` with `SolidShading::{Auto, Lit, Unlit}` selects lighting independently of alpha. Lit transparency keeps alpha blending, no depth writes, no culling, and existing draw ordering.
+- **Independent light gains** — `SceneLighting`, `SceneUniform::with_lighting` / `set_lighting`, and `SceneBinding::update_lighting` control ambient and directional intensity separately in both built-in lit renderers. Zero disables either contribution; gains above one are supported. Existing constructors, the 112-byte scene layout, and the WGSL `lambert` helper retain their behavior.
+- **Camera-only scene updates** — `SceneBinding::update_camera` updates matrices and position while preserving uploaded lighting, including legacy custom uniforms. `update_from_camera` retains its documented default-light reset.
+- Document the [custom shadow-pass extension strategy](docs/lighting.md#custom-shadow-passes) and built-in shadow scope.
+
 ## v0.7.3
 
 ### Changed
