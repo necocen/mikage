@@ -12,8 +12,9 @@ use mikage::wgpu;
 use mikage::{
     CubeMesh, DEPTH_FORMAT, GpuContext, GpuDescriptor, GpuInitError, IcoSphereMesh, InstanceData,
     InstanceRenderer, InstanceRendererConfig, PlaneMesh, QuadMesh2d, RegularPolygonMesh,
-    RenderTargetConfig, SceneBinding, SceneUniform, ShaderProcessor, SolidRenderer, UniformBuffer,
-    create_compute_pipeline, create_storage_buffer_init, storage_buffer_entry,
+    RenderTargetConfig, SceneBinding, SceneLighting, SceneUniform, ShaderProcessor, SolidRenderer,
+    SolidShading, UniformBuffer, create_compute_pipeline, create_storage_buffer_init,
+    storage_buffer_entry,
 };
 use wgpu::util::DeviceExt;
 
@@ -760,6 +761,16 @@ fn render_solid(
     let mut solid = SolidRenderer::new(gpu, TARGET_CONFIG, scene.layout());
     setup(&mut solid, &scene, gpu);
 
+    render_solid_scene(gpu, w, h, &solid, &scene)
+}
+
+fn render_solid_scene(
+    gpu: &GpuTest,
+    w: u32,
+    h: u32,
+    solid: &SolidRenderer,
+    scene: &SceneBinding,
+) -> Vec<u8> {
     let (tex, color_view) = create_color_texture(&gpu.device, w, h);
     let depth_view = create_depth_texture(&gpu.device, w, h);
 
@@ -804,6 +815,30 @@ fn render_instances_2d(
     instances: &[InstanceData],
     scene_uniform: &SceneUniform,
 ) -> Vec<u8> {
+    render_instances(
+        gpu,
+        w,
+        h,
+        positions,
+        normals,
+        indices,
+        instances,
+        scene_uniform,
+        InstanceRendererConfig::default_2d(),
+    )
+}
+
+fn render_instances(
+    gpu: &GpuTest,
+    w: u32,
+    h: u32,
+    positions: &[[f32; 3]],
+    normals: &[[f32; 3]],
+    indices: &[u32],
+    instances: &[InstanceData],
+    scene_uniform: &SceneUniform,
+    config: InstanceRendererConfig,
+) -> Vec<u8> {
     let scene = SceneBinding::new(&gpu.device);
     scene.update(&gpu.queue, scene_uniform);
 
@@ -814,7 +849,7 @@ fn render_instances_2d(
         positions,
         normals,
         indices,
-        InstanceRendererConfig::default_2d(),
+        config,
     );
     renderer.update_instances(gpu, instances);
 
@@ -840,6 +875,253 @@ fn render_instances_2d(
     }
     gpu.queue.submit([encoder.finish()]);
     readback_texture(&gpu.device, &gpu.queue, &tex, w, h)
+}
+
+// Lighting regressions use analytic pixel values, without updating snapshots.
+const LIGHT_SIZE: u32 = 16;
+const LIGHT_POSITIONS: [[f32; 3]; 4] = [
+    [-0.5, -0.5, 0.5],
+    [0.5, -0.5, 0.5],
+    [0.5, 0.5, 0.5],
+    [-0.5, 0.5, 0.5],
+];
+const LIGHT_NORMALS: [[f32; 3]; 4] = [[0.0, 0.0, 1.0]; 4];
+const LIGHT_INDICES: [u32; 6] = [0, 1, 2, 0, 2, 3];
+
+fn lighting_object(gpu: &GpuTest, solid: &mut SolidRenderer) -> mikage::SolidObjectId {
+    solid.add_object(gpu, &LIGHT_POSITIONS, &LIGHT_NORMALS, &LIGHT_INDICES)
+}
+
+fn assert_linear_pixel(pixels: &[u8], x: u32, y: u32, rgb: [f32; 3]) {
+    let i = ((y * LIGHT_SIZE + x) * 4) as usize;
+    for (actual, expected) in pixels[i..i + 3].iter().zip(rgb.map(linear_to_srgb_u8)) {
+        assert!(
+            actual.abs_diff(expected) <= 2,
+            "pixel ({x}, {y}): {:?}, expected linear {rgb:?}",
+            &pixels[i..i + 4]
+        );
+    }
+    assert_eq!(pixels[i + 3], 255);
+}
+
+#[test]
+fn solid_transparent_lighting_and_persistent_shading() {
+    gpu_test!(|gpu: GpuTest| {
+        let scene = SceneBinding::new(&gpu.device);
+        scene.update_lighting(
+            &gpu.queue,
+            SceneLighting {
+                direction: glam::Vec3::Z,
+                ambient_intensity: 0.0,
+                directional_intensity: 0.5,
+            },
+        );
+        let mut solid = SolidRenderer::new(&gpu, TARGET_CONFIG, scene.layout());
+        let id = lighting_object(&gpu, &mut solid);
+        // Exercise alpha transitions and ensure update_object preserves overrides.
+        for shading in [
+            SolidShading::Auto,
+            SolidShading::Lit,
+            SolidShading::Unlit,
+            SolidShading::Auto,
+        ] {
+            solid.set_shading(id, shading);
+            for alpha in [0.5, 1.0, 0.25] {
+                solid.update_object(
+                    &gpu,
+                    id,
+                    glam::Mat4::IDENTITY,
+                    glam::Vec4::new(0.4, 0.4, 0.4, alpha),
+                );
+                let lit =
+                    shading == SolidShading::Lit || (shading == SolidShading::Auto && alpha >= 1.0);
+                for direction in [glam::Vec3::Z, -glam::Vec3::Z] {
+                    scene.update_lighting(
+                        &gpu.queue,
+                        SceneLighting {
+                            direction,
+                            ambient_intensity: 0.0,
+                            directional_intensity: 0.5,
+                        },
+                    );
+                    let gain = if lit {
+                        if direction.z > 0.0 { 0.5 } else { 0.0 }
+                    } else {
+                        1.0
+                    };
+                    let pixels = render_solid_scene(&gpu, LIGHT_SIZE, LIGHT_SIZE, &solid, &scene);
+                    assert_linear_pixel(&pixels, 8, 8, [0.4 * gain * alpha; 3]);
+                }
+            }
+        }
+    });
+}
+
+#[test]
+fn independent_light_gains_apply_to_solids_and_instances() {
+    gpu_test!(|gpu: GpuTest| {
+        for (ambient, directional, direction, gain) in [
+            (0.0, 0.0, glam::Vec3::Z, 0.0),
+            (0.2, 0.0, glam::Vec3::Z, 0.2),
+            (0.0, 0.6, glam::Vec3::Z, 0.6),
+            (0.0, 0.6, -glam::Vec3::Z, 0.0),
+            (0.2, 0.6, glam::Vec3::Z, 0.8),
+            (0.4, 1.2, glam::Vec3::Z, 1.6),
+            (1.5, 0.0, glam::Vec3::ZERO, 1.5),
+        ] {
+            let uniform = SceneUniform::with_lighting(
+                glam::Mat4::IDENTITY,
+                glam::Vec3::ZERO,
+                SceneLighting {
+                    direction,
+                    ambient_intensity: ambient,
+                    directional_intensity: directional,
+                },
+            );
+            let pixels = render_solid(&gpu, LIGHT_SIZE, LIGHT_SIZE, |solid, scene, gpu| {
+                scene.update(&gpu.queue, &uniform);
+                let id = lighting_object(gpu, solid);
+                solid.update_object(
+                    gpu,
+                    id,
+                    glam::Mat4::IDENTITY,
+                    glam::Vec4::new(0.2, 0.2, 0.2, 1.0),
+                );
+            });
+            assert_linear_pixel(&pixels, 8, 8, [0.2 * gain; 3]);
+
+            let pixels = render_instances(
+                &gpu,
+                LIGHT_SIZE,
+                LIGHT_SIZE,
+                &LIGHT_POSITIONS,
+                &LIGHT_NORMALS,
+                &LIGHT_INDICES,
+                &[InstanceData {
+                    pos_scale: [0.0, 0.0, 0.0, 1.0],
+                    color: [0.2, 0.2, 0.2, 1.0],
+                }],
+                &uniform,
+                InstanceRendererConfig {
+                    fragment_entry: "fragment_lit",
+                    ..InstanceRendererConfig::default_2d()
+                },
+            );
+            assert_linear_pixel(&pixels, 8, 8, [0.2 * gain; 3]);
+        }
+    });
+}
+
+#[test]
+fn scene_camera_updates_preserve_lighting_and_light_updates_preserve_camera() {
+    struct MovingCamera(f32);
+    impl mikage::Camera for MovingCamera {
+        fn view_matrix(&self) -> glam::Mat4 {
+            glam::Mat4::from_translation(glam::Vec3::new(-self.0, 0.0, 0.0))
+        }
+        fn projection_matrix(&self, _: f32) -> glam::Mat4 {
+            glam::Mat4::IDENTITY
+        }
+        fn position(&self) -> glam::Vec3 {
+            glam::Vec3::new(self.0, 0.0, 0.0)
+        }
+    }
+    gpu_test!(|gpu: GpuTest| {
+        let scene = SceneBinding::new(&gpu.device);
+        let mut solid = SolidRenderer::new(&gpu, TARGET_CONFIG, scene.layout());
+        let id = lighting_object(&gpu, &mut solid);
+        solid.update_object(
+            &gpu,
+            id,
+            glam::Mat4::IDENTITY,
+            glam::Vec4::new(0.2, 0.2, 0.2, 1.0),
+        );
+        for uniform in [
+            SceneUniform::with_light(glam::Mat4::IDENTITY, glam::Vec3::ZERO, -glam::Vec3::Z, 0.1),
+            SceneUniform::with_lighting(
+                glam::Mat4::IDENTITY,
+                glam::Vec3::ZERO,
+                SceneLighting {
+                    direction: -glam::Vec3::Z,
+                    ambient_intensity: 0.1,
+                    directional_intensity: 1.4,
+                },
+            ),
+        ] {
+            scene.update(&gpu.queue, &uniform);
+            scene.update_camera(&gpu.queue, &MovingCamera(0.0), 1.0);
+            let pixels = render_solid_scene(&gpu, LIGHT_SIZE, LIGHT_SIZE, &solid, &scene);
+            assert_linear_pixel(&pixels, 12, 8, [0.0; 3]);
+            assert_linear_pixel(&pixels, 8, 8, [0.02; 3]);
+            scene.update_camera(&gpu.queue, &MovingCamera(0.5), 1.0);
+            let pixels = render_solid_scene(&gpu, LIGHT_SIZE, LIGHT_SIZE, &solid, &scene);
+            assert_linear_pixel(&pixels, 4, 8, [0.02; 3]);
+            assert_linear_pixel(&pixels, 8, 8, [0.0; 3]);
+
+            scene.update_lighting(
+                &gpu.queue,
+                SceneLighting {
+                    direction: glam::Vec3::Z,
+                    ambient_intensity: 0.4,
+                    directional_intensity: 0.0,
+                },
+            );
+            let pixels = render_solid_scene(&gpu, LIGHT_SIZE, LIGHT_SIZE, &solid, &scene);
+            assert_linear_pixel(&pixels, 4, 8, [0.08; 3]);
+            assert_linear_pixel(&pixels, 8, 8, [0.0; 3]);
+
+            // The old convenience API intentionally still restores default lighting.
+            scene.update_from_camera(&gpu.queue, &MovingCamera(0.0), 1.0);
+            let pixels = render_solid_scene(&gpu, LIGHT_SIZE, LIGHT_SIZE, &solid, &scene);
+            let default_gain = 0.3 + 0.7 / 6.0_f32.sqrt();
+            assert_linear_pixel(&pixels, 8, 8, [0.2 * default_gain; 3]);
+        }
+    });
+}
+
+#[test]
+fn lit_transparency_preserves_draw_order_and_does_not_write_depth() {
+    gpu_test!(|gpu: GpuTest| {
+        let pixels = render_solid(&gpu, LIGHT_SIZE, LIGHT_SIZE, |solid, scene, gpu| {
+            scene.update_lighting(
+                &gpu.queue,
+                SceneLighting {
+                    direction: glam::Vec3::Z,
+                    ambient_intensity: 0.5,
+                    directional_intensity: 0.0,
+                },
+            );
+            // Mixed shading must retain insertion order. The farther transparent
+            // object must blend even after a nearer lit transparent object.
+            for (z, color, shading) in [
+                (
+                    -0.25,
+                    glam::Vec4::new(0.0, 0.4, 0.0, 0.5),
+                    SolidShading::Lit,
+                ),
+                (
+                    0.0,
+                    glam::Vec4::new(0.0, 0.0, 0.4, 0.5),
+                    SolidShading::Unlit,
+                ),
+                (
+                    0.25,
+                    glam::Vec4::new(0.2, 0.0, 0.0, 1.0),
+                    SolidShading::Unlit,
+                ),
+            ] {
+                let id = lighting_object(gpu, solid);
+                solid.update_object(
+                    gpu,
+                    id,
+                    glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, z)),
+                    color,
+                );
+                solid.set_shading(id, shading);
+            }
+        });
+        assert_linear_pixel(&pixels, 8, 8, [0.05, 0.05, 0.2]);
+    });
 }
 
 // ===========================================================================

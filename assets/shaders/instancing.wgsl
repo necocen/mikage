@@ -40,7 +40,7 @@ fn vertex(v: Vertex) -> VertexOut {
 @fragment
 fn fragment_lit(in: VertexOut) -> @location(0) vec4<f32> {
     let n = normalize(in.world_normal);
-    let lit_color = lambert(in.color.rgb, n, scene.light_dir.xyz, scene.ambient.x);
+    let lit_color = scene_lambert(in.color.rgb, n, scene.light_dir.xyz, scene.ambient);
     return vec4<f32>(lit_color, in.color.a);
 }
 

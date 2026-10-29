@@ -314,6 +314,33 @@ For example, `SolidRenderer::new(gpu, target, scene.layout())`.
 
 Renders solid-colored meshes with per-object model matrix and RGBA color. Objects with alpha >= 1.0 use the lit (Lambert diffuse) pipeline; alpha < 1.0 uses the unlit pipeline.
 
+Call `renderer.set_shading(id, SolidShading::Lit)` to light a transparent mesh,
+or `SolidShading::Unlit` to disable lighting at any alpha. `Auto` restores the
+defaults. Alpha still controls depth writes, culling, and draw order; transparent
+objects retain insertion order and are not depth-sorted.
+
+`SceneLighting` provides independent ambient and directional intensities:
+
+```rust
+use mikage::{SceneBinding, SceneLighting, Camera, wgpu};
+
+fn update_scene(scene: &SceneBinding, queue: &wgpu::Queue, camera: &impl Camera, aspect: f32) {
+    scene.update_lighting(queue, SceneLighting {
+        direction: mikage::glam::Vec3::new(1.0, 2.0, 1.0),
+        ambient_intensity: 0.2,
+        directional_intensity: 0.8,
+    });
+    // Only camera fields change; configured lighting is preserved.
+    scene.update_camera(queue, camera, aspect);
+}
+```
+
+Intensities multiply linear material RGB; zero disables a contribution and
+values above one are allowed. Existing `SceneUniform::new`, `with_light`, and
+`SceneBinding::update_from_camera` retain their original behavior, including the
+last helper's default-light reset. See [lighting and custom shadow passes](docs/lighting.md)
+for the formula, uniform compatibility, and shadow extension strategy.
+
 ### InstanceRenderer
 
 Renders many copies of a single mesh with per-instance data. Generic over the `InstanceVertex` trait — use the built-in `InstanceData` (position + scale + color, 32 bytes) or define your own layout:
