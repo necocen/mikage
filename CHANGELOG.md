@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## v0.8.0
+
+### Changed
+
+- **Public math dependency (breaking)** — Update the re-exported `glam` from 0.29 to 0.34. Applications that pass direct glam types to mikage must align their glam dependency or use `mikage::glam`. Camera matrix constructors move to `glam::camera::rh`; mikage's built-in cameras preserve their right-handed, Y-up, WebGPU-depth behavior. This public dependency change warrants 0.8.0 rather than 0.7.4. See the [0.7 → 0.8 migration guide](docs/migration-0.8.md).
+- **Native async helper** — Update the internal `pollster` dependency from 0.4 to 1.0.
 
 ### Added
 

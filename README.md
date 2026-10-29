@@ -5,9 +5,11 @@ headless execution. Create pipelines, buffers, and bind groups directly through
 `mikage::wgpu`; the framework supplies application scheduling, presentation,
 cameras, rendering helpers, and optional egui and HTTP diagnostics.
 
-Mikage uses **wgpu 30.0.1**, **egui 0.37.0**, and **winit 0.30.13** and
-requires **Rust 1.95+**. See the [0.5 → 0.6 migration guide](docs/migration-0.6.md)
-for the public API changes.
+Mikage **0.8.0** uses **wgpu 30.0.1**, **egui 0.37.0**, **winit 0.30.13**, and
+**glam 0.34** and requires **Rust 1.95+**. See the
+[0.7 → 0.8 migration guide](docs/migration-0.8.md) for the public math dependency
+change and the [0.5 → 0.6 migration guide](docs/migration-0.6.md) for earlier
+application lifecycle changes.
 
 ## Quick start
 
