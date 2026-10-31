@@ -141,12 +141,10 @@ impl App for LightColorsApp {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let camera = OrbitCamera {
-        distance: 7.5,
-        yaw: 0.3,
-        pitch: 0.2,
-        ..Default::default()
-    };
+    let mut camera = OrbitCamera::default();
+    camera.distance = 7.5;
+    camera.yaw = 0.3;
+    camera.pitch = 0.2;
     #[cfg(not(target_family = "wasm"))]
     if std::env::args().nth(1).as_deref() == Some("--headless") {
         let output = std::env::args()

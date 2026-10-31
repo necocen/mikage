@@ -1374,6 +1374,21 @@ fn colored_scene_partial_updates_preserve_camera_gains_and_colors() {
             let pixels = render_colored(&gpu, &scene, &renderer, wgpu::Color::BLACK);
             assert_linear_pixel(&pixels, 4, 8, [0.0, 0.2, 0.4]);
             assert_linear_pixel(&pixels, 8, 8, [0.0; 3]);
+            // Replacing all legacy scene fields must still retain the colors.
+            scene.update(
+                &gpu.queue,
+                &SceneUniform::with_lighting(
+                    glam::Mat4::IDENTITY,
+                    glam::Vec3::ZERO,
+                    SceneLighting {
+                        direction: glam::Vec3::Z,
+                        ambient_intensity: 0.25,
+                        directional_intensity: 0.5,
+                    },
+                ),
+            );
+            let pixels = render_colored(&gpu, &scene, &renderer, wgpu::Color::BLACK);
+            assert_linear_pixel(&pixels, 8, 8, [0.0, 0.1, 0.2]);
         }
     });
 }
