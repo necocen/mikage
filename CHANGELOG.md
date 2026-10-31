@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Independent light colors** — Opt into linear ambient and directional RGB with `SceneLightColors`, `ColoredSceneBinding`, and `SolidRenderer::with_light_colors` / `InstanceRenderer::with_light_colors`. Colors default to white and remain independent of scalar gains. Camera/gain updates preserve colors; material alpha and unlit behavior are unchanged. The original `SceneBinding`, 112-byte `SceneUniform`, and renderer constructors remain compatible.
+- **Colored-light example and custom shaders** — Add a paused solid/instance demonstration with 4x MSAA and headless PNG capture. Publish the `mikage::light_colors` WGSL uniform and `colored_scene_lambert` helper. See [lighting](docs/lighting.md#independent-light-colors).
+
 ## v0.8.0
 
 ### Changed

@@ -343,6 +343,13 @@ values above one are allowed. Existing `SceneUniform::new`, `with_light`, and
 last helper's default-light reset. See [lighting and custom shadow passes](docs/lighting.md)
 for the formula, uniform compatibility, and shadow extension strategy.
 
+Opt into separate ambient/directional RGB through `ColoredSceneBinding`,
+`SceneLightColors`, and each renderer's `with_light_colors` constructor. Inputs
+are linear RGB, default to white, and stay independent of intensity. See the
+[colored-light guide](docs/lighting.md#independent-light-colors) and run
+`cargo run --example light_colors` for neutral solid and instance meshes under
+cool ambient and warm directional light.
+
 ### InstanceRenderer
 
 Renders many copies of a single mesh with per-instance data. Generic over the `InstanceVertex` trait — use the built-in `InstanceData` (position + scale + color, 32 bytes) or define your own layout:

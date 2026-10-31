@@ -196,6 +196,39 @@ impl InstanceRenderer<InstanceData> {
             config,
         )
     }
+
+    /// Uses independent linear RGB light colors from a [`ColoredSceneBinding`](crate::ColoredSceneBinding).
+    ///
+    /// `fragment_lit` in `config` selects the colored Lambert entry point;
+    /// `fragment_unlit` still passes material RGBA through unchanged. Bind the
+    /// colored scene at group 0 before rendering. Instance buffer ownership and
+    /// compute access are unchanged.
+    pub fn with_light_colors(
+        gpu: &crate::GpuContext,
+        target: crate::RenderTargetConfig,
+        scene: &crate::ColoredSceneBinding,
+        positions: &[[f32; 3]],
+        normals: &[[f32; 3]],
+        indices: &[u32],
+        mut config: InstanceRendererConfig,
+    ) -> Self {
+        if config.fragment_entry == "fragment_lit" {
+            config.fragment_entry = "fragment_colored";
+        }
+        let resolved = mikage_shader_processor()
+            .resolve(SHADER_SOURCE)
+            .expect("failed to resolve instancing shader imports");
+        Self::with_shader(
+            gpu,
+            target,
+            scene.layout(),
+            positions,
+            normals,
+            indices,
+            &resolved,
+            config,
+        )
+    }
 }
 
 impl<V: InstanceVertex> InstanceRenderer<V> {

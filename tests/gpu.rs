@@ -10,11 +10,11 @@ use glam::camera::rh::{proj::directx, view};
 use image::{ImageBuffer, Rgba, RgbaImage};
 use mikage::wgpu;
 use mikage::{
-    CubeMesh, DEPTH_FORMAT, GpuContext, GpuDescriptor, GpuInitError, IcoSphereMesh, InstanceData,
-    InstanceRenderer, InstanceRendererConfig, PlaneMesh, QuadMesh2d, RegularPolygonMesh,
-    RenderTargetConfig, SceneBinding, SceneLighting, SceneUniform, ShaderProcessor, SolidRenderer,
-    SolidShading, UniformBuffer, create_compute_pipeline, create_storage_buffer_init,
-    storage_buffer_entry,
+    ColoredSceneBinding, CubeMesh, DEPTH_FORMAT, GpuContext, GpuDescriptor, GpuInitError,
+    IcoSphereMesh, InstanceData, InstanceRenderer, InstanceRendererConfig, PlaneMesh, QuadMesh2d,
+    RegularPolygonMesh, RenderTargetConfig, SceneBinding, SceneLightColors, SceneLighting,
+    SceneUniform, ShaderProcessor, SolidRenderer, SolidShading, UniformBuffer,
+    create_compute_pipeline, create_storage_buffer_init, storage_buffer_entry,
 };
 use wgpu::util::DeviceExt;
 
@@ -1121,6 +1121,332 @@ fn lit_transparency_preserves_draw_order_and_does_not_write_depth() {
             }
         });
         assert_linear_pixel(&pixels, 8, 8, [0.05, 0.05, 0.2]);
+    });
+}
+
+enum ColoredRenderer {
+    Solid(SolidRenderer),
+    Instances(InstanceRenderer),
+}
+
+fn colored_renderer(
+    gpu: &GpuTest,
+    scene: &ColoredSceneBinding,
+    instanced: bool,
+    color: glam::Vec4,
+    lit: bool,
+) -> ColoredRenderer {
+    if instanced {
+        let mut renderer = InstanceRenderer::with_light_colors(
+            gpu,
+            TARGET_CONFIG,
+            scene,
+            &LIGHT_POSITIONS,
+            &LIGHT_NORMALS,
+            &LIGHT_INDICES,
+            InstanceRendererConfig {
+                fragment_entry: if lit {
+                    "fragment_lit"
+                } else {
+                    "fragment_unlit"
+                },
+                ..InstanceRendererConfig::default_3d()
+            },
+        );
+        renderer.update_instances(
+            gpu,
+            &[InstanceData {
+                pos_scale: [0.0, 0.0, 0.0, 1.0],
+                color: color.to_array(),
+            }],
+        );
+        ColoredRenderer::Instances(renderer)
+    } else {
+        let mut renderer = SolidRenderer::with_light_colors(gpu, TARGET_CONFIG, scene);
+        let id = lighting_object(gpu, &mut renderer);
+        renderer.update_object(gpu, id, glam::Mat4::IDENTITY, color);
+        renderer.set_shading(
+            id,
+            if lit {
+                SolidShading::Lit
+            } else {
+                SolidShading::Unlit
+            },
+        );
+        ColoredRenderer::Solid(renderer)
+    }
+}
+
+fn render_colored(
+    gpu: &GpuTest,
+    scene: &ColoredSceneBinding,
+    renderer: &ColoredRenderer,
+    clear: wgpu::Color,
+) -> Vec<u8> {
+    let (texture, view) = create_color_texture(&gpu.device, LIGHT_SIZE, LIGHT_SIZE);
+    let depth = create_depth_texture(&gpu.device, LIGHT_SIZE, LIGHT_SIZE);
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(clear),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &depth,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            ..Default::default()
+        });
+        pass.set_bind_group(0, scene.bind_group(), &[]);
+        match renderer {
+            ColoredRenderer::Solid(solid) => solid.render(&mut pass),
+            ColoredRenderer::Instances(instances) => instances.render(&mut pass),
+        }
+    }
+    gpu.queue.submit([encoder.finish()]);
+    readback_texture(&gpu.device, &gpu.queue, &texture, LIGHT_SIZE, LIGHT_SIZE)
+}
+
+#[test]
+fn colored_lights_share_linear_rgb_and_gain_semantics_in_both_renderers() {
+    gpu_test!(|gpu: GpuTest| {
+        let scene = ColoredSceneBinding::new(&gpu.device);
+        let colors = SceneLightColors {
+            ambient: glam::Vec3::new(0.1, 0.4, 1.5),
+            directional: glam::Vec3::new(1.0, 0.3, 0.05),
+        };
+        scene.update_light_colors(&gpu.queue, colors);
+        let material = glam::Vec3::new(0.2, 0.3, 0.4);
+        for instanced in [false, true] {
+            let renderer = colored_renderer(&gpu, &scene, instanced, material.extend(1.0), true);
+            for (ambient, directional, direction, diffuse) in [
+                (0.3, 0.0, glam::Vec3::Z, 1.0),
+                (0.0, 0.8, glam::Vec3::Z, 1.0),
+                (0.2, 0.7, glam::Vec3::Z, 1.0),
+                (0.0, 0.0, glam::Vec3::Z, 1.0),
+                (0.2, 0.7, -glam::Vec3::Z, 0.0),
+                (0.2, 1.2, glam::Vec3::new(0.0, 3.0, 4.0), 0.8),
+            ] {
+                scene.update_lighting(
+                    &gpu.queue,
+                    SceneLighting {
+                        direction,
+                        ambient_intensity: ambient,
+                        directional_intensity: directional,
+                    },
+                );
+                let pixels = render_colored(&gpu, &scene, &renderer, wgpu::Color::BLACK);
+                let expected = material
+                    * (colors.ambient * ambient + colors.directional * (directional * diffuse));
+                assert_linear_pixel(&pixels, 8, 8, expected.to_array());
+            }
+        }
+    });
+}
+
+#[test]
+fn colored_lights_preserve_transparent_alpha_and_unlit_materials() {
+    gpu_test!(|gpu: GpuTest| {
+        let scene = ColoredSceneBinding::new(&gpu.device);
+        scene.update_lighting(
+            &gpu.queue,
+            SceneLighting {
+                direction: glam::Vec3::Z,
+                ambient_intensity: 0.25,
+                directional_intensity: 0.5,
+            },
+        );
+        let material = glam::Vec3::new(0.4, 0.6, 0.8);
+        let alpha = 0.35;
+        for instanced in [false, true] {
+            for lit in [false, true] {
+                let renderer =
+                    colored_renderer(&gpu, &scene, instanced, material.extend(alpha), lit);
+                for colors in [
+                    SceneLightColors {
+                        ambient: glam::Vec3::Z,
+                        directional: glam::Vec3::X,
+                    },
+                    SceneLightColors {
+                        ambient: glam::Vec3::ZERO,
+                        directional: glam::Vec3::ZERO,
+                    },
+                ] {
+                    scene.update_light_colors(&gpu.queue, colors);
+                    let pixels = render_colored(&gpu, &scene, &renderer, wgpu::Color::TRANSPARENT);
+                    let expected = if lit {
+                        material * (colors.ambient * 0.25 + colors.directional * 0.5)
+                    } else {
+                        material
+                    } * alpha;
+                    let i = ((8 * LIGHT_SIZE + 8) * 4) as usize;
+                    for (actual, expected) in pixels[i..i + 3]
+                        .iter()
+                        .zip(expected.to_array().map(linear_to_srgb_u8))
+                    {
+                        assert!(
+                            actual.abs_diff(expected) <= 2,
+                            "RGBA {:?}",
+                            &pixels[i..i + 4]
+                        );
+                    }
+                    assert!(pixels[i + 3].abs_diff((alpha * 255.0).round() as u8) <= 1);
+                }
+            }
+        }
+    });
+}
+
+#[test]
+fn colored_scene_partial_updates_preserve_camera_gains_and_colors() {
+    struct ShiftedCamera;
+    impl mikage::Camera for ShiftedCamera {
+        fn view_matrix(&self) -> glam::Mat4 {
+            glam::Mat4::from_translation(glam::Vec3::new(-0.5, 0.0, 0.0))
+        }
+        fn projection_matrix(&self, _: f32) -> glam::Mat4 {
+            glam::Mat4::IDENTITY
+        }
+        fn position(&self) -> glam::Vec3 {
+            glam::Vec3::new(0.5, 0.0, 0.0)
+        }
+    }
+    gpu_test!(|gpu: GpuTest| {
+        let scene = ColoredSceneBinding::new(&gpu.device);
+        for instanced in [false, true] {
+            scene.update(
+                &gpu.queue,
+                &SceneUniform::with_light(
+                    glam::Mat4::IDENTITY,
+                    glam::Vec3::ZERO,
+                    glam::Vec3::Z,
+                    0.25,
+                ),
+            );
+            scene.update_light_colors(
+                &gpu.queue,
+                SceneLightColors {
+                    ambient: glam::Vec3::Z,
+                    directional: glam::Vec3::X,
+                },
+            );
+            let renderer = colored_renderer(
+                &gpu,
+                &scene,
+                instanced,
+                glam::Vec4::new(0.4, 0.4, 0.4, 1.0),
+                true,
+            );
+            let pixels = render_colored(&gpu, &scene, &renderer, wgpu::Color::BLACK);
+            assert_linear_pixel(&pixels, 8, 8, [0.3, 0.0, 0.1]);
+            scene.update_camera(&gpu.queue, &ShiftedCamera, 1.0);
+            let pixels = render_colored(&gpu, &scene, &renderer, wgpu::Color::BLACK);
+            assert_linear_pixel(&pixels, 4, 8, [0.3, 0.0, 0.1]);
+            assert_linear_pixel(&pixels, 8, 8, [0.0; 3]);
+            scene.update_lighting(
+                &gpu.queue,
+                SceneLighting {
+                    direction: glam::Vec3::Z,
+                    ambient_intensity: 0.5,
+                    directional_intensity: 1.0,
+                },
+            );
+            let pixels = render_colored(&gpu, &scene, &renderer, wgpu::Color::BLACK);
+            assert_linear_pixel(&pixels, 4, 8, [0.4, 0.0, 0.2]);
+            assert_linear_pixel(&pixels, 8, 8, [0.0; 3]);
+            scene.update_light_colors(
+                &gpu.queue,
+                SceneLightColors {
+                    ambient: glam::Vec3::Y,
+                    directional: glam::Vec3::Z,
+                },
+            );
+            let pixels = render_colored(&gpu, &scene, &renderer, wgpu::Color::BLACK);
+            assert_linear_pixel(&pixels, 4, 8, [0.0, 0.2, 0.4]);
+            assert_linear_pixel(&pixels, 8, 8, [0.0; 3]);
+            // Replacing all legacy scene fields must still retain the colors.
+            scene.update(
+                &gpu.queue,
+                &SceneUniform::with_lighting(
+                    glam::Mat4::IDENTITY,
+                    glam::Vec3::ZERO,
+                    SceneLighting {
+                        direction: glam::Vec3::Z,
+                        ambient_intensity: 0.25,
+                        directional_intensity: 0.5,
+                    },
+                ),
+            );
+            let pixels = render_colored(&gpu, &scene, &renderer, wgpu::Color::BLACK);
+            assert_linear_pixel(&pixels, 8, 8, [0.0, 0.1, 0.2]);
+        }
+    });
+}
+
+#[test]
+fn default_white_light_colors_match_legacy_and_independent_white_lighting() {
+    gpu_test!(|gpu: GpuTest| {
+        let scene = ColoredSceneBinding::new(&gpu.device);
+        let material = glam::Vec4::new(0.2, 0.3, 0.4, 1.0);
+        for uniform in [
+            SceneUniform::with_light(glam::Mat4::IDENTITY, glam::Vec3::ZERO, glam::Vec3::Z, 0.2),
+            SceneUniform::with_lighting(
+                glam::Mat4::IDENTITY,
+                glam::Vec3::ZERO,
+                SceneLighting {
+                    direction: glam::Vec3::Z,
+                    ambient_intensity: 0.2,
+                    directional_intensity: 0.6,
+                },
+            ),
+        ] {
+            scene.update(&gpu.queue, &uniform);
+            for instanced in [false, true] {
+                let renderer = colored_renderer(&gpu, &scene, instanced, material, true);
+                let colored = render_colored(&gpu, &scene, &renderer, wgpu::Color::BLACK);
+                let original = if instanced {
+                    render_instances(
+                        &gpu,
+                        LIGHT_SIZE,
+                        LIGHT_SIZE,
+                        &LIGHT_POSITIONS,
+                        &LIGHT_NORMALS,
+                        &LIGHT_INDICES,
+                        &[InstanceData {
+                            pos_scale: [0.0, 0.0, 0.0, 1.0],
+                            color: material.to_array(),
+                        }],
+                        &uniform,
+                        InstanceRendererConfig {
+                            fragment_entry: "fragment_lit",
+                            ..InstanceRendererConfig::default_2d()
+                        },
+                    )
+                } else {
+                    render_solid(&gpu, LIGHT_SIZE, LIGHT_SIZE, |renderer, scene, gpu| {
+                        scene.update(&gpu.queue, &uniform);
+                        let id = lighting_object(gpu, renderer);
+                        renderer.update_object(gpu, id, glam::Mat4::IDENTITY, material);
+                    })
+                };
+                assert!(
+                    colored
+                        .iter()
+                        .zip(original)
+                        .all(|(a, b)| a.abs_diff(b) <= 1)
+                );
+            }
+        }
     });
 }
 
