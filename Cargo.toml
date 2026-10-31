@@ -85,5 +85,9 @@ name = "orbit_camera"
 required-features = ["window-gui"]
 
 [[example]]
+name = "light_colors"
+required-features = ["window-gui"]
+
+[[example]]
 name = "agent_capture"
 required-features = ["window", "agent"]

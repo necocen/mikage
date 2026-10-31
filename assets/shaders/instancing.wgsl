@@ -9,7 +9,9 @@
 
 #import mikage::scene_types
 #import mikage::lighting
+#import mikage::light_colors
 @group(0) @binding(0) var<uniform> scene: SceneUniform;
+@group(0) @binding(1) var<uniform> light_colors: LightColors;
 
 struct Vertex {
     @location(0) position: vec3<f32>,
@@ -41,6 +43,13 @@ fn vertex(v: Vertex) -> VertexOut {
 fn fragment_lit(in: VertexOut) -> @location(0) vec4<f32> {
     let n = normalize(in.world_normal);
     let lit_color = scene_lambert(in.color.rgb, n, scene.light_dir.xyz, scene.ambient);
+    return vec4<f32>(lit_color, in.color.a);
+}
+
+@fragment
+fn fragment_colored(in: VertexOut) -> @location(0) vec4<f32> {
+    let lit_color = colored_scene_lambert(in.color.rgb, normalize(in.world_normal),
+        scene.light_dir.xyz, scene.ambient, light_colors.ambient.rgb, light_colors.directional.rgb);
     return vec4<f32>(lit_color, in.color.a);
 }
 

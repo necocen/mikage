@@ -146,6 +146,26 @@ impl SolidRenderer {
         target: crate::RenderTargetConfig,
         scene_bind_group_layout: &wgpu::BindGroupLayout,
     ) -> Self {
+        Self::create(gpu, target, scene_bind_group_layout, "fragment_lit")
+    }
+
+    /// Uses independent linear RGB light colors from a [`ColoredSceneBinding`](crate::ColoredSceneBinding).
+    /// Bind that scene's group 0 before rendering. Unlit objects ignore light colors.
+    /// All opacity, depth, culling, and draw-order rules remain the same.
+    pub fn with_light_colors(
+        gpu: &crate::GpuContext,
+        target: crate::RenderTargetConfig,
+        scene: &crate::ColoredSceneBinding,
+    ) -> Self {
+        Self::create(gpu, target, scene.layout(), "fragment_colored")
+    }
+
+    fn create(
+        gpu: &crate::GpuContext,
+        target: crate::RenderTargetConfig,
+        scene_bind_group_layout: &wgpu::BindGroupLayout,
+        lit_fragment: &str,
+    ) -> Self {
         let device = &gpu.device;
         // Model bind group layout: single uniform buffer at binding 0
         let model_bind_group_layout =
@@ -207,7 +227,7 @@ impl SolidRenderer {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader_module,
-                entry_point: Some("fragment_lit"),
+                entry_point: Some(lit_fragment),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: target.color_format,
@@ -273,7 +293,7 @@ impl SolidRenderer {
             .fragment
             .as_mut()
             .unwrap()
-            .entry_point = Some("fragment_lit");
+            .entry_point = Some(lit_fragment);
         let transparent_lit_pipeline = device.create_render_pipeline(&transparent_descriptor);
 
         Self {

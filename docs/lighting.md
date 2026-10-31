@@ -40,6 +40,79 @@ unit. For a global exposure multiplier, multiply both gains by the same factor.
 Unorm attachments clamp out-of-range output; use an app-owned floating-point
 target and tone-mapping pass when HDR is needed. Lighting never changes alpha.
 
+## Independent light colors
+
+Use `ColoredSceneBinding` with `SolidRenderer::with_light_colors` and/or
+`InstanceRenderer::with_light_colors` to opt into independent light RGB.
+`SceneLightColors` defaults to white for both contributions; scalar gains and
+direction stay in `SceneLighting`:
+
+```rust,no_run
+use mikage::{ColoredSceneBinding, SceneLightColors, SceneLighting, glam::Vec3, wgpu};
+# fn configure(device: &wgpu::Device, queue: &wgpu::Queue) {
+let scene = ColoredSceneBinding::new(device);
+scene.update_light_colors(queue, SceneLightColors {
+    ambient: Vec3::new(0.15, 0.35, 1.0),
+    directional: Vec3::new(1.0, 0.55, 0.15),
+});
+scene.update_lighting(queue, SceneLighting {
+    ambient_intensity: 0.3, directional_intensity: 0.9,
+    ..Default::default()
+});
+scene.update_camera(queue, &(), 1.0);
+# }
+```
+
+Both built-in colored fragments use:
+
+```text
+material_rgb * (ambient_rgb * ambient_intensity
+    + directional_rgb * directional_intensity * max(dot(normal, direction), 0))
+```
+
+RGB inputs are **linear**, not sRGB, not lux, and not normalized. Decode sRGB
+UI/hex values before upload (the WGSL `mikage::color_utils` module provides
+`srgb_to_linear` for custom shaders). Each negative or non-finite component is
+uploaded as zero; components above one are allowed and follow the same output
+clipping rules as intensity. White `(1, 1, 1)` reproduces existing white-light
+rendering. Changing a color does not change its scalar intensity or material RGBA.
+Lit transparency preserves material alpha. Unlit fragments ignore light colors.
+
+Camera-only and gain-only updates retain colors. `ColoredSceneBinding::update`
+replaces the existing scene uniform while retaining colors; legacy contrast-mode
+uniforms still use directional gain `1 - ambient`. The ordinary `SceneBinding`
+and existing renderer constructors retain their original allocation and behavior.
+
+For custom shaders, `ColoredSceneBinding` retains the original 112-byte uniform
+at group 0 binding 0 and adds 32 bytes at **group 0 binding 1**:
+
+```wgsl
+#import mikage::scene_types
+#import mikage::light_colors
+#import mikage::lighting
+@group(0) @binding(0) var<uniform> scene: SceneUniform;
+@group(0) @binding(1) var<uniform> colors: LightColors;
+
+fn shade(material: vec4<f32>, normal: vec3<f32>) -> vec4<f32> {
+    let rgb = colored_scene_lambert(material.rgb, normalize(normal),
+        scene.light_dir.xyz, scene.ambient, colors.ambient.rgb, colors.directional.rgb);
+    return vec4<f32>(rgb, material.a);
+}
+```
+
+Use `scene.layout()` for the pipeline and `scene.bind_group()` at group 0.
+`LightColors` contains two vec4s (`ambient`, `directional`); w is reserved and zero.
+`LIGHT_COLORS_WGSL` exports the same struct for manual module registration.
+
+Run `cargo run --example light_colors` for a neutral solid sphere and instanced
+cubes under different ambient/directional colors. Its gain sliders leave the
+light colors unchanged, and simulation is paused. The example uses matching
+4x MSAA color/depth targets. On native platforms,
+`cargo run --example light_colors -- --headless /tmp/light-colors.png` renders
+and captures the same scene with zero simulation ticks. This uniform-only
+extension requires no optional GPU features and is compatible with native and
+WebGPU pipelines; applications continue to own their target and pass setup.
+
 ## Shading and transparency
 
 New solid objects use `SolidShading::Auto`: opaque (`alpha >= 1`) is lit,

@@ -39,10 +39,10 @@ pub use capture::*;
 pub use context::*;
 pub use headless::*;
 pub use helpers::{
-    CubeMesh, DEPTH_FORMAT, IcoSphereMesh, MeshBuffers, POSITION_NORMAL_LAYOUT, PlaneMesh,
-    QuadMesh2d, RegularPolygonMesh, SceneBinding, SceneLighting, SceneUniform, UniformBuffer,
-    create_compute_pipeline, create_depth_texture, create_storage_buffer_init,
-    storage_buffer_entry, uniform_buffer_entry,
+    ColoredSceneBinding, CubeMesh, DEPTH_FORMAT, IcoSphereMesh, MeshBuffers,
+    POSITION_NORMAL_LAYOUT, PlaneMesh, QuadMesh2d, RegularPolygonMesh, SceneBinding,
+    SceneLightColors, SceneLighting, SceneUniform, UniformBuffer, create_compute_pipeline,
+    create_depth_texture, create_storage_buffer_init, storage_buffer_entry, uniform_buffer_entry,
 };
 #[cfg(feature = "window")]
 pub use input::InputState;
@@ -56,7 +56,8 @@ pub use runner::run_with_agent;
 pub use runner::{RedrawPolicy, RedrawRequest, RunConfig, RunError, SimulationPolicy, run};
 pub use runtime::*;
 pub use shader_processor::{
-    COLOR_UTILS_WGSL, LIGHTING_WGSL, MATH_WGSL, SCENE_TYPES_WGSL, ShaderError, ShaderProcessor,
+    COLOR_UTILS_WGSL, LIGHT_COLORS_WGSL, LIGHTING_WGSL, MATH_WGSL, SCENE_TYPES_WGSL, ShaderError,
+    ShaderProcessor,
 };
 pub use solid_renderer::{ModelUniform, SolidObjectId, SolidRenderer, SolidShading};
 
