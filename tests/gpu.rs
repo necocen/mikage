@@ -1450,6 +1450,563 @@ fn default_white_light_colors_match_legacy_and_independent_white_lighting() {
     });
 }
 
+fn target_ref(target: &mikage::OffscreenTarget) -> mikage::RenderTarget<'_> {
+    mikage::RenderTarget {
+        view: target.color_view(),
+        resolve_target: target.resolve_target(),
+        depth_view: Some(target.depth_view()),
+        size: target.size(),
+        config: target.render_target_config(),
+    }
+}
+
+fn target_pass<'a>(
+    encoder: &'a mut wgpu::CommandEncoder,
+    target: &mikage::OffscreenTarget,
+    clear: wgpu::Color,
+) -> wgpu::RenderPass<'a> {
+    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: target.color_view(),
+            resolve_target: target.resolve_target(),
+            depth_slice: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(clear),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+            view: target.depth_view(),
+            depth_ops: Some(wgpu::Operations {
+                load: wgpu::LoadOp::Clear(1.0),
+                store: wgpu::StoreOp::Store,
+            }),
+            stencil_ops: None,
+        }),
+        ..Default::default()
+    })
+}
+
+#[test]
+fn hdr_tone_mapping_preserves_highlights_exposure_and_output_color_space() {
+    gpu_test!(|gpu: GpuTest| {
+        for samples in [1, 4] {
+            let size = mikage::dpi::PhysicalSize::new(LIGHT_SIZE, LIGHT_SIZE);
+            let hdr_config = RenderTargetConfig {
+                color_format: mikage::HDR_FORMAT,
+                sample_count: samples,
+                ..TARGET_CONFIG
+            };
+            let hdr = mikage::OffscreenTarget::new(&gpu, size, hdr_config).unwrap();
+            let scene = SceneBinding::new(&gpu.device);
+            scene.update_lighting(
+                &gpu.queue,
+                SceneLighting {
+                    ambient_intensity: 1.0,
+                    directional_intensity: 0.0,
+                    ..Default::default()
+                },
+            );
+            let mut solid = SolidRenderer::new(&gpu, hdr_config, scene.layout());
+            let id = lighting_object(&gpu, &mut solid);
+            for (format, output, encode_srgb) in [
+                (RENDER_FORMAT, mikage::ToneMapOutput::Srgb, true),
+                (
+                    wgpu::TextureFormat::Rgba8Unorm,
+                    mikage::ToneMapOutput::Srgb,
+                    true,
+                ),
+                (
+                    wgpu::TextureFormat::Rgba8Unorm,
+                    mikage::ToneMapOutput::Linear,
+                    false,
+                ),
+            ] {
+                let config = RenderTargetConfig {
+                    color_format: format,
+                    sample_count: samples,
+                    ..TARGET_CONFIG
+                };
+                let destination = mikage::OffscreenTarget::new(&gpu, size, config).unwrap();
+                let mapper = mikage::ToneMapper::with_output(&gpu, config, output).unwrap();
+                let source = mapper.source(&gpu, hdr.view());
+                for ev in [-1.0_f32, 0.0, 1.0] {
+                    mapper.update_exposure(&gpu.queue, ev);
+                    // A camera-only update must retain light gains and exposure.
+                    scene.update_camera(&gpu.queue, &(), 1.0);
+                    let mut previous = 0;
+                    for radiance in [0.25_f32, 1.0, 2.0, 4.0, 8.0] {
+                        solid.update_object(
+                            &gpu,
+                            id,
+                            glam::Mat4::IDENTITY,
+                            glam::Vec4::new(radiance, radiance, radiance, 1.0),
+                        );
+                        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+                        {
+                            let mut pass = target_pass(&mut encoder, &hdr, wgpu::Color::BLACK);
+                            pass.set_bind_group(0, scene.bind_group(), &[]);
+                            solid.render(&mut pass);
+                        }
+                        mapper.encode(&mut encoder, &source, target_ref(&destination));
+                        gpu.queue.submit([encoder.finish()]);
+                        let pixels = readback_texture(
+                            &gpu.device,
+                            &gpu.queue,
+                            destination.texture(),
+                            LIGHT_SIZE,
+                            LIGHT_SIZE,
+                        );
+                        let index = ((8 * LIGHT_SIZE + 8) * 4) as usize;
+                        let x = radiance * ev.exp2();
+                        let mapped = x / (1.0 + x);
+                        let expected = if encode_srgb {
+                            linear_to_srgb_u8(mapped)
+                        } else {
+                            (mapped * 255.0).round() as u8
+                        };
+                        assert!(
+                            pixels[index].abs_diff(expected) <= 2,
+                            "radiance={radiance}, EV={ev}, sample={samples}: {} vs {expected}",
+                            pixels[index]
+                        );
+                        assert!(pixels[index] > previous, "highlights must remain distinct");
+                        previous = pixels[index];
+                    }
+                }
+            }
+        }
+    });
+}
+
+#[test]
+fn hdr_transparency_composites_before_mapping_and_operator_can_be_disabled() {
+    gpu_test!(|gpu: GpuTest| {
+        let size = mikage::dpi::PhysicalSize::new(LIGHT_SIZE, LIGHT_SIZE);
+        let hdr_config = RenderTargetConfig {
+            color_format: mikage::HDR_FORMAT,
+            ..TARGET_CONFIG
+        };
+        let hdr = mikage::OffscreenTarget::new(&gpu, size, hdr_config).unwrap();
+        let destination = mikage::OffscreenTarget::new(&gpu, size, TARGET_CONFIG).unwrap();
+        let mapper = mikage::ToneMapper::new(&gpu, TARGET_CONFIG).unwrap();
+        let source = mapper.source(&gpu, hdr.view());
+        let scene = SceneBinding::new(&gpu.device);
+        let mut solid = SolidRenderer::new(&gpu, hdr_config, scene.layout());
+        let id = lighting_object(&gpu, &mut solid);
+        for operator in [
+            mikage::ToneMapOperator::Reinhard,
+            mikage::ToneMapOperator::None,
+        ] {
+            mapper.update(
+                &gpu.queue,
+                mikage::ToneMapSettings {
+                    exposure_ev: 0.0,
+                    operator,
+                },
+            );
+            mapper.update_exposure(&gpu.queue, -1.0); // retain the selected operator
+            solid.update_object(
+                &gpu,
+                id,
+                glam::Mat4::IDENTITY,
+                glam::Vec4::new(4.0, 2.0, 1.0, 0.5),
+            );
+            let mut encoder = gpu.device.create_command_encoder(&Default::default());
+            {
+                let mut pass = target_pass(&mut encoder, &hdr, wgpu::Color::TRANSPARENT);
+                pass.set_bind_group(0, scene.bind_group(), &[]);
+                solid.render(&mut pass);
+            }
+            mapper.encode(&mut encoder, &source, target_ref(&destination));
+            gpu.queue.submit([encoder.finish()]);
+            let pixels = readback_texture(
+                &gpu.device,
+                &gpu.queue,
+                destination.texture(),
+                LIGHT_SIZE,
+                LIGHT_SIZE,
+            );
+            let i = ((8 * LIGHT_SIZE + 8) * 4) as usize;
+            for (channel, exposed) in [2.0_f32, 1.0, 0.5].into_iter().enumerate() {
+                let mapped = if operator == mikage::ToneMapOperator::Reinhard {
+                    exposed / (1.0 + exposed)
+                } else {
+                    exposed
+                };
+                assert!(pixels[i + channel].abs_diff(linear_to_srgb_u8(mapped * 0.5)) <= 2);
+            }
+            assert!(pixels[i + 3].abs_diff(128) <= 1);
+        }
+        assert!(
+            mikage::ToneMapper::with_output(&gpu, TARGET_CONFIG, mikage::ToneMapOutput::Linear)
+                .is_err()
+        );
+        assert!(
+            mikage::ToneMapper::new(
+                &gpu,
+                RenderTargetConfig {
+                    color_format: wgpu::TextureFormat::Rgba8Uint,
+                    ..TARGET_CONFIG
+                }
+            )
+            .is_err()
+        );
+        // Existing default direct rendering still clamps high radiance.
+        for radiance in [2.0_f32, 4.0] {
+            let pixels = render_solid(&gpu, LIGHT_SIZE, LIGHT_SIZE, |solid, scene, gpu| {
+                scene.update_lighting(
+                    &gpu.queue,
+                    SceneLighting {
+                        ambient_intensity: radiance,
+                        directional_intensity: 0.0,
+                        ..Default::default()
+                    },
+                );
+                let id = lighting_object(gpu, solid);
+                solid.update_object(gpu, id, glam::Mat4::IDENTITY, glam::Vec4::ONE);
+            });
+            assert_linear_pixel(&pixels, 8, 8, [1.0; 3]);
+        }
+    });
+}
+
+fn write_shadow_instance(
+    gpu: &GpuTest,
+    encoder: &mut wgpu::CommandEncoder,
+    renderer: &mut InstanceRenderer,
+    x: f32,
+    alpha: f32,
+) {
+    // Producer writes the same storage/vertex buffer consumed by both passes.
+    let buffer = renderer.prepare_compute(&gpu.device, 1).buffer;
+    let shader = format!(
+        "struct Instance {{ position: vec4<f32>, color: vec4<f32> }}; @group(0) @binding(0) var<storage, read_write> instances: array<Instance>; @compute @workgroup_size(1) fn main() {{ instances[0] = Instance(vec4<f32>({x:.4}, 0.0, 0.5, 0.5), vec4<f32>(1.0, 1.0, 1.0, {alpha:.4})); }}"
+    );
+    let layout = gpu
+        .device
+        .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[storage_buffer_entry(0, wgpu::ShaderStages::COMPUTE, false)],
+        });
+    let pipeline = create_compute_pipeline(
+        &gpu.device,
+        "shadow_instance_writer",
+        &shader,
+        &[&layout],
+        "main",
+    );
+    let binding = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: buffer.as_entire_binding(),
+        }],
+    });
+    let mut pass = encoder.begin_compute_pass(&Default::default());
+    pass.set_pipeline(&pipeline);
+    pass.set_bind_group(0, &binding, &[]);
+    pass.dispatch_workgroups(1, 1, 1);
+}
+
+fn shadow_config(filter: mikage::ShadowFilter) -> mikage::DirectionalShadowConfig {
+    mikage::DirectionalShadowConfig {
+        resolution: 64,
+        light_view_projection: glam::Mat4::from_cols(
+            glam::Vec4::X,
+            glam::Vec4::Y,
+            -glam::Vec4::Z,
+            glam::Vec4::new(0.0, 0.0, 1.0, 1.0),
+        ),
+        depth_bias: 0,
+        slope_bias: 0.0,
+        filter,
+        enabled: true,
+    }
+}
+
+#[test]
+fn gpu_written_instances_cast_on_solid_receivers_without_changing_ambient() {
+    gpu_test!(|gpu: GpuTest| {
+        let size = mikage::dpi::PhysicalSize::new(LIGHT_SIZE, LIGHT_SIZE);
+        for filter in [mikage::ShadowFilter::Hard, mikage::ShadowFilter::Pcf] {
+            let mut shadow = mikage::DirectionalShadow::new(&gpu, shadow_config(filter)).unwrap();
+            assert!(shadow.is_supported());
+            let scene = ColoredSceneBinding::new(&gpu.device);
+            scene.update_light_colors(
+                &gpu.queue,
+                SceneLightColors {
+                    ambient: glam::Vec3::Z,
+                    directional: glam::Vec3::X,
+                },
+            );
+            scene.update_lighting(
+                &gpu.queue,
+                SceneLighting {
+                    direction: glam::Vec3::Z,
+                    ambient_intensity: 0.2,
+                    directional_intensity: 0.8,
+                },
+            );
+            let destination = mikage::OffscreenTarget::new(
+                &gpu,
+                size,
+                RenderTargetConfig {
+                    sample_count: 4,
+                    ..TARGET_CONFIG
+                },
+            )
+            .unwrap();
+            let mut receiver = SolidRenderer::with_light_colors_and_shadows(
+                &gpu,
+                destination.render_target_config(),
+                &scene,
+                &shadow,
+            );
+            let id = lighting_object(&gpu, &mut receiver);
+            receiver.update_object(
+                &gpu,
+                id,
+                glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, -0.25)),
+                glam::Vec4::ONE,
+            );
+            receiver.set_shadow_options(
+                id,
+                mikage::ShadowOptions {
+                    cast: false,
+                    receive: true,
+                },
+            );
+            let mut caster = InstanceRenderer::with_light_colors_and_shadows(
+                &gpu,
+                destination.render_target_config(),
+                &scene,
+                &shadow,
+                &LIGHT_POSITIONS,
+                &LIGHT_NORMALS,
+                &LIGHT_INDICES,
+                InstanceRendererConfig {
+                    storage_binding: true,
+                    ..InstanceRendererConfig::default_3d()
+                },
+            );
+            for (x, alpha, enabled, cast, receive, expected) in [
+                (0.0, 1.0, false, true, true, [0.8, 0.0, 0.2]),
+                (0.0, 1.0, true, true, true, [0.0, 0.0, 0.2]),
+                (0.75, 1.0, true, true, true, [0.8, 0.0, 0.2]),
+                (0.0, 0.5, true, true, true, [0.8, 0.0, 0.2]),
+                (0.0, 1.0, false, true, true, [0.8, 0.0, 0.2]),
+                (0.0, 1.0, true, false, true, [0.8, 0.0, 0.2]),
+                (0.0, 1.0, true, true, false, [0.8, 0.0, 0.2]),
+            ] {
+                shadow.set_enabled(&gpu.queue, enabled);
+                caster.set_shadow_options(mikage::ShadowOptions {
+                    cast,
+                    receive: false,
+                });
+                receiver.set_shadow_options(
+                    id,
+                    mikage::ShadowOptions {
+                        cast: false,
+                        receive,
+                    },
+                );
+                let mut encoder = gpu.device.create_command_encoder(&Default::default());
+                write_shadow_instance(&gpu, &mut encoder, &mut caster, x, alpha);
+                if let Some(mut pass) = shadow.begin_pass(&mut encoder) {
+                    caster.render_shadow(&mut pass);
+                    receiver.render_shadow(&mut pass);
+                }
+                {
+                    let mut pass = target_pass(&mut encoder, &destination, wgpu::Color::BLACK);
+                    pass.set_bind_group(0, scene.bind_group(), &[]);
+                    receiver.render(&mut pass);
+                }
+                gpu.queue.submit([encoder.finish()]);
+                let pixels = readback_texture(
+                    &gpu.device,
+                    &gpu.queue,
+                    destination.texture(),
+                    LIGHT_SIZE,
+                    LIGHT_SIZE,
+                );
+                assert_linear_pixel(&pixels, 8, 8, expected);
+            }
+        }
+    });
+}
+
+#[test]
+fn solid_casters_and_instance_receivers_share_the_shadow_map_and_alpha_policy() {
+    gpu_test!(|gpu: GpuTest| {
+        let shadow =
+            mikage::DirectionalShadow::new(&gpu, shadow_config(mikage::ShadowFilter::Hard))
+                .unwrap();
+        let scene = SceneBinding::new(&gpu.device);
+        scene.update_lighting(
+            &gpu.queue,
+            SceneLighting {
+                direction: glam::Vec3::Z,
+                ambient_intensity: 0.2,
+                directional_intensity: 0.8,
+            },
+        );
+        let destination = mikage::OffscreenTarget::new(
+            &gpu,
+            mikage::dpi::PhysicalSize::new(LIGHT_SIZE, LIGHT_SIZE),
+            TARGET_CONFIG,
+        )
+        .unwrap();
+        let mut caster = SolidRenderer::with_shadows(&gpu, TARGET_CONFIG, scene.layout(), &shadow);
+        let id = lighting_object(&gpu, &mut caster);
+        let mut receiver = InstanceRenderer::with_shadows(
+            &gpu,
+            TARGET_CONFIG,
+            scene.layout(),
+            &shadow,
+            &LIGHT_POSITIONS,
+            &LIGHT_NORMALS,
+            &LIGHT_INDICES,
+            InstanceRendererConfig::default_3d(),
+        );
+        receiver.update_instances(
+            &gpu,
+            &[InstanceData {
+                pos_scale: [0.0, 0.0, -0.25, 1.0],
+                color: [1.0; 4],
+            }],
+        );
+        receiver.set_shadow_options(mikage::ShadowOptions {
+            cast: false,
+            receive: true,
+        });
+        for (alpha, receive, expected) in [(1.0, true, 0.2), (0.5, true, 1.0), (1.0, false, 1.0)] {
+            caster.update_object(
+                &gpu,
+                id,
+                glam::Mat4::from_scale_rotation_translation(
+                    glam::Vec3::splat(0.5),
+                    glam::Quat::IDENTITY,
+                    glam::Vec3::new(0.0, 0.0, 0.5),
+                ),
+                glam::Vec4::new(1.0, 1.0, 1.0, alpha),
+            );
+            receiver.set_shadow_options(mikage::ShadowOptions {
+                cast: false,
+                receive,
+            });
+            let mut encoder = gpu.device.create_command_encoder(&Default::default());
+            if let Some(mut pass) = shadow.begin_pass(&mut encoder) {
+                caster.render_shadow(&mut pass);
+                receiver.render_shadow(&mut pass);
+            }
+            {
+                let mut pass = target_pass(&mut encoder, &destination, wgpu::Color::BLACK);
+                pass.set_bind_group(0, scene.bind_group(), &[]);
+                receiver.render(&mut pass);
+            }
+            gpu.queue.submit([encoder.finish()]);
+            let pixels = readback_texture(
+                &gpu.device,
+                &gpu.queue,
+                destination.texture(),
+                LIGHT_SIZE,
+                LIGHT_SIZE,
+            );
+            assert_linear_pixel(&pixels, 8, 8, [expected; 3]);
+        }
+        assert!(
+            shadow
+                .update_matrix(&gpu.queue, glam::Mat4::from_cols_array(&[f32::NAN; 16]))
+                .is_err()
+        );
+        assert!(
+            mikage::DirectionalShadow::new(
+                &gpu,
+                mikage::DirectionalShadowConfig {
+                    resolution: 0,
+                    ..Default::default()
+                }
+            )
+            .is_err()
+        );
+    });
+}
+
+#[test]
+fn unsupported_shadow_limits_fall_back_to_standard_renderers() {
+    gpu_test!(|gpu: GpuTest| {
+        drop(gpu);
+        let mut descriptor = GpuDescriptor::default();
+        descriptor.requirements.required_limits = Some(wgpu::Limits {
+            max_bind_groups: 2,
+            max_bindings_per_bind_group: 1,
+            max_inter_stage_shader_variables: 2,
+            ..Default::default()
+        });
+        let gpu = pollster::block_on(GpuContext::headless(descriptor)).unwrap();
+        assert_eq!(gpu.device.limits().max_bind_groups, 2);
+        let shadow =
+            mikage::DirectionalShadow::new(&gpu, shadow_config(mikage::ShadowFilter::Hard))
+                .unwrap();
+        assert!(!shadow.is_supported());
+        let scene = SceneBinding::new(&gpu.device);
+        scene.update_lighting(
+            &gpu.queue,
+            SceneLighting {
+                ambient_intensity: 0.3,
+                directional_intensity: 0.0,
+                ..Default::default()
+            },
+        );
+        let mut solid = SolidRenderer::with_shadows(&gpu, TARGET_CONFIG, scene.layout(), &shadow);
+        let id = lighting_object(&gpu, &mut solid);
+        solid.update_object(&gpu, id, glam::Mat4::IDENTITY, glam::Vec4::ONE);
+        let pixels = render_solid_scene(&gpu, LIGHT_SIZE, LIGHT_SIZE, &solid, &scene);
+        assert_linear_pixel(&pixels, 8, 8, [0.3; 3]);
+        let mut instances = InstanceRenderer::with_shadows(
+            &gpu,
+            TARGET_CONFIG,
+            scene.layout(),
+            &shadow,
+            &LIGHT_POSITIONS,
+            &LIGHT_NORMALS,
+            &LIGHT_INDICES,
+            InstanceRendererConfig::default_3d(),
+        );
+        instances.update_instances(
+            &gpu,
+            &[InstanceData {
+                pos_scale: [0.0, 0.0, 0.0, 1.0],
+                color: [1.0; 4],
+            }],
+        );
+        let target = mikage::OffscreenTarget::new(
+            &gpu,
+            mikage::dpi::PhysicalSize::new(LIGHT_SIZE, LIGHT_SIZE),
+            TARGET_CONFIG,
+        )
+        .unwrap();
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        assert!(shadow.begin_pass(&mut encoder).is_none());
+        {
+            let mut pass = target_pass(&mut encoder, &target, wgpu::Color::BLACK);
+            pass.set_bind_group(0, scene.bind_group(), &[]);
+            instances.render(&mut pass);
+        }
+        gpu.queue.submit([encoder.finish()]);
+        let pixels = readback_texture(
+            &gpu.device,
+            &gpu.queue,
+            target.texture(),
+            LIGHT_SIZE,
+            LIGHT_SIZE,
+        );
+        assert_linear_pixel(&pixels, 8, 8, [0.3; 3]);
+    });
+}
+
 // ===========================================================================
 // 5. Mesh snapshot tests
 // ===========================================================================

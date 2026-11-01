@@ -3,9 +3,7 @@
 
 #import mikage::scene_types
 #import mikage::lighting
-#import mikage::light_colors
 @group(0) @binding(0) var<uniform> scene: SceneUniform;
-@group(0) @binding(1) var<uniform> light_colors: LightColors;
 
 struct ModelUniform {
     model: mat4x4<f32>,
@@ -42,12 +40,6 @@ fn fragment_lit(in: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(lit_color, model_data.color.a);
 }
 
-@fragment
-fn fragment_colored(in: VertexOutput) -> @location(0) vec4<f32> {
-    let lit_color = colored_scene_lambert(model_data.color.rgb, normalize(in.world_normal),
-        scene.light_dir.xyz, scene.ambient, light_colors.ambient.rgb, light_colors.directional.rgb);
-    return vec4<f32>(lit_color, model_data.color.a);
-}
 
 // Unlit fragment for transparent objects
 @fragment

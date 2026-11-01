@@ -4,6 +4,9 @@
 
 ### Added
 
+- **Shared directional shadows** — Add `DirectionalShadow` and opt-in standard solid/instance constructors that reuse existing meshes, model buffers and GPU-written instance data. Include per-object/batch cast/receive controls, hard/2x2 comparison filtering, explicit light bounds and raster bias, opaque-only casting, and an unshadowed fallback for unsupported devices. Shadows preserve ambient illumination. See [shadows](docs/shadows.md).
+- **HDR and exposure** — Add `HDR_FORMAT` (`Rgba16Float`) and a reusable `ToneMapper` with independent EV exposure, Reinhard/exposure-only operators, explicit linear/sRGB output and MSAA resolve support. Compose depth-tested geometry and transparency in linear HDR before mapping; the direct rendering default is unchanged. See [HDR output](docs/hdr-output.md).
+- **Combined lighting example** — Add `lighting_pipeline` with GPU-generated instances, colored lights, shadows, HDR, transparent geometry and 4x MSAA. Camera/lighting/shadow/exposure changes and final PNG captures work with zero simulation ticks.
 - **Independent light colors** — Opt into linear ambient and directional RGB with `SceneLightColors`, `ColoredSceneBinding`, and `SolidRenderer::with_light_colors` / `InstanceRenderer::with_light_colors`. Colors default to white and remain independent of scalar gains. Camera/gain updates preserve colors; material alpha and unlit behavior are unchanged. The original `SceneBinding`, 112-byte `SceneUniform`, and renderer constructors remain compatible.
 - **Colored-light example and custom shaders** — Add a paused solid/instance demonstration with 4x MSAA and headless PNG capture. Publish the `mikage::light_colors` WGSL uniform and `colored_scene_lambert` helper. See [lighting](docs/lighting.md#independent-light-colors).
 

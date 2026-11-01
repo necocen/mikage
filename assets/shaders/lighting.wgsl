@@ -26,3 +26,10 @@ fn colored_scene_lambert(color: vec3<f32>, normal: vec3<f32>, light_dir: vec3<f3
     let directional = select(lighting.y, 1.0 - lighting.x, lighting.z == 0.0);
     return color * (ambient_color * lighting.x + directional_color * (directional * diffuse));
 }
+
+// Visibility affects directional illumination only, retaining ambient fill.
+fn shadowed_scene_lambert(color: vec3<f32>, normal: vec3<f32>, light_dir: vec3<f32>, lighting: vec4<f32>, ambient_color: vec3<f32>, directional_color: vec3<f32>, visibility: f32) -> vec3<f32> {
+    let diffuse = max(dot(normal, light_dir), 0.0);
+    let directional = select(lighting.y, 1.0 - lighting.x, lighting.z == 0.0);
+    return color * (ambient_color * lighting.x + directional_color * (directional * diffuse * visibility));
+}

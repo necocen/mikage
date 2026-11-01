@@ -153,7 +153,15 @@ pub struct InstanceRenderer<V: InstanceVertex = InstanceData> {
     instance_buffer_usage: wgpu::BufferUsages,
     instance_capacity: u32,
     instance_count: u32,
+    shadows: Option<InstanceShadowPipelines>,
+    shadow_options: crate::ShadowOptions,
     _phantom: PhantomData<V>,
+}
+
+struct InstanceShadowPipelines {
+    caster: wgpu::RenderPipeline,
+    receiver: Option<wgpu::RenderPipeline>,
+    bind_group: wgpu::BindGroup,
 }
 
 const INITIAL_INSTANCE_CAPACITY: u32 = 1024;
@@ -168,6 +176,70 @@ pub struct ComputeBufferState<'a> {
 }
 
 impl InstanceRenderer<InstanceData> {
+    /// Reuses the current instance buffer (including GPU-written data) for
+    /// shadows. Alpha below one is discarded in the caster fragment shader.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_shadows(
+        gpu: &crate::GpuContext,
+        target: crate::RenderTargetConfig,
+        scene_layout: &wgpu::BindGroupLayout,
+        shadow: &crate::DirectionalShadow,
+        positions: &[[f32; 3]],
+        normals: &[[f32; 3]],
+        indices: &[u32],
+        config: InstanceRendererConfig,
+    ) -> Self {
+        let mut shader = SHADER_SOURCE.to_owned();
+        if config.fragment_entry == "fragment_colored" || shadow.is_supported() {
+            shader.push_str(include_str!(
+                "../assets/shaders/instancing_light_colors.wgsl"
+            ));
+        }
+        if shadow.is_supported() {
+            shader.push_str(include_str!("../assets/shaders/instancing_shadows.wgsl"));
+        }
+        let source = mikage_shader_processor()
+            .resolve(&shader)
+            .expect("resolve instancing shader");
+        Self::create(
+            gpu,
+            target,
+            scene_layout,
+            positions,
+            normals,
+            indices,
+            &source,
+            config,
+            Some(shadow),
+        )
+    }
+
+    /// Composes RGB light colors and shadows. Bind the colored scene at group 0.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_light_colors_and_shadows(
+        gpu: &crate::GpuContext,
+        target: crate::RenderTargetConfig,
+        scene: &crate::ColoredSceneBinding,
+        shadow: &crate::DirectionalShadow,
+        positions: &[[f32; 3]],
+        normals: &[[f32; 3]],
+        indices: &[u32],
+        mut config: InstanceRendererConfig,
+    ) -> Self {
+        if config.fragment_entry == "fragment_lit" {
+            config.fragment_entry = "fragment_colored";
+        }
+        Self::with_shadows(
+            gpu,
+            target,
+            scene.layout(),
+            shadow,
+            positions,
+            normals,
+            indices,
+            config,
+        )
+    }
     /// Creates an `InstanceRenderer` using the built-in instancing shader.
     ///
     /// This is a convenience constructor for the default [`InstanceData`] layout
@@ -182,8 +254,14 @@ impl InstanceRenderer<InstanceData> {
         indices: &[u32],
         config: InstanceRendererConfig,
     ) -> Self {
+        let mut source = SHADER_SOURCE.to_owned();
+        if config.fragment_entry == "fragment_colored" {
+            source.push_str(include_str!(
+                "../assets/shaders/instancing_light_colors.wgsl"
+            ));
+        }
         let resolved = mikage_shader_processor()
-            .resolve(SHADER_SOURCE)
+            .resolve(&source)
             .expect("failed to resolve instancing shader imports");
         Self::with_shader(
             gpu,
@@ -215,8 +293,14 @@ impl InstanceRenderer<InstanceData> {
         if config.fragment_entry == "fragment_lit" {
             config.fragment_entry = "fragment_colored";
         }
+        let mut source = SHADER_SOURCE.to_owned();
+        if config.fragment_entry == "fragment_colored" {
+            source.push_str(include_str!(
+                "../assets/shaders/instancing_light_colors.wgsl"
+            ));
+        }
         let resolved = mikage_shader_processor()
-            .resolve(SHADER_SOURCE)
+            .resolve(&source)
             .expect("failed to resolve instancing shader imports");
         Self::with_shader(
             gpu,
@@ -250,6 +334,31 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
         shader_source: &str,
         config: InstanceRendererConfig,
     ) -> Self {
+        Self::create(
+            gpu,
+            target,
+            scene_bind_group_layout,
+            positions,
+            normals,
+            indices,
+            shader_source,
+            config,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn create(
+        gpu: &crate::GpuContext,
+        target: crate::RenderTargetConfig,
+        scene_bind_group_layout: &wgpu::BindGroupLayout,
+        positions: &[[f32; 3]],
+        normals: &[[f32; 3]],
+        indices: &[u32],
+        shader_source: &str,
+        config: InstanceRendererConfig,
+        shadow: Option<&crate::DirectionalShadow>,
+    ) -> Self {
         let device = &gpu.device;
         let mesh = MeshBuffers::from_position_normal(device, positions, normals, indices);
 
@@ -270,9 +379,13 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
             source: wgpu::ShaderSource::Wgsl(shader_source.into()),
         });
 
+        let mut layouts = vec![Some(scene_bind_group_layout)];
+        if let Some(layout) = shadow.and_then(|s| s.receiver_layout()) {
+            layouts.push(Some(layout));
+        }
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("instancing_pipeline_layout"),
-            bind_group_layouts: &[Some(scene_bind_group_layout)],
+            bind_group_layouts: &layouts,
             immediate_size: 0,
         });
 
@@ -296,14 +409,17 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
             None
         };
 
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let mut descriptor = wgpu::RenderPipelineDescriptor {
             label: Some("instancing_pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader_module,
                 entry_point: Some(config.vertex_entry),
                 compilation_options: Default::default(),
-                buffers: &[Some(POSITION_NORMAL_LAYOUT), Some(instance_buffer_layout)],
+                buffers: &[
+                    Some(POSITION_NORMAL_LAYOUT),
+                    Some(instance_buffer_layout.clone()),
+                ],
             },
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -332,6 +448,31 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
             }),
             multiview_mask: None,
             cache: None,
+        };
+        let pipeline = device.create_render_pipeline(&descriptor);
+        let shadows = shadow.and_then(|shadow| {
+            let resources = shadow.resources.as_ref()?;
+            let entry = match config.fragment_entry {
+                "fragment_lit" => Some("fragment_shadowed"),
+                "fragment_colored" => Some("fragment_shadowed_colored"),
+                _ => None,
+            };
+            let receiver = entry.map(|entry| {
+                descriptor.vertex.entry_point = Some("vertex_shadowed");
+                descriptor.fragment.as_mut().unwrap().entry_point = Some(entry);
+                device.create_render_pipeline(&descriptor)
+            });
+            Some(InstanceShadowPipelines {
+                caster: shadow.caster_pipeline(
+                    device,
+                    &shader_module,
+                    &[Some(POSITION_NORMAL_LAYOUT), Some(instance_buffer_layout)],
+                    None,
+                    Some("fragment_shadow_depth"),
+                )?,
+                receiver,
+                bind_group: resources.bind_group.clone(),
+            })
         });
 
         Self {
@@ -343,6 +484,8 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
             instance_buffer_usage: instance_usage,
             instance_capacity: INITIAL_INSTANCE_CAPACITY,
             instance_count: 0,
+            shadows,
+            shadow_options: crate::ShadowOptions::default(),
             _phantom: PhantomData,
         }
     }
@@ -449,7 +592,40 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
         if self.instance_count == 0 {
             return;
         }
-        pass.set_pipeline(&self.pipeline);
+        let pipeline = if self.shadow_options.receive {
+            self.shadows
+                .as_ref()
+                .and_then(|s| s.receiver.as_ref())
+                .unwrap_or(&self.pipeline)
+        } else {
+            &self.pipeline
+        };
+        if let Some(shadows) = &self.shadows {
+            pass.set_bind_group(1, &shadows.bind_group, &[]);
+        }
+        pass.set_pipeline(pipeline);
+        pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+        pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..self.index_count, 0, 0..self.instance_count);
+    }
+
+    /// Batch-wide cast/receive selection, retained across instance updates/growth.
+    /// Transparent instances are always excluded from casting on the GPU.
+    pub fn set_shadow_options(&mut self, options: crate::ShadowOptions) {
+        self.shadow_options = options;
+    }
+
+    /// Draw the same current GPU instance buffer into `DirectionalShadow::begin_pass`.
+    /// No readback, geometry duplication, or simulation work is performed.
+    pub fn render_shadow<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
+        if !self.shadow_options.cast || self.instance_count == 0 {
+            return;
+        }
+        let Some(shadows) = &self.shadows else {
+            return;
+        };
+        pass.set_pipeline(&shadows.caster);
         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
         pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);

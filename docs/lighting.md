@@ -35,10 +35,10 @@ disable the light with `directional_intensity: 0.0`. Scaling both intensities
 scales brightness, so `(0.2, 0.8)` and `(0.4, 1.6)` produce different results.
 The default `(0.3, 0.7)` reproduces the default legacy light.
 
-There is no separate exposure, tone mapping, gamma adjustment, or physical lux
-unit. For a global exposure multiplier, multiply both gains by the same factor.
-Unorm attachments clamp out-of-range output; use an app-owned floating-point
-target and tone-mapping pass when HDR is needed. Lighting never changes alpha.
+Lighting gains have no physical lux unit. Use the opt-in [HDR/exposure pass](hdr-output.md)
+for exposure independent of light balance and a shared display mapping path.
+Direct unorm rendering still clamps out-of-range output; the default path is unchanged.
+Lighting never changes alpha.
 
 ## Independent light colors
 
@@ -169,11 +169,18 @@ to opt into independent gains. Existing custom shaders and the imported
 must opt into `scene_lambert(color, normal, scene.light_dir.xyz, scene.ambient)`
 from `mikage::lighting` to consume the independent directional gain.
 
+## Directional shadows
+
+Use `DirectionalShadow` with the standard renderers' `with_shadows` or
+`with_light_colors_and_shadows` constructors for a shared single-light caster/receiver
+path. Existing mesh, model, and GPU-written instance buffers are reused.
+See [directional shadows](shadows.md) for bounds, bias, filtering, cast/receive
+controls, transparency policy, and native/WebGPU support.
+
 ## Custom shadow passes
 
-Built-in renderers do not allocate shadow maps or cast/receive shadows. The
-supported extension is an application-owned wgpu depth pass and receiver
-pipeline, encoded through the existing `App` hooks:
+For cascades, point lights, transmission, or a different shading model, an
+application-owned depth pass and receiver pipeline can use the existing `App` hooks:
 
 1. Create a **single-sample** depth texture with `RENDER_ATTACHMENT |
    TEXTURE_BINDING`, a comparison sampler, a light view-projection uniform, and
@@ -198,16 +205,15 @@ pipeline, encoded through the existing `App` hooks:
    leave ambient unchanged. Configure depth/slope bias and filtering for the
    scene's scale to limit acne and detached shadows.
 
-`SolidRenderer` owns its fixed shaders, layouts, and object buffers; it cannot
-be given an extra shadow bind group. `InstanceRenderer::with_shader` supports
+Default `SolidRenderer` pipelines have fixed layouts; use its shadow constructors
+for the built-in single-light path, or app-owned geometry for other layouts.
+`InstanceRenderer::with_shader` supports
 custom WGSL but its pipeline layout contains only the supplied group 0 layout.
 For a conventional extra-group shadow pipeline, construct the wgpu pipeline
 directly and retain app-owned geometry. A custom instancing shader can instead
 use an app-defined group 0 layout containing the scene and shadow resources.
 
-Transparent casters require an application policy (exclude them, alpha-test,
-or a transmission technique); ordinary depth maps do not model fractional
-transmission. Cascades, point-light shadows, shadow caching, and a built-in
-shadow material API are outside the current helper scope. This extension path
-addresses the shadow-scope requirement in Issue #10 without promising those
-features.
+Ordinary depth maps do not model fractional transmission. The built-in path
+excludes transparent casters and supports lit transparent receivers. Cascades,
+point-light shadows, and transmission remain outside the single-light helper.
+Custom passes can implement a different policy explicitly.

@@ -350,6 +350,17 @@ are linear RGB, default to white, and stay independent of intensity. See the
 `cargo run --example light_colors` for neutral solid and instance meshes under
 cool ambient and warm directional light.
 
+Add a shared directional shadow map with `DirectionalShadow` and the standard
+renderers' `with_shadows` / `with_light_colors_and_shadows` constructors.
+Cast/receive controls, bias and comparison filtering are described in the
+[shadow guide](docs/shadows.md).
+
+For highlights above one, render into an `OffscreenTarget` using `HDR_FORMAT`
+and finish with `ToneMapper`. It supplies independent EV exposure, Reinhard
+mapping and explicit linear/sRGB output. See [HDR output](docs/hdr-output.md).
+`cargo run --example lighting_pipeline` combines colors, shadows, GPU-written
+instances, HDR and paused headless capture.
+
 ### InstanceRenderer
 
 Renders many copies of a single mesh with per-instance data. Generic over the `InstanceVertex` trait — use the built-in `InstanceData` (position + scale + color, 32 bytes) or define your own layout:
@@ -459,6 +470,8 @@ cargo run --example instancing_2d      # Hex grid with Camera2d
 cargo run --example instancing_3d      # Sphere grid with wave animation
 cargo run --example custom_instance    # Custom instance vertex layout
 cargo run --example boids              # GPU compute flocking
+cargo run --example light_colors       # Independent ambient/directional RGB
+cargo run --example lighting_pipeline  # Shadows, HDR and EV exposure
 cargo run --no-default-features --example headless
 cargo run --example agent_capture --features agent
 ```

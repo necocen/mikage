@@ -21,6 +21,8 @@ pub const LIGHTING_WGSL: &str = include_str!("../assets/shaders/lighting.wgsl");
 
 /// WGSL `LightColors` struct for [`ColoredSceneBinding`](crate::ColoredSceneBinding).
 pub const LIGHT_COLORS_WGSL: &str = include_str!("../assets/shaders/light_colors.wgsl");
+/// WGSL parameters and directional visibility helper for custom shadow receivers.
+pub const SHADOWS_WGSL: &str = include_str!("../assets/shaders/shadows.wgsl");
 
 /// Errors that can occur during shader import resolution.
 #[derive(Debug, Clone)]
@@ -70,6 +72,7 @@ impl ShaderProcessor {
         sp.register("mikage::color_utils", COLOR_UTILS_WGSL);
         sp.register("mikage::lighting", LIGHTING_WGSL);
         sp.register("mikage::light_colors", LIGHT_COLORS_WGSL);
+        sp.register("mikage::shadows", SHADOWS_WGSL);
         sp
     }
 

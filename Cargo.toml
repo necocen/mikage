@@ -89,5 +89,9 @@ name = "light_colors"
 required-features = ["window-gui"]
 
 [[example]]
+name = "lighting_pipeline"
+required-features = ["window-gui"]
+
+[[example]]
 name = "agent_capture"
 required-features = ["window", "agent"]
