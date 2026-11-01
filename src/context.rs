@@ -387,7 +387,25 @@ impl GpuContext {
             capabilities,
         })
     }
-    fn format_features(&self, format: wgpu::TextureFormat) -> wgpu::TextureFormatFeatures {
+    pub(crate) fn supports_shadow_sampling(&self) -> bool {
+        let limits = self.device.limits();
+        self.capabilities.adapter_info.backend != wgpu::Backend::Gl
+            && self
+                .adapter
+                .get_downlevel_capabilities()
+                .flags
+                .contains(wgpu::DownlevelFlags::COMPARISON_SAMPLERS)
+            && limits.max_bind_groups >= 3
+            && limits.max_bindings_per_bind_group >= 3
+            && limits.max_uniform_buffers_per_shader_stage >= 4
+            && limits.max_sampled_textures_per_shader_stage >= 1
+            && limits.max_samplers_per_shader_stage >= 1
+            && limits.max_inter_stage_shader_variables >= 3
+    }
+    pub(crate) fn format_features(
+        &self,
+        format: wgpu::TextureFormat,
+    ) -> wgpu::TextureFormatFeatures {
         if self
             .device
             .features()

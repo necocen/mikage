@@ -291,6 +291,141 @@ impl SceneBinding {
     }
 }
 
+/// Independent **linear RGB** light colors. Intensity remains in [`SceneLighting`].
+///
+/// Both default to white. Components above one are allowed; negative or non-finite
+/// components become zero on upload. Values are not normalized or sRGB-decoded.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SceneLightColors {
+    pub ambient: glam::Vec3,
+    pub directional: glam::Vec3,
+}
+
+impl Default for SceneLightColors {
+    fn default() -> Self {
+        Self {
+            ambient: glam::Vec3::ONE,
+            directional: glam::Vec3::ONE,
+        }
+    }
+}
+
+impl SceneLightColors {
+    fn uniform_fields(self) -> [[f32; 4]; 2] {
+        let encode = |color: glam::Vec3| {
+            let [r, g, b] = color
+                .to_array()
+                .map(|c| if c.is_finite() { c.max(0.0) } else { 0.0 });
+            [r, g, b, 0.0]
+        };
+        [encode(self.ambient), encode(self.directional)]
+    }
+}
+
+/// Opt-in scene binding with independent ambient and directional RGB colors.
+///
+/// Group 0 binding 0 retains the 112-byte [`SceneUniform`]. Binding 1 adds the
+/// 32-byte `LightColors` uniform from `mikage::light_colors` (two vec4s: ambient,
+/// directional; w is reserved). Use [`SolidRenderer::with_light_colors`](crate::SolidRenderer::with_light_colors)
+/// or [`InstanceRenderer::with_light_colors`](crate::InstanceRenderer::with_light_colors).
+/// Existing constructors and [`SceneBinding`] continue to use only binding 0.
+///
+/// ```no_run
+/// use mikage::{ColoredSceneBinding, SceneLightColors, SceneLighting, glam::Vec3, wgpu};
+/// # fn configure(device: &wgpu::Device, queue: &wgpu::Queue) {
+/// let scene = ColoredSceneBinding::new(device);
+/// scene.update_lighting(queue, SceneLighting::default());
+/// scene.update_light_colors(queue, SceneLightColors {
+///     ambient: Vec3::new(0.2, 0.4, 1.0),
+///     directional: Vec3::new(1.0, 0.6, 0.2),
+/// });
+/// // Camera updates preserve both the gains and colors.
+/// scene.update_camera(queue, &(), 1.0);
+/// # }
+/// ```
+pub struct ColoredSceneBinding {
+    scene: SceneBinding,
+    layout: wgpu::BindGroupLayout,
+    colors_buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+}
+
+impl ColoredSceneBinding {
+    /// Creates an identity camera, default gains, and white light colors.
+    pub fn new(device: &wgpu::Device) -> Self {
+        let scene = SceneBinding::new(device);
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("colored_scene_layout"),
+            entries: &[
+                super::uniform_buffer_entry(
+                    0,
+                    wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ),
+                super::uniform_buffer_entry(1, wgpu::ShaderStages::FRAGMENT),
+            ],
+        });
+        let colors_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("scene_light_colors"),
+            contents: bytemuck::bytes_of(&SceneLightColors::default().uniform_fields()),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("colored_scene_bind_group"),
+            layout: &layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: scene.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: colors_buffer.as_entire_binding(),
+                },
+            ],
+        });
+        Self {
+            scene,
+            layout,
+            colors_buffer,
+            bind_group,
+        }
+    }
+
+    /// Group 0 layout containing scene (binding 0) and colors (binding 1).
+    pub fn layout(&self) -> &wgpu::BindGroupLayout {
+        &self.layout
+    }
+
+    /// Group 0 bind group for both built-in colored renderers and custom shaders.
+    pub fn bind_group(&self) -> &wgpu::BindGroup {
+        &self.bind_group
+    }
+
+    /// Replaces camera and gain/direction fields, preserving uploaded colors.
+    pub fn update(&self, queue: &wgpu::Queue, uniform: &SceneUniform) {
+        self.scene.update(queue, uniform);
+    }
+
+    /// Changes camera matrices/position, preserving both lighting gains and colors.
+    pub fn update_camera(&self, queue: &wgpu::Queue, camera: &(impl Camera + ?Sized), aspect: f32) {
+        self.scene.update_camera(queue, camera, aspect);
+    }
+
+    /// Changes lighting gains/direction, preserving camera and light colors.
+    pub fn update_lighting(&self, queue: &wgpu::Queue, lighting: SceneLighting) {
+        self.scene.update_lighting(queue, lighting);
+    }
+
+    /// Changes linear RGB colors, preserving camera, direction, and intensity.
+    pub fn update_light_colors(&self, queue: &wgpu::Queue, colors: SceneLightColors) {
+        queue.write_buffer(
+            &self.colors_buffer,
+            0,
+            bytemuck::bytes_of(&colors.uniform_fields()),
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -394,6 +529,24 @@ mod tests {
                 assert_eq!(u.ambient, [0.0, 0.0, 1.0, 0.0]);
             }
         }
+    }
+
+    #[test]
+    fn light_colors_default_to_white_and_sanitize_channels_independently() {
+        assert_eq!(
+            SceneLightColors::default().uniform_fields(),
+            [[1.0, 1.0, 1.0, 0.0]; 2]
+        );
+        let colors = SceneLightColors {
+            ambient: Vec3::new(-1.0, f32::NAN, 2.0),
+            directional: Vec3::new(f32::INFINITY, 0.25, f32::NEG_INFINITY),
+        };
+        assert_eq!(
+            colors.uniform_fields(),
+            [[0.0, 0.0, 2.0, 0.0], [0.0, 0.25, 0.0, 0.0]]
+        );
+        assert_eq!(std::mem::size_of_val(&colors.uniform_fields()), 32);
+        assert_eq!(std::mem::size_of::<SceneUniform>(), 112);
     }
 
     #[test]

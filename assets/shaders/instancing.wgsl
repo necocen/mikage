@@ -44,6 +44,7 @@ fn fragment_lit(in: VertexOut) -> @location(0) vec4<f32> {
     return vec4<f32>(lit_color, in.color.a);
 }
 
+
 @fragment
 fn fragment_unlit(in: VertexOut) -> @location(0) vec4<f32> {
     return in.color;

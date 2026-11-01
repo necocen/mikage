@@ -10,4 +10,7 @@ pub use mesh::{
     CubeMesh, IcoSphereMesh, MeshBuffers, POSITION_NORMAL_LAYOUT, PlaneMesh, QuadMesh2d,
     RegularPolygonMesh,
 };
-pub use scene::{DEPTH_FORMAT, SceneBinding, SceneLighting, SceneUniform, create_depth_texture};
+pub use scene::{
+    ColoredSceneBinding, DEPTH_FORMAT, SceneBinding, SceneLightColors, SceneLighting, SceneUniform,
+    create_depth_texture,
+};

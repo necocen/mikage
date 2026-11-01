@@ -111,6 +111,14 @@ struct ObjectData {
     /// Current alpha value; determines opaque vs. transparent pipeline.
     alpha: f32,
     shading: SolidShading,
+    shadows: crate::ShadowOptions,
+}
+
+struct SolidShadowPipelines {
+    opaque: wgpu::RenderPipeline,
+    transparent: wgpu::RenderPipeline,
+    caster: wgpu::RenderPipeline,
+    bind_group: wgpu::BindGroup,
 }
 
 /// Renders solid-colored meshes with SceneUniform lighting.
@@ -133,6 +141,7 @@ pub struct SolidRenderer {
     transparent_lit_pipeline: wgpu::RenderPipeline,
     model_bind_group_layout: wgpu::BindGroupLayout,
     objects: Vec<ObjectData>,
+    shadows: Option<SolidShadowPipelines>,
 }
 
 impl SolidRenderer {
@@ -146,6 +155,54 @@ impl SolidRenderer {
         target: crate::RenderTargetConfig,
         scene_bind_group_layout: &wgpu::BindGroupLayout,
     ) -> Self {
+        Self::create(gpu, target, scene_bind_group_layout, "fragment_lit", None)
+    }
+
+    /// Uses independent linear RGB light colors from a [`ColoredSceneBinding`](crate::ColoredSceneBinding).
+    /// Bind that scene's group 0 before rendering. Unlit objects ignore light colors.
+    /// All opacity, depth, culling, and draw-order rules remain the same.
+    pub fn with_light_colors(
+        gpu: &crate::GpuContext,
+        target: crate::RenderTargetConfig,
+        scene: &crate::ColoredSceneBinding,
+    ) -> Self {
+        Self::create(gpu, target, scene.layout(), "fragment_colored", None)
+    }
+
+    /// Reuses each object's geometry and model buffer for casting/receiving.
+    /// Unsupported shadow sampling falls back to ordinary white lighting.
+    pub fn with_shadows(
+        gpu: &crate::GpuContext,
+        target: crate::RenderTargetConfig,
+        scene_layout: &wgpu::BindGroupLayout,
+        shadows: &crate::DirectionalShadow,
+    ) -> Self {
+        Self::create(gpu, target, scene_layout, "fragment_lit", Some(shadows))
+    }
+
+    /// Composes colored illumination and shadows; only directional light is masked.
+    pub fn with_light_colors_and_shadows(
+        gpu: &crate::GpuContext,
+        target: crate::RenderTargetConfig,
+        scene: &crate::ColoredSceneBinding,
+        shadows: &crate::DirectionalShadow,
+    ) -> Self {
+        Self::create(
+            gpu,
+            target,
+            scene.layout(),
+            "fragment_colored",
+            Some(shadows),
+        )
+    }
+
+    fn create(
+        gpu: &crate::GpuContext,
+        target: crate::RenderTargetConfig,
+        scene_bind_group_layout: &wgpu::BindGroupLayout,
+        lit_fragment: &str,
+        shadows: Option<&crate::DirectionalShadow>,
+    ) -> Self {
         let device = &gpu.device;
         // Model bind group layout: single uniform buffer at binding 0
         let model_bind_group_layout =
@@ -157,20 +214,32 @@ impl SolidRenderer {
                 )],
             });
 
+        let mut source = SHADER_SOURCE.to_owned();
+        if lit_fragment == "fragment_colored" || shadows.is_some_and(|shadow| shadow.is_supported())
+        {
+            source.push_str(include_str!("../assets/shaders/solid_light_colors.wgsl"));
+        }
+        if shadows.is_some_and(|shadow| shadow.is_supported()) {
+            source.push_str(include_str!("../assets/shaders/solid_shadows.wgsl"));
+        }
         let resolved_source = mikage_shader_processor()
-            .resolve(SHADER_SOURCE)
+            .resolve(&source)
             .expect("failed to resolve solid shader imports");
         let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("solid_shader"),
             source: wgpu::ShaderSource::Wgsl(resolved_source.into()),
         });
 
+        let mut layouts = vec![
+            Some(scene_bind_group_layout),
+            Some(&model_bind_group_layout),
+        ];
+        if let Some(layout) = shadows.and_then(|s| s.receiver_layout()) {
+            layouts.push(Some(layout));
+        }
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("solid_pipeline_layout"),
-            bind_group_layouts: &[
-                Some(scene_bind_group_layout),
-                Some(&model_bind_group_layout),
-            ],
+            bind_group_layouts: &layouts,
             immediate_size: 0,
         });
 
@@ -207,7 +276,7 @@ impl SolidRenderer {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader_module,
-                entry_point: Some("fragment_lit"),
+                entry_point: Some(lit_fragment),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: target.color_format,
@@ -273,8 +342,37 @@ impl SolidRenderer {
             .fragment
             .as_mut()
             .unwrap()
-            .entry_point = Some("fragment_lit");
+            .entry_point = Some(lit_fragment);
         let transparent_lit_pipeline = device.create_render_pipeline(&transparent_descriptor);
+
+        let shadows = shadows.and_then(|shadow| {
+            let resources = shadow.resources.as_ref()?;
+            let entry = if lit_fragment == "fragment_colored" {
+                "fragment_shadowed_colored"
+            } else {
+                "fragment_shadowed"
+            };
+            opaque_descriptor.vertex.entry_point = Some("vertex_shadowed");
+            transparent_descriptor.vertex.entry_point = Some("vertex_shadowed");
+            opaque_descriptor.fragment.as_mut().unwrap().entry_point = Some(entry);
+            transparent_descriptor
+                .fragment
+                .as_mut()
+                .unwrap()
+                .entry_point = Some(entry);
+            Some(SolidShadowPipelines {
+                opaque: device.create_render_pipeline(&opaque_descriptor),
+                transparent: device.create_render_pipeline(&transparent_descriptor),
+                caster: shadow.caster_pipeline(
+                    device,
+                    &shader_module,
+                    &[Some(POSITION_NORMAL_LAYOUT)],
+                    Some(&model_bind_group_layout),
+                    None,
+                )?,
+                bind_group: resources.bind_group.clone(),
+            })
+        });
 
         Self {
             opaque_pipeline,
@@ -283,6 +381,7 @@ impl SolidRenderer {
             transparent_lit_pipeline,
             model_bind_group_layout,
             objects: Vec::new(),
+            shadows,
         }
     }
 
@@ -332,6 +431,7 @@ impl SolidRenderer {
             bind_group,
             alpha: 1.0,
             shading: SolidShading::Auto,
+            shadows: crate::ShadowOptions::default(),
         });
 
         id
@@ -378,6 +478,32 @@ impl SolidRenderer {
             .shading = shading;
     }
 
+    /// Select casting/receiving per object. Alpha below one always excludes a
+    /// caster; receiving on lit transparent surfaces remains supported.
+    pub fn set_shadow_options(&mut self, id: SolidObjectId, options: crate::ShadowOptions) {
+        self.objects
+            .get_mut(id.0)
+            .expect("invalid SolidObjectId")
+            .shadows = options;
+    }
+
+    /// Draw existing opaque meshes in `DirectionalShadow::begin_pass`, without
+    /// copying geometry or changing the scene camera/simulation.
+    pub fn render_shadow<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
+        let Some(shadows) = &self.shadows else {
+            return;
+        };
+        pass.set_pipeline(&shadows.caster);
+        for obj in &self.objects {
+            if obj.shadows.cast && obj.alpha >= 1.0 {
+                pass.set_bind_group(1, &obj.bind_group, &[]);
+                pass.set_vertex_buffer(0, obj.vertex_buffer.slice(..));
+                pass.set_index_buffer(obj.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..obj.index_count, 0, 0..1);
+            }
+        }
+    }
+
     /// Renders all objects.
     ///
     /// Opaque objects (alpha >= 1.0) are drawn first, then transparent objects
@@ -387,11 +513,20 @@ impl SolidRenderer {
     /// The caller must set the scene bind group at `@group(0)` before calling
     /// this method (via `pass.set_bind_group(0, &scene_bind_group, &[])`).
     pub fn render<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
+        if let Some(shadows) = &self.shadows {
+            pass.set_bind_group(2, &shadows.bind_group, &[]);
+        }
         // Draw opaque objects first
         for obj in &self.objects {
             if obj.alpha >= 1.0 {
                 pass.set_pipeline(if obj.shading.is_lit(obj.alpha) {
-                    &self.opaque_pipeline
+                    if obj.shadows.receive {
+                        self.shadows
+                            .as_ref()
+                            .map_or(&self.opaque_pipeline, |s| &s.opaque)
+                    } else {
+                        &self.opaque_pipeline
+                    }
                 } else {
                     &self.opaque_unlit_pipeline
                 });
@@ -406,7 +541,13 @@ impl SolidRenderer {
         for obj in &self.objects {
             if obj.alpha < 1.0 {
                 pass.set_pipeline(if obj.shading.is_lit(obj.alpha) {
-                    &self.transparent_lit_pipeline
+                    if obj.shadows.receive {
+                        self.shadows
+                            .as_ref()
+                            .map_or(&self.transparent_lit_pipeline, |s| &s.transparent)
+                    } else {
+                        &self.transparent_lit_pipeline
+                    }
                 } else {
                     &self.transparent_pipeline
                 });

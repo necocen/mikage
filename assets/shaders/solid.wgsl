@@ -40,6 +40,7 @@ fn fragment_lit(in: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(lit_color, model_data.color.a);
 }
 
+
 // Unlit fragment for transparent objects
 @fragment
 fn fragment_unlit(in: VertexOutput) -> @location(0) vec4<f32> {

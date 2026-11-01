@@ -35,10 +35,83 @@ disable the light with `directional_intensity: 0.0`. Scaling both intensities
 scales brightness, so `(0.2, 0.8)` and `(0.4, 1.6)` produce different results.
 The default `(0.3, 0.7)` reproduces the default legacy light.
 
-There is no separate exposure, tone mapping, gamma adjustment, or physical lux
-unit. For a global exposure multiplier, multiply both gains by the same factor.
-Unorm attachments clamp out-of-range output; use an app-owned floating-point
-target and tone-mapping pass when HDR is needed. Lighting never changes alpha.
+Lighting gains have no physical lux unit. Use the opt-in [HDR/exposure pass](hdr-output.md)
+for exposure independent of light balance and a shared display mapping path.
+Direct unorm rendering still clamps out-of-range output; the default path is unchanged.
+Lighting never changes alpha.
+
+## Independent light colors
+
+Use `ColoredSceneBinding` with `SolidRenderer::with_light_colors` and/or
+`InstanceRenderer::with_light_colors` to opt into independent light RGB.
+`SceneLightColors` defaults to white for both contributions; scalar gains and
+direction stay in `SceneLighting`:
+
+```rust,no_run
+use mikage::{ColoredSceneBinding, SceneLightColors, SceneLighting, glam::Vec3, wgpu};
+# fn configure(device: &wgpu::Device, queue: &wgpu::Queue) {
+let scene = ColoredSceneBinding::new(device);
+scene.update_light_colors(queue, SceneLightColors {
+    ambient: Vec3::new(0.15, 0.35, 1.0),
+    directional: Vec3::new(1.0, 0.55, 0.15),
+});
+scene.update_lighting(queue, SceneLighting {
+    ambient_intensity: 0.3, directional_intensity: 0.9,
+    ..Default::default()
+});
+scene.update_camera(queue, &(), 1.0);
+# }
+```
+
+Both built-in colored fragments use:
+
+```text
+material_rgb * (ambient_rgb * ambient_intensity
+    + directional_rgb * directional_intensity * max(dot(normal, direction), 0))
+```
+
+RGB inputs are **linear**, not sRGB, not lux, and not normalized. Decode sRGB
+UI/hex values before upload (the WGSL `mikage::color_utils` module provides
+`srgb_to_linear` for custom shaders). Each negative or non-finite component is
+uploaded as zero; components above one are allowed and follow the same output
+clipping rules as intensity. White `(1, 1, 1)` reproduces existing white-light
+rendering. Changing a color does not change its scalar intensity or material RGBA.
+Lit transparency preserves material alpha. Unlit fragments ignore light colors.
+
+Camera-only and gain-only updates retain colors. `ColoredSceneBinding::update`
+replaces the existing scene uniform while retaining colors; legacy contrast-mode
+uniforms still use directional gain `1 - ambient`. The ordinary `SceneBinding`
+and existing renderer constructors retain their original allocation and behavior.
+
+For custom shaders, `ColoredSceneBinding` retains the original 112-byte uniform
+at group 0 binding 0 and adds 32 bytes at **group 0 binding 1**:
+
+```wgsl
+#import mikage::scene_types
+#import mikage::light_colors
+#import mikage::lighting
+@group(0) @binding(0) var<uniform> scene: SceneUniform;
+@group(0) @binding(1) var<uniform> colors: LightColors;
+
+fn shade(material: vec4<f32>, normal: vec3<f32>) -> vec4<f32> {
+    let rgb = colored_scene_lambert(material.rgb, normalize(normal),
+        scene.light_dir.xyz, scene.ambient, colors.ambient.rgb, colors.directional.rgb);
+    return vec4<f32>(rgb, material.a);
+}
+```
+
+Use `scene.layout()` for the pipeline and `scene.bind_group()` at group 0.
+`LightColors` contains two vec4s (`ambient`, `directional`); w is reserved and zero.
+`LIGHT_COLORS_WGSL` exports the same struct for manual module registration.
+
+Run `cargo run --example light_colors` for a neutral solid sphere and instanced
+cubes under different ambient/directional colors. Its gain sliders leave the
+light colors unchanged, and simulation is paused. The example uses matching
+4x MSAA color/depth targets. On native platforms,
+`cargo run --example light_colors -- --headless /tmp/light-colors.png` renders
+and captures the same scene with zero simulation ticks. This uniform-only
+extension requires no optional GPU features and is compatible with native and
+WebGPU pipelines; applications continue to own their target and pass setup.
 
 ## Shading and transparency
 
@@ -96,11 +169,18 @@ to opt into independent gains. Existing custom shaders and the imported
 must opt into `scene_lambert(color, normal, scene.light_dir.xyz, scene.ambient)`
 from `mikage::lighting` to consume the independent directional gain.
 
+## Directional shadows
+
+Use `DirectionalShadow` with the standard renderers' `with_shadows` or
+`with_light_colors_and_shadows` constructors for a shared single-light caster/receiver
+path. Existing mesh, model, and GPU-written instance buffers are reused.
+See [directional shadows](shadows.md) for bounds, bias, filtering, cast/receive
+controls, transparency policy, and native/WebGPU support.
+
 ## Custom shadow passes
 
-Built-in renderers do not allocate shadow maps or cast/receive shadows. The
-supported extension is an application-owned wgpu depth pass and receiver
-pipeline, encoded through the existing `App` hooks:
+For cascades, point lights, transmission, or a different shading model, an
+application-owned depth pass and receiver pipeline can use the existing `App` hooks:
 
 1. Create a **single-sample** depth texture with `RENDER_ATTACHMENT |
    TEXTURE_BINDING`, a comparison sampler, a light view-projection uniform, and
@@ -125,16 +205,15 @@ pipeline, encoded through the existing `App` hooks:
    leave ambient unchanged. Configure depth/slope bias and filtering for the
    scene's scale to limit acne and detached shadows.
 
-`SolidRenderer` owns its fixed shaders, layouts, and object buffers; it cannot
-be given an extra shadow bind group. `InstanceRenderer::with_shader` supports
+Default `SolidRenderer` pipelines have fixed layouts; use its shadow constructors
+for the built-in single-light path, or app-owned geometry for other layouts.
+`InstanceRenderer::with_shader` supports
 custom WGSL but its pipeline layout contains only the supplied group 0 layout.
 For a conventional extra-group shadow pipeline, construct the wgpu pipeline
 directly and retain app-owned geometry. A custom instancing shader can instead
 use an app-defined group 0 layout containing the scene and shadow resources.
 
-Transparent casters require an application policy (exclude them, alpha-test,
-or a transmission technique); ordinary depth maps do not model fractional
-transmission. Cascades, point-light shadows, shadow caching, and a built-in
-shadow material API are outside the current helper scope. This extension path
-addresses the shadow-scope requirement in Issue #10 without promising those
-features.
+Ordinary depth maps do not model fractional transmission. The built-in path
+excludes transparent casters and supports lit transparent receivers. Cascades,
+point-light shadows, and transmission remain outside the single-light helper.
+Custom passes can implement a different policy explicitly.

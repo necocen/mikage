@@ -1,6 +1,6 @@
 [package]
 name = "mikage"
-version = "0.8.0"
+version = "0.8.1"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
@@ -82,6 +82,14 @@ required-features = ["window-gui"]
 
 [[example]]
 name = "orbit_camera"
+required-features = ["window-gui"]
+
+[[example]]
+name = "light_colors"
+required-features = ["window-gui"]
+
+[[example]]
+name = "lighting_pipeline"
 required-features = ["window-gui"]
 
 [[example]]
