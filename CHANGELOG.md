@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.8.1
+
 ### Added
 
 - **Shared directional shadows** — Add `DirectionalShadow` and opt-in standard solid/instance constructors that reuse existing meshes, model buffers and GPU-written instance data. Include per-object/batch cast/receive controls, hard/2x2 comparison filtering, explicit light bounds and raster bias, opaque-only casting, and an unshadowed fallback for unsupported devices. Shadows preserve ambient illumination. See [shadows](docs/shadows.md).
@@ -9,6 +11,10 @@
 - **Combined lighting example** — Add `lighting_pipeline` with GPU-generated instances, colored lights, shadows, HDR, transparent geometry and 4x MSAA. Camera/lighting/shadow/exposure changes and final PNG captures work with zero simulation ticks.
 - **Independent light colors** — Opt into linear ambient and directional RGB with `SceneLightColors`, `ColoredSceneBinding`, and `SolidRenderer::with_light_colors` / `InstanceRenderer::with_light_colors`. Colors default to white and remain independent of scalar gains. Camera/gain updates preserve colors; material alpha and unlit behavior are unchanged. The original `SceneBinding`, 112-byte `SceneUniform`, and renderer constructors remain compatible.
 - **Colored-light example and custom shaders** — Add a paused solid/instance demonstration with 4x MSAA and headless PNG capture. Publish the `mikage::light_colors` WGSL uniform and `colored_scene_lambert` helper. See [lighting](docs/lighting.md#independent-light-colors).
+
+### Validation
+
+- Pass 150 library tests, 37 Metal GPU tests, 4 runtime tests, 6 executable/compile-fail doctests, strict library Clippy and rustfmt. CI also covers all 20 native/WASM feature configurations and dependency isolation on Linux, Windows and macOS, the macOS external-surface consumer, and Vulkan/Lavapipe GPU tests. Existing snapshot references remain unchanged; the combined example captures shadows and exposure changes with zero simulation ticks.
 
 ## v0.8.0
 
