@@ -1,8 +1,8 @@
 {
   "wasm_bytes": 3519967,
-  "gzip_bytes": 1442036,
+  "gzip_bytes": 1442045,
   "js_bytes": 92859,
-  "sha256": "a3b0c11a2590a71a7c4a67d1539b496323e5b41b70e3332b1f2ff966e3ca5d76",
+  "sha256": "d85b06044c4e83f787f8ced8c85bfc07fa7afd107d2f655ab8ab54eb292a9870",
   "wgpu_features": [
     "default",
     "dx12",
@@ -23,11 +23,11 @@
     "wasm_bindgen": "wasm-bindgen 0.2.128",
     "wasm_opt": "wasm-opt version 116 (version_116)"
   },
-  "lockfile_sha256": "7db0c2426c2eb4fa6f13c37fa214fa16f012069e2cd3d491dd6e9b5f4dcbf774",
+  "lockfile_sha256": "9635db7f488eba889f7e8eecd89360f201e455f36f9a163ec6b2cb0f4a931f92",
   "normalized_paths": true,
-  "base_commit": "4cd3012",
+  "base_commit": "8954e31",
   "host": "aarch64-apple-darwin",
   "measured_on": "2026-11-03",
   "fixture_sha256": "9b1cc5ad097a84dde27b71736a54e4bf094ffc9a3f41b9f92e626397da549195",
-  "change": "Make WebGL opt-in through mikage/webgl instead of egui-wgpu defaults"
+  "change": "Release 0.8.2: WebGL is opt-in through mikage/webgl"
 }

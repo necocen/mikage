@@ -2,9 +2,15 @@
 
 ## Unreleased
 
+## v0.8.2
+
 ### Fixed
 
 - **WASM backend features** — Enable the WebGL backend only when mikage's `webgl` feature is selected, instead of inheriting it from egui-wgpu defaults. Preserve the existing Send/Sync compatibility and macOS resize settings. Default WebGPU builds no longer include the unused WebGL backend code.
+
+### Added
+
+- **WASM size budget CI** — Measure a fixed cube/camera/GUI application with pinned tools and dependencies. Fail when optimized WASM or gzip size exceeds its reviewed budget, publish size reports and the runnable demo, and keep reference measurements across past releases. Default WASM shrinks by about 36% compared with the previous dependency defaults.
 
 ## v0.8.1
 

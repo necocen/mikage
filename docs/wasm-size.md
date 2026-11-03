@@ -29,9 +29,9 @@ the mikage library.
 `budget.json` holds absolute limits for both raw WASM and gzip bytes. Either limit
 being exceeded fails CI. Initial limits are the measured baseline plus 5%, rounded
 up to whole KiB: **3,696,640 raw bytes** and **1,514,496 gzip bytes**. The initial
-measurement is **3,519,967 raw bytes / 1,442,036 gzip bytes** on macOS arm64,
-including the unreleased fix making WebGL opt-in. It is 1,970,351 raw bytes and
-764,645 gzip bytes smaller than the previous default-feature baseline.
+measurement is **3,519,967 raw bytes / 1,442,045 gzip bytes** on macOS arm64,
+including the 0.8.2 fix making WebGL opt-in. It is 1,970,351 raw bytes and
+764,636 gzip bytes smaller than the previous default-feature baseline.
 Small differences between build hosts or compression libraries fit within that
 margin. The first Linux CI report should be checked against this baseline.
 The tool versions, hashes and measured baseline are recorded in
@@ -130,7 +130,7 @@ Measured on 2026-11-03, macOS arm64:
 
 All fixtures use WebGPU at runtime. Starting with the measured 0.6 series,
 egui-wgpu defaults additionally compiled WebGL support. These released-version
-measurements include that backend code. The unreleased backend-feature fix removes
+measurements include that backend code. The 0.8.2 backend-feature fix removes
 it from default builds, so the current CI baseline above is smaller; historical
 release values remain unchanged. The controlled font experiment below also
 excluded WebGL.
