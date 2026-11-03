@@ -1,0 +1,34 @@
+{
+  "wasm_bytes": 5490318,
+  "gzip_bytes": 2206681,
+  "js_bytes": 142816,
+  "sha256": "ceae8824658857c2398adbc90f9a767f4a54f7cc90aedc6567f4e6f1a08fb44b",
+  "wgpu_features": [
+    "default",
+    "dx12",
+    "fragile-send-sync-non-atomic-wasm",
+    "gles",
+    "metal",
+    "parking_lot",
+    "std",
+    "vulkan",
+    "web",
+    "webgl",
+    "webgpu",
+    "wgpu-core",
+    "wgsl"
+  ],
+  "runtime_backend": "WebGPU",
+  "dependency_features": "unmodified defaults",
+  "tools": {
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+    "wasm_bindgen": "wasm-bindgen 0.2.128",
+    "wasm_opt": "wasm-opt version 116 (version_116)"
+  },
+  "lockfile_sha256": "45b710a8b4eb123cb51d4fbca41531cdabbf5374bc6f3b29b00cb869734e5159",
+  "normalized_paths": true,
+  "base_commit": "e081419",
+  "host": "aarch64-apple-darwin",
+  "measured_on": "2026-11-03",
+  "fixture_sha256": "9b1cc5ad097a84dde27b71736a54e4bf094ffc9a3f41b9f92e626397da549195"
+}

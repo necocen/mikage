@@ -10,6 +10,7 @@ Rust version. Action dependencies are pinned to commits and tracked by Renovate.
 | --- | --- |
 | Format, lint and CPU tests | Formatting, strict library Clippy, library tests with `agent` enabled (excluding GPU tests), and doctests |
 | Features (Linux, Windows, macOS) | All 20 native/WASM configurations and GUI/HTTP dependency isolation in `scripts/check-features.sh`; macOS also compiles the external CAMetalLayer consumer |
+| WASM size (WebGPU) | Fixed cube/camera/GUI application using default dependency features and WebGPU at runtime, final WASM and gzip byte limits; reports and runnable demo uploaded as artifacts |
 | GPU tests (Vulkan / Lavapipe) | GPU readback/capture library tests, offscreen rendering and image comparisons, compute results, and headless runtime/capture lifecycle |
 
 The GPU job uses Mesa Lavapipe on an ordinary Ubuntu 24.04 runner. It selects
@@ -30,6 +31,9 @@ generated `_actual.png` / `_diff.png` files. Missing reference images fail and
 save the actual rendering for inspection.
 
 ## Local checks
+
+See [WASM size measurement](wasm-size.md) for the pinned tools, budget, and
+reference measurements across past releases.
 
 ```sh
 rustup target add wasm32-unknown-unknown
