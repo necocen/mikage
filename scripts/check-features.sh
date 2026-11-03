@@ -66,6 +66,32 @@ assert_http_isolation() {
     printf '%s contains no native HTTP runtime.\n' "$label"
 }
 
+assert_wasm_webgl() {
+    local label=$1 expected=$2
+    shift 2
+    local dependency_tree package package_features enabled_features= actual=disabled
+    dependency_tree=$(cargo tree --target "$wasm_target" --edges normal \
+        --prefix none --depth 1 --format '{p}|{f}' "$@")
+    while IFS='|' read -r package package_features; do
+        case "$package" in
+            wgpu\ *) enabled_features=$package_features ;;
+        esac
+    done <<< "$dependency_tree"
+    if [[ -z "$enabled_features" ]]; then
+        printf 'Missing wgpu dependency in %s\n' "$label" >&2
+        return 1
+    fi
+    case ",$enabled_features," in
+        *,webgl,*) actual=enabled ;;
+    esac
+    if [[ "$actual" != "$expected" ]]; then
+        printf 'Unexpected WebGL feature in %s: expected %s, found %s (%s)\n' \
+            "$label" "$expected" "$actual" "$enabled_features" >&2
+        return 1
+    fi
+    printf '%s: WebGL is %s.\n' "$label" "$actual"
+}
+
 # --all-targets checks the library, native test code, examples and demo binary.
 # Cargo honors each example/binary's required-features declaration.
 check 'native default' --all-targets
@@ -97,5 +123,11 @@ check 'WASM WebGL demo/examples + agent feature' --target "$wasm_target" --featu
 assert_core_isolation WASM --target "$wasm_target"
 assert_core_isolation 'WASM WebGL' --target "$wasm_target" --features webgl
 assert_http_isolation 'WASM with agent feature' --target "$wasm_target" --features agent
+assert_wasm_webgl 'WASM default' disabled
+assert_wasm_webgl 'WASM default + agent' disabled --features agent
+assert_wasm_webgl 'WASM core' disabled --no-default-features
+assert_wasm_webgl 'WASM GUI' disabled --no-default-features --features gui
+assert_wasm_webgl 'WASM WebGL' enabled --features webgl
+assert_wasm_webgl 'WASM WebGL core' enabled --no-default-features --features webgl
 
 printf '\nFeature matrix and core dependency isolation passed.\n'

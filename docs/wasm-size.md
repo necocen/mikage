@@ -11,9 +11,10 @@ the mikage library.
 
 - Target: `wasm32-unknown-unknown`, default window/GUI integration and dependency
   features. The fixture selects WebGPU at runtime.
-- Library manifests and dependency feature defaults are left unchanged. Transitive
-  dependencies can also compile WebGL support; the resolved wgpu features are
-  recorded in the report. There is no compiled-backend exclusion requirement.
+- The fixture consumes mikage defaults without dependency feature overrides.
+  Default builds include WebGPU only; mikage's `webgl` feature adds the browser
+  fallback. The feature matrix checks both configurations, and the size report
+  records the resolved wgpu features.
 - Rust 1.95.0, wasm-bindgen crate/CLI 0.2.128, Binaryen wasm-opt 116.
 - A separate, tracked fixture `Cargo.lock`; builds use `--locked`.
 - Remap checkout, Cargo cache, build output and Rust toolchain paths to stable
@@ -27,8 +28,10 @@ the mikage library.
 
 `budget.json` holds absolute limits for both raw WASM and gzip bytes. Either limit
 being exceeded fails CI. Initial limits are the measured baseline plus 5%, rounded
-up to whole KiB: **5,765,120 raw bytes** and **2,317,312 gzip bytes**. The initial
-measurement was **5,490,318 raw bytes / 2,206,681 gzip bytes** on macOS arm64.
+up to whole KiB: **3,696,640 raw bytes** and **1,514,496 gzip bytes**. The initial
+measurement is **3,519,967 raw bytes / 1,442,036 gzip bytes** on macOS arm64,
+including the unreleased fix making WebGL opt-in. It is 1,970,351 raw bytes and
+764,645 gzip bytes smaller than the previous default-feature baseline.
 Small differences between build hosts or compression libraries fit within that
 margin. The first Linux CI report should be checked against this baseline.
 The tool versions, hashes and measured baseline are recorded in
@@ -126,16 +129,19 @@ Measured on 2026-11-03, macOS arm64:
 | v0.8.1 | 5,490,363 | 2,206,652 | Yes |
 
 All fixtures use WebGPU at runtime. Starting with the measured 0.6 series,
-egui-wgpu defaults additionally compile WebGL support. These standard-feature
-measurements include that backend code; the controlled font experiment below
-excluded it.
+egui-wgpu defaults additionally compiled WebGL support. These released-version
+measurements include that backend code. The unreleased backend-feature fix removes
+it from default builds, so the current CI baseline above is smaller; historical
+release values remain unchanged. The controlled font experiment below also
+excluded WebGL.
 
 ## Controlled investigation of the egui text-stack increase
 
 An earlier controlled experiment excluded WebGL from dependency features. Its
 full-fixture values below describe that experiment, not the default-feature
-baselines above. The standard dependency graph can include additional WebGL
-backend code through egui-wgpu; this also contributes to the normal binary size.
+baselines above. The released dependency graphs in the historical table included
+additional WebGL backend code through egui-wgpu. The current default graph no
+longer includes it.
 
 The experiment isolates the egui text stack update. Mikage 0.6 moved from egui
 0.33 to 0.36, crossing egui's switch from `ab_glyph` to `skrifa` + `vello_cpu`

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- **WASM backend features** — Enable the WebGL backend only when mikage's `webgl` feature is selected, instead of inheriting it from egui-wgpu defaults. Preserve the existing Send/Sync compatibility and macOS resize settings. Default WebGPU builds no longer include the unused WebGL backend code.
+
 ## v0.8.1
 
 ### Added
