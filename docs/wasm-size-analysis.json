@@ -1,0 +1,66 @@
+{
+  "measured_on": "2026-11-03",
+  "host": "aarch64-apple-darwin",
+  "egui_only": [
+    {
+      "wasm_bytes": 2153349,
+      "gzip_bytes": 1093506,
+      "js_bytes": 3915,
+      "sha256": "42be58bbc87aae41edc671814480591136f55cfdaa4cbbba1eb89c077e15cb68",
+      "wgpu_features": [
+        "std",
+        "web",
+        "webgpu"
+      ],
+      "tools": {
+        "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+        "wasm_bindgen": "wasm-bindgen 0.2.128",
+        "wasm_opt": "wasm-opt version 116 (version_116)"
+      },
+      "lockfile_sha256": "499780adc8e45fd11d75a3724696052b467a512fa3bb14dfa48d10482c9af8ee",
+      "normalized_paths": true,
+      "label": "egui-0.33.3"
+    },
+    {
+      "wasm_bytes": 2812347,
+      "gzip_bytes": 1148630,
+      "js_bytes": 4995,
+      "sha256": "d6fc9e5fb5ffedfc3bc33a6b5714b4b898034852f5138f848635ecc89fdd1705",
+      "wgpu_features": [
+        "std",
+        "web",
+        "webgpu"
+      ],
+      "tools": {
+        "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+        "wasm_bindgen": "wasm-bindgen 0.2.128",
+        "wasm_opt": "wasm-opt version 116 (version_116)"
+      },
+      "lockfile_sha256": "921bf62a808c93929ce1ee1c347c34aacec0c908d9ccabbea231fcb333c03e61",
+      "normalized_paths": true,
+      "label": "egui-0.36.1"
+    }
+  ],
+  "mikage_reference_sections": {
+    "v0.5.0": {
+      "code_bytes": 1088132,
+      "data_bytes": 1621550
+    },
+    "v0.6.1": {
+      "code_bytes": 2314754,
+      "data_bytes": 1104205
+    }
+  },
+  "v0_6_font_stack_named_function_body_bytes": {
+    "skrifa": 229920,
+    "fearless_simd": 171957,
+    "harfrust": 168599,
+    "vello_cpu": 152754,
+    "read_fonts": 151830,
+    "vello_common": 29539,
+    "kurbo": 23871
+  },
+  "method": "Same release profile, tools, path normalization and optimizer as the main measurement. Profile builds retain function names; their code/data section sizes exactly match the stripped reference artifacts. egui-only workload constructs the same window, label and slider and tessellates without mikage/winit. wgpu is an unused direct dependency in the isolated test harness.",
+  "limitations": "Function name grouping is shallow attribution after optimization; inlined/shared code can be attributed to callers. The isolated program differs from the full renderer fixture, so its size delta is corroboration, not an exact additive decomposition.",
+  "scope": "Earlier controlled experiment: WebGL was excluded by patching exported dependency feature declarations. These full-fixture values are not the current default-feature baselines."
+}

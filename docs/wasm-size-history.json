@@ -1,0 +1,253 @@
+{
+  "measured_on": "2026-11-03",
+  "host": "aarch64-apple-darwin",
+  "dependency_features": "unmodified defaults",
+  "releases": [
+    {
+      "wasm_bytes": 2731954,
+      "gzip_bytes": 1332248,
+      "js_bytes": 84911,
+      "sha256": "97013e63cac79fe188e86e1f6615ca3579932a759eef3d769fb9220fc07235d6",
+      "wgpu_features": [
+        "default",
+        "dx12",
+        "fragile-send-sync-non-atomic-wasm",
+        "gles",
+        "metal",
+        "parking_lot",
+        "std",
+        "vulkan",
+        "web",
+        "webgpu",
+        "wgsl"
+      ],
+      "runtime_backend": "WebGPU",
+      "dependency_features": "unmodified defaults",
+      "tools": {
+        "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+        "wasm_bindgen": "wasm-bindgen 0.2.128",
+        "wasm_opt": "wasm-opt version 116 (version_116)"
+      },
+      "lockfile_sha256": "9f4e25841989ca98948a4851364c3201f0546f51e8790dc46302817caa4bef9f",
+      "normalized_paths": true,
+      "tag": "v0.1.0",
+      "commit": "605a08ac5c61a96bb75160ed9f6e032945a7ae5c"
+    },
+    {
+      "wasm_bytes": 2735859,
+      "gzip_bytes": 1333131,
+      "js_bytes": 84911,
+      "sha256": "e812e952cd033e3ebb432a38d0f59d6c9dfcc7bbc9dc26ff4b7ff910bd398b0a",
+      "wgpu_features": [
+        "default",
+        "dx12",
+        "fragile-send-sync-non-atomic-wasm",
+        "gles",
+        "metal",
+        "parking_lot",
+        "std",
+        "vulkan",
+        "web",
+        "webgpu",
+        "wgsl"
+      ],
+      "runtime_backend": "WebGPU",
+      "dependency_features": "unmodified defaults",
+      "tools": {
+        "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+        "wasm_bindgen": "wasm-bindgen 0.2.128",
+        "wasm_opt": "wasm-opt version 116 (version_116)"
+      },
+      "lockfile_sha256": "a72da42b46ec1ae5a340c5065e424cbc876e189c752005d3134ac2f023d96426",
+      "normalized_paths": true,
+      "tag": "v0.2.0",
+      "commit": "8ceff0fe7c860cf1d07d737177312050c805a601"
+    },
+    {
+      "wasm_bytes": 2737421,
+      "gzip_bytes": 1333630,
+      "js_bytes": 84911,
+      "sha256": "0fa2a1592c2c6d66d73b9f090b7a70bf4ab0090adc5daf3599bbc1bf8ba83334",
+      "wgpu_features": [
+        "default",
+        "dx12",
+        "fragile-send-sync-non-atomic-wasm",
+        "gles",
+        "metal",
+        "parking_lot",
+        "std",
+        "vulkan",
+        "web",
+        "webgpu",
+        "wgsl"
+      ],
+      "runtime_backend": "WebGPU",
+      "dependency_features": "unmodified defaults",
+      "tools": {
+        "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+        "wasm_bindgen": "wasm-bindgen 0.2.128",
+        "wasm_opt": "wasm-opt version 116 (version_116)"
+      },
+      "lockfile_sha256": "b7c450ad6116cd26e0919d703d0e89f773842c803c99f608f2ae7810ed844f15",
+      "normalized_paths": true,
+      "tag": "v0.3.4",
+      "commit": "9af7d2445581babd3f82813752f4c23aed1e27f3"
+    },
+    {
+      "wasm_bytes": 2737439,
+      "gzip_bytes": 1333641,
+      "js_bytes": 84911,
+      "sha256": "921b089beca1db33fd63c590f928273c5cc1238f562b624a55bf164876baa2ad",
+      "wgpu_features": [
+        "default",
+        "dx12",
+        "fragile-send-sync-non-atomic-wasm",
+        "gles",
+        "metal",
+        "parking_lot",
+        "std",
+        "vulkan",
+        "web",
+        "webgpu",
+        "wgsl"
+      ],
+      "runtime_backend": "WebGPU",
+      "dependency_features": "unmodified defaults",
+      "tools": {
+        "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+        "wasm_bindgen": "wasm-bindgen 0.2.128",
+        "wasm_opt": "wasm-opt version 116 (version_116)"
+      },
+      "lockfile_sha256": "12618b551b07e7573b2d3c77a6c07302ae55be1eab477cfe4065bf49b718a193",
+      "normalized_paths": true,
+      "tag": "v0.4.0",
+      "commit": "cdfcc37a1c9c662a637369b4cea0c5b1bd018180"
+    },
+    {
+      "wasm_bytes": 2742443,
+      "gzip_bytes": 1336123,
+      "js_bytes": 85566,
+      "sha256": "4764237db98f2d0688ea26ecfe007d92b59612b355d0d8c417db2c01332df17e",
+      "wgpu_features": [
+        "default",
+        "dx12",
+        "fragile-send-sync-non-atomic-wasm",
+        "gles",
+        "metal",
+        "parking_lot",
+        "std",
+        "vulkan",
+        "web",
+        "webgpu",
+        "wgsl"
+      ],
+      "runtime_backend": "WebGPU",
+      "dependency_features": "unmodified defaults",
+      "tools": {
+        "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+        "wasm_bindgen": "wasm-bindgen 0.2.128",
+        "wasm_opt": "wasm-opt version 116 (version_116)"
+      },
+      "lockfile_sha256": "14e10bf137fdbee86396735d04ae14050d9282fdeffbbdbfaa6ac084a228d9f8",
+      "normalized_paths": true,
+      "tag": "v0.5.0",
+      "commit": "8c1d2190a90b25ceda382ec963241e15140ae8d9"
+    },
+    {
+      "wasm_bytes": 5429471,
+      "gzip_bytes": 2179799,
+      "js_bytes": 142816,
+      "sha256": "3af411221627565d45997e76b8a9fc0ef5cd827200edf948173fc55ff8495f83",
+      "wgpu_features": [
+        "default",
+        "dx12",
+        "fragile-send-sync-non-atomic-wasm",
+        "gles",
+        "metal",
+        "parking_lot",
+        "std",
+        "vulkan",
+        "web",
+        "webgl",
+        "webgpu",
+        "wgpu-core",
+        "wgsl"
+      ],
+      "runtime_backend": "WebGPU",
+      "dependency_features": "unmodified defaults",
+      "tools": {
+        "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+        "wasm_bindgen": "wasm-bindgen 0.2.128",
+        "wasm_opt": "wasm-opt version 116 (version_116)"
+      },
+      "lockfile_sha256": "301b9e4f890c3a5339f201223bffb88754cc35f84b58cac38d074fec1c2a8a1e",
+      "normalized_paths": true,
+      "tag": "v0.6.1",
+      "commit": "552b95ef46b88abd046c47dda7a713f6fb8feb4d"
+    },
+    {
+      "wasm_bytes": 5487314,
+      "gzip_bytes": 2205486,
+      "js_bytes": 142816,
+      "sha256": "a3d13edd9ffb579fe935328be792a4bb1990a8928284dc806315b933a2aa81a3",
+      "wgpu_features": [
+        "default",
+        "dx12",
+        "fragile-send-sync-non-atomic-wasm",
+        "gles",
+        "metal",
+        "parking_lot",
+        "std",
+        "vulkan",
+        "web",
+        "webgl",
+        "webgpu",
+        "wgpu-core",
+        "wgsl"
+      ],
+      "runtime_backend": "WebGPU",
+      "dependency_features": "unmodified defaults",
+      "tools": {
+        "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+        "wasm_bindgen": "wasm-bindgen 0.2.128",
+        "wasm_opt": "wasm-opt version 116 (version_116)"
+      },
+      "lockfile_sha256": "4ffd3982cee27740d8550017ab0aaed165dce7fbf5d594569b64f4d54a245e4e",
+      "normalized_paths": true,
+      "tag": "v0.7.3",
+      "commit": "3390d374b3d0dacb3c876701923783dc7dc87a55"
+    },
+    {
+      "wasm_bytes": 5490363,
+      "gzip_bytes": 2206652,
+      "js_bytes": 142816,
+      "sha256": "fa249308f18c356cb1ca87da038b32dac10bf12cb1b486851a8c1105b7eb4fc7",
+      "wgpu_features": [
+        "default",
+        "dx12",
+        "fragile-send-sync-non-atomic-wasm",
+        "gles",
+        "metal",
+        "parking_lot",
+        "std",
+        "vulkan",
+        "web",
+        "webgl",
+        "webgpu",
+        "wgpu-core",
+        "wgsl"
+      ],
+      "runtime_backend": "WebGPU",
+      "dependency_features": "unmodified defaults",
+      "tools": {
+        "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+        "wasm_bindgen": "wasm-bindgen 0.2.128",
+        "wasm_opt": "wasm-opt version 116 (version_116)"
+      },
+      "lockfile_sha256": "45b710a8b4eb123cb51d4fbca41531cdabbf5374bc6f3b29b00cb869734e5159",
+      "normalized_paths": true,
+      "tag": "v0.8.1",
+      "commit": "e08141941e46503a800023f5a07d84a31b89b9a2"
+    }
+  ]
+}

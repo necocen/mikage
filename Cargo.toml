@@ -1,6 +1,6 @@
 [package]
 name = "mikage"
-version = "0.8.1"
+version = "0.8.2"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
@@ -18,7 +18,8 @@ wgpu = "30.0.1"
 dpi = "0.1"
 winit = { version = "0.30.13", optional = true }
 egui = { version = "0.37.0", optional = true, features = ["default_fonts"] }
-egui-wgpu = { version = "0.37.0", optional = true }
+# WebGL is enabled only through mikage's webgl feature; retain the other egui-wgpu defaults.
+egui-wgpu = { version = "0.37.0", optional = true, default-features = false, features = ["fragile-send-sync-non-atomic-wasm", "macos-window-resize-jitter-fix"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 bytemuck = { version = "1", features = ["derive"] }

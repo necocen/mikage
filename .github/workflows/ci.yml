@@ -70,6 +70,102 @@ jobs:
         if: runner.os == 'macOS'
         run: cargo check --manifest-path tests/fixtures/external-surface/Cargo.toml
 
+  wasm-size:
+    name: WASM size (WebGPU)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install "$RUST_VERSION" --profile minimal --target wasm32-unknown-unknown
+      - name: Select Rust
+        run: rustup override set "$RUST_VERSION"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: wasm-size
+          workspaces: tests/fixtures/wasm-size -> ../../../target/wasm-size/build
+      - name: Install pinned WASM tools
+        run: |
+          mkdir -p "$RUNNER_TEMP/wasm-tools"
+          cd "$RUNNER_TEMP/wasm-tools"
+          curl --fail --location --retry 3 -o bindgen.tar.gz https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.128/wasm-bindgen-0.2.128-x86_64-unknown-linux-musl.tar.gz
+          echo 'b51f0208fdff83515a787bd8ab9ac5865ed84dabb66d0c709957bb59793c645f  bindgen.tar.gz' | sha256sum --check
+          tar -xzf bindgen.tar.gz
+          curl --fail --location --retry 3 -o binaryen.tar.gz https://github.com/WebAssembly/binaryen/releases/download/version_116/binaryen-version_116-x86_64-linux.tar.gz
+          echo 'c55b74f3109cdae97490faf089b0286d3bba926bb6ea5ed00c8c784fc53718fd  binaryen.tar.gz' | sha256sum --check
+          tar -xzf binaryen.tar.gz
+          echo "$RUNNER_TEMP/wasm-tools/wasm-bindgen-0.2.128-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
+          echo "$RUNNER_TEMP/wasm-tools/binaryen-version_116/bin" >> "$GITHUB_PATH"
+      - name: Build the fixed WebGPU demo
+        run: |
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target/wasm-size/build"
+          export CARGO_ENCODED_RUSTFLAGS
+          CARGO_ENCODED_RUSTFLAGS=$(printf '%s\x1f' \
+            "--remap-path-prefix=$GITHUB_WORKSPACE=/mikage" \
+            "--remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo" \
+            "--remap-path-prefix=$(rustc --print sysroot)=/rust-toolchain" \
+            "--remap-path-prefix=$CARGO_TARGET_DIR=/build")
+          CARGO_ENCODED_RUSTFLAGS=${CARGO_ENCODED_RUSTFLAGS%$'\x1f'}
+          fixture=tests/fixtures/wasm-size
+          output=target/wasm-size/current
+          cargo build --manifest-path "$fixture/Cargo.toml" --locked --release --target wasm32-unknown-unknown
+          mkdir -p "$output/dist"
+          cargo tree --manifest-path "$fixture/Cargo.toml" --locked --target wasm32-unknown-unknown -p wgpu --edges normal --depth 0 --format '{f}' > "$output/wgpu-features.txt"
+          wasm-bindgen "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/mikage-wasm-size.wasm" \
+            --target web --out-dir "$output/dist" --out-name mikage_wasm_size
+          wasm-opt "$output/dist/mikage_wasm_size_bg.wasm" -Oz --strip-debug --strip-producers \
+            --enable-bulk-memory --enable-reference-types -o "$output/dist/optimized.wasm"
+          mv "$output/dist/optimized.wasm" "$output/dist/mikage_wasm_size_bg.wasm"
+          cp "$fixture/index.html" "$output/dist/index.html"
+          cp "$fixture/Cargo.lock" "$output/Cargo.lock"
+      - name: Enforce final WASM and gzip budgets
+        run: |
+          python3 - <<'PY'
+          import gzip, hashlib, json, os, subprocess
+          from pathlib import Path
+
+          output = Path("target/wasm-size/current")
+          wasm = output / "dist/mikage_wasm_size_bg.wasm"
+          data = wasm.read_bytes()
+          compressed = gzip.compress(data, compresslevel=9, mtime=0)
+          wasm.with_suffix(".wasm.gz").write_bytes(compressed)
+          report = {
+              "wasm_bytes": len(data), "gzip_bytes": len(compressed),
+              "js_bytes": (output / "dist/mikage_wasm_size.js").stat().st_size,
+              "sha256": hashlib.sha256(data).hexdigest(),
+              "wgpu_features": (output / "wgpu-features.txt").read_text().strip().split(","),
+              "runtime_backend": "WebGPU", "dependency_features": "unmodified defaults",
+              "tools": {tool: subprocess.check_output([tool, "--version"], text=True).strip()
+                        for tool in ("rustc", "wasm-bindgen", "wasm-opt")},
+              "lockfile_sha256": hashlib.sha256((output / "Cargo.lock").read_bytes()).hexdigest(),
+              "normalized_paths": True,
+          }
+          (output / "size.json").write_text(json.dumps(report, indent=2) + "\n")
+          budget = json.loads(Path("tests/fixtures/wasm-size/budget.json").read_text())
+          rows, failed = [], False
+          for metric in ("wasm_bytes", "gzip_bytes"):
+              actual, limit = report[metric], budget["max_" + metric]
+              rows.append(f"| {metric} | {actual:,} | {limit:,} |")
+              if actual > limit:
+                  print(f"::error::{metric}: {actual:,} exceeds budget {limit:,}")
+                  failed = True
+          summary = "## WebGPU WASM size\n\n| Metric | Actual bytes | Budget bytes |\n| --- | ---: | ---: |\n" + "\n".join(rows) + "\n"
+          print(summary)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as stream:
+              stream.write(summary)
+          raise SystemExit(1 if failed else 0)
+          PY
+      - name: Upload WASM size report and demo
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: wasm-size
+          path: target/wasm-size/current/
+          if-no-files-found: ignore
+          retention-days: 14
+
   gpu:
     name: GPU tests (Vulkan / Lavapipe)
     runs-on: ubuntu-26.04

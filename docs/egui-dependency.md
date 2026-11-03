@@ -21,8 +21,22 @@ Native `egui-winit` keeps its default features. On WASM, default features remain
 disabled and `links` stays enabled. The WASM fix ignores winit's path-only
 dropped-file event on browsers; it does not add browser file-drop support.
 
+`egui-wgpu` defaults are disabled because they implicitly enable `wgpu/webgl`.
+Mikage retains its other defaults explicitly:
+`fragile-send-sync-non-atomic-wasm` preserves the existing WASM `Send`/`Sync`
+behavior, and `macos-window-resize-jitter-fix` preserves the native resize fix.
+The direct `wgpu` dependency already supplies `wgpu/default`. WebGL is selected
+through mikage's `webgl` feature, so the default browser build contains only
+WebGPU. Applications or other dependencies can still enable `wgpu/webgl` through
+Cargo's additive feature unification.
+
 This library does not track `Cargo.lock`; downstream applications control their
 own lockfiles. No vendor copy or `[patch.crates-io]` entry is needed.
+
+The opt-in WebGL change was checked with all 20 feature configurations, six
+backend-feature assertions, 147 CPU tests and strict library Clippy. Chrome
+verified the default WebGPU adapter and a feature-enabled WebGL2 adapter; the
+WebGL framebuffer readback matched the previous egui-wgpu default configuration.
 
 ## Previous workaround
 
