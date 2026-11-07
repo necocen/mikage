@@ -1296,7 +1296,7 @@ dependencies = [
 
 [[package]]
 name = "mikage"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "bytemuck",
  "console_error_panic_hook",

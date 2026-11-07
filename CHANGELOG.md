@@ -2,10 +2,16 @@
 
 ## Unreleased
 
+## v0.9.1
+
 ### Fixed
 
 - **Browser GPU completion progress** — Retry delayed WebGPU completion delivery with an empty queue submit after a nominal 2 ms of inactivity; browser timer clamping and throttling may extend the wait. Coalesce completion wakes and reserve browser VSync redraws before GPU capacity is available, while retaining one prepared frame in flight. Preserve actual GPU fences, tick/frame counters and bounded work independently of timer precision; cancel the retry timer after completion, device loss, shutdown or Drop. Covers window, async and offscreen runtimes. Addresses [#21](https://github.com/necocen/mikage/issues/21).
 - **Captures from occluded windows** — Render explicit scene/window captures offscreen so Metal's refusal to acquire a hidden window's drawable no longer causes HTTP 503. Preserve GUI/MSAA composition, exact GPU fences and submission limits without ticking or presenting; zero-sized surfaces and application suspension still return 503. Treat stale surface acquisition failures as temporary retries instead of overwriting OS visibility state.
+
+### Validation
+
+- Pass 165 CPU tests, four Metal runtime tests, six doctests, strict Clippy and all 21 native/WASM feature configurations. Browser regression checks cover 28 Chrome/Firefox Window/Worker cases. Native VSync checks cover visible-window scheduling and hidden 1x/4x MSAA captures, exact future checkpoints, GPU readback, no extra capture ticks/presents, and automatic pause on OS occlusion. Both fix PRs passed all six CI jobs, including Vulkan/Lavapipe GPU tests and WASM size budgets. The public API and dependency versions remain compatible with 0.9.0.
 
 ## v0.9.0
 
