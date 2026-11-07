@@ -420,7 +420,7 @@ impl GpuContext {
 
 /// Presentation state preserving the lifetime of the native target.
 pub struct SurfaceContext<'surface> {
-    surface: wgpu::Surface<'surface>,
+    surface: Arc<wgpu::Surface<'surface>>,
     device: wgpu::Device,
     descriptor: SurfaceDescriptor,
     configuration: wgpu::SurfaceConfiguration,
@@ -445,7 +445,7 @@ impl<'s> SurfaceContext<'s> {
             true,
         )?;
         let mut result = Self {
-            surface,
+            surface: Arc::new(surface),
             device: gpu.device.clone(),
             descriptor,
             configuration,
@@ -484,6 +484,10 @@ impl<'s> SurfaceContext<'s> {
     /// work before calling Queue::present on a successfully acquired texture.
     pub fn acquire_surface_texture(&self) -> Option<wgpu::CurrentSurfaceTexture> {
         (!self.is_suspended()).then(|| self.surface.get_current_texture())
+    }
+    #[cfg(all(feature = "window", not(target_family = "wasm")))]
+    pub(crate) fn acquisition_handle(&self) -> Arc<wgpu::Surface<'s>> {
+        self.surface.clone()
     }
     /// Creates a view using the negotiated format, including WebGPU's sRGB view.
     pub fn create_view(&self, texture: &wgpu::SurfaceTexture) -> wgpu::TextureView {

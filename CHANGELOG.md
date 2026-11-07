@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## v0.9.0
+
+### Changed
+
+- **Window configuration (breaking)** — Add the public `RunConfig::presentation_policy` field. Complete struct literals must specify `PresentationPolicy::Immediate` to retain the previous scheduler; constructors and literals with `..Default::default()` select it automatically. The new public configuration field warrants a minor version bump before 1.0.
+
+### Added
+
+- **Independent VSync presentation** — Opt into `PresentationPolicy::Vsync` to coalesce tick/input/GUI invalidations behind display-driven surface availability. Native acquisition/presentation use one bounded worker, leaving the window host free to schedule fixed ticks while acquisition waits. Limit runtime frames in flight, preserve bounded wall-time simulation and exact-tick capture, and retain original scheduling by default. See [runtime scheduling](docs/runtime.md#independent-vsync-presentation). Addresses [#19](https://github.com/necocen/mikage/issues/19).
+
+### Validation
+
+- Pass 152 CPU tests, 37 Metal rendering/compute tests, four headless runtime tests, six doctests, strict Clippy and the 20-configuration native/WASM feature matrix. Native window checks cover 0.4 ms fixed ticks with two submission slots, 4x MSAA, exact-tick captures, pause/resume, idle wake-up, smooth camera zoom, resize, minimize/restore and invalidation coalescing. See [the validation record](docs/runtime.md#independent-vsync-presentation).
+
 ## v0.8.2
 
 ### Fixed

@@ -194,6 +194,8 @@ fn main() {
     let mut policy = mikage::SimulationPolicy::PerRedraw;
     let mut agent = mikage::AgentConfig::default();
     let mut sample_count = 1;
+    let mut presentation_policy = mikage::PresentationPolicy::Immediate;
+    let mut max_in_flight_submissions = 8;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -201,6 +203,27 @@ fn main() {
                 policy = mikage::SimulationPolicy::fixed(std::time::Duration::from_millis(10));
             }
             "--manual" => policy = mikage::SimulationPolicy::Manual,
+            "--vsync" => presentation_policy = mikage::PresentationPolicy::Vsync,
+            "--tick-micros" => {
+                let micros = args
+                    .next()
+                    .expect("--tick-micros requires a duration")
+                    .parse::<u64>()
+                    .expect("invalid tick duration");
+                let dt = std::time::Duration::from_micros(micros);
+                policy = mikage::SimulationPolicy::Fixed {
+                    dt,
+                    max_ticks_per_wake: 4,
+                    max_backlog: dt.saturating_mul(4),
+                };
+            }
+            "--submission-slots" => {
+                max_in_flight_submissions = args
+                    .next()
+                    .expect("--submission-slots requires a count")
+                    .parse()
+                    .expect("invalid slot count");
+            }
             "--msaa4" => sample_count = 4,
             "--port" => {
                 let port = args
@@ -219,7 +242,7 @@ fn main() {
             }
             "--help" => {
                 println!(
-                    "agent_capture [--fixed|--manual] [--msaa4] [--port PORT] [--connection-file PATH]"
+                    "agent_capture [--fixed|--manual|--tick-micros N] [--vsync] [--submission-slots N] [--msaa4] [--port PORT] [--connection-file PATH]"
                 );
                 return;
             }
@@ -233,6 +256,8 @@ fn main() {
             simulation_policy: policy,
             sample_count,
             redraw_policy: mikage::RedrawPolicy::Reactive,
+            presentation_policy,
+            max_in_flight_submissions,
             ..Default::default()
         },
         agent,
