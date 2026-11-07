@@ -69,6 +69,17 @@ textures and buffer regions are registered by `App::capture_targets` through
 `scene` and `window`. Rebuild the registry at each checkpoint so replaced buffers
 and resized textures cannot leave stale references.
 
+`scene` and `window` render into an offscreen texture, so a covered or minimized
+window does not require a visible swapchain drawable for capture. A capture
+still runs application/GUI hooks on the host thread, observes submission and
+frame-completion limits, and does not advance a simulation tick or call present.
+Its rendered frame is counted separately from `presented_frames`. Hidden-window
+captures do not advance camera animation through time spent hidden; automatic
+simulation and presentation remain paused while the OS reports occlusion.
+An actually suspended application or zero-sized surface still returns HTTP 503
+for `scene`/`window`; named resource capture remains available. The
+`screenshot_supported` status field reflects these conditions.
+
 Exact captures coordinate the simulation boundary with the copy. Mapping and
 image encoding remain asynchronous. A successful response includes the captured
 tick, frame, and submission identifiers when applicable. Texture metadata also
@@ -149,6 +160,15 @@ The Python helper uses only the standard library, follows jobs, verifies HTTP
 status and content type, and atomically replaces the output after success.
 It accepts `--connection-file`, `--token` (or `MIKAGE_TOKEN`), `--at-tick`, and
 `--timeout`.
+
+To exercise occluded captures, start `agent_capture --manual --vsync
+--submission-slots 2` (optionally `--msaa4`), then hide or cover its window.
+Run `python3 tests/smoke_occluded_capture.py --require-no-present` from another
+terminal. It checks scene/GUI PNGs, the synchronous screenshot endpoint, exact
+future checkpoints with ordered GPU commands, unchanged tick counts during
+captures and unchanged presentation counts. `--connection-file` supports an
+example started with an ephemeral port. Ordinary presentation/cadence, pause,
+resume and reactive idle are covered by `tests/smoke_agent.py`.
 
 ## Hosts without winit
 
