@@ -1,9 +1,7 @@
 //! Window-independent simulation, rendering, and GPU submission ownership.
 
 use std::collections::VecDeque;
-#[cfg(not(target_family = "wasm"))]
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::task::{Poll, Waker};
 use std::time::Duration;
@@ -12,6 +10,9 @@ use crate::app::{
     App, CommandContext, RenderContext, RenderTarget, RenderUpdateContext, TickContext,
 };
 use crate::context::GpuContext;
+
+#[cfg(any(target_family = "wasm", test))]
+mod web_completion;
 
 static NEXT_RUNTIME_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -105,19 +106,31 @@ enum Completion {
 struct CompletionSignal {
     sender: mpsc::Sender<Completion>,
     host_waker: Mutex<Option<RuntimeWaker>>,
+    host_pending: AtomicBool,
     task_waker: Mutex<Option<Waker>>,
 }
 
 impl CompletionSignal {
     fn send(&self, completion: Completion) {
         let _ = self.sender.send(completion);
-        let host = self.host_waker.lock().unwrap().clone();
+        let host = if !self.host_pending.swap(true, Ordering::AcqRel) {
+            self.host_waker.lock().unwrap().clone()
+        } else {
+            None
+        };
         let task = self.task_waker.lock().unwrap().take();
         if let Some(waker) = host {
             waker();
         }
         if let Some(waker) = task {
             waker.wake();
+        }
+    }
+
+    fn set_host_waker(&self, waker: RuntimeWaker) {
+        *self.host_waker.lock().unwrap() = Some(waker.clone());
+        if self.host_pending.load(Ordering::Acquire) {
+            waker();
         }
     }
 }
@@ -199,6 +212,8 @@ pub struct AppRuntime<A: App> {
     signal: Arc<CompletionSignal>,
     #[cfg(not(target_family = "wasm"))]
     worker: Option<CompletionWorker>,
+    #[cfg(target_family = "wasm")]
+    web_completion: Option<web_completion::CompletionPump>,
     failure: Option<RuntimeError>,
     stopped: bool,
 }
@@ -209,10 +224,20 @@ impl<A: App> AppRuntime<A> {
         let signal = Arc::new(CompletionSignal {
             sender,
             host_waker: Mutex::new(None),
+            host_pending: AtomicBool::new(false),
             task_waker: Mutex::new(None),
         });
+        #[cfg(target_family = "wasm")]
+        let web_completion = (gpu.adapter_info().backend == wgpu::Backend::BrowserWebGpu)
+            .then(|| web_completion::CompletionPump::new(gpu.queue.clone(), signal.clone()));
+        #[cfg(target_family = "wasm")]
+        let loss_progress = web_completion.as_ref().map(|pump| pump.progress());
         let loss_signal = signal.clone();
         gpu.device.set_device_lost_callback(move |reason, message| {
+            #[cfg(target_family = "wasm")]
+            if let Some(progress) = &loss_progress {
+                progress.stop();
+            }
             loss_signal.send(Completion::Failed(RuntimeError::DeviceLost(format!(
                 "{reason:?}: {message}"
             ))));
@@ -231,6 +256,8 @@ impl<A: App> AppRuntime<A> {
             signal,
             #[cfg(not(target_family = "wasm"))]
             worker,
+            #[cfg(target_family = "wasm")]
+            web_completion,
             failure: None,
             stopped: false,
         }
@@ -257,8 +284,11 @@ impl<A: App> AppRuntime<A> {
             .max_in_flight_submissions
             .saturating_sub(self.pending.len())
     }
+    /// Wake the host when completions or a failure can be drained. Notifications
+    /// may coalesce; call `poll_completions` on each wake. Already queued work
+    /// wakes a newly installed host immediately.
     pub fn set_waker(&mut self, waker: RuntimeWaker) {
-        *self.signal.host_waker.lock().unwrap() = Some(waker);
+        self.signal.set_host_waker(waker);
     }
 
     /// Explicit native backpressure wait for checkpoint/offscreen hosts.
@@ -314,6 +344,9 @@ impl<A: App> AppRuntime<A> {
         if self.stopped {
             return Err(RuntimeError::Stopped);
         }
+        // Clear before draining: a concurrent send after the last try_recv
+        // must retain its wake. A burst of callbacks needs only one host pump.
+        self.signal.host_pending.store(false, Ordering::Release);
         let before = self.progress.completed_submissions;
         while let Ok(completion) = self.completion_receiver.try_recv() {
             self.handle_completion(completion);
@@ -370,11 +403,18 @@ impl<A: App> AppRuntime<A> {
         }
         #[cfg(target_family = "wasm")]
         {
+            let progress = self.web_completion.as_ref().map(|pump| {
+                pump.submitted(token.id);
+                pump.progress()
+            });
             let signal = self.signal.clone();
             let completion_token = token.clone();
-            self.gpu
-                .queue
-                .on_submitted_work_done(move || signal.send(Completion::Done(completion_token)));
+            self.gpu.queue.on_submitted_work_done(move || {
+                if let Some(progress) = progress {
+                    progress.completed(completion_token.id);
+                }
+                signal.send(Completion::Done(completion_token));
+            });
         }
         self.app.after_submit(&self.gpu, &token);
         Ok(token)
@@ -624,6 +664,8 @@ impl<A: App> AppRuntime<A> {
             return;
         }
         self.stopped = true;
+        #[cfg(target_family = "wasm")]
+        self.web_completion.take();
         self.app.shutdown(&self.gpu);
         #[cfg(not(target_family = "wasm"))]
         self.worker.take();
@@ -636,5 +678,77 @@ impl<A: App> AppRuntime<A> {
 impl<A: App> Drop for AppRuntime<A> {
     fn drop(&mut self) {
         self.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod completion_signal_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+    use std::task::Wake;
+
+    fn signal() -> (CompletionSignal, mpsc::Receiver<Completion>) {
+        let (sender, receiver) = mpsc::channel();
+        (
+            CompletionSignal {
+                sender,
+                host_waker: Mutex::new(None),
+                host_pending: AtomicBool::new(false),
+                task_waker: Mutex::new(None),
+            },
+            receiver,
+        )
+    }
+
+    #[test]
+    fn completion_bursts_coalesce_but_work_after_a_drain_wakes_again() {
+        let (signal, receiver) = signal();
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let counter = wakes.clone();
+        signal.set_host_waker(Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }));
+        for _ in 0..8 {
+            signal.send(Completion::Failed(RuntimeError::Timeout));
+        }
+        assert_eq!(wakes.load(Ordering::SeqCst), 1);
+        signal.host_pending.store(false, Ordering::Release);
+        assert_eq!(receiver.try_iter().count(), 8);
+        signal.send(Completion::Failed(RuntimeError::Timeout));
+        assert_eq!(wakes.load(Ordering::SeqCst), 2);
+        assert_eq!(receiver.try_iter().count(), 1);
+    }
+
+    #[test]
+    fn pending_work_wakes_a_late_or_replacement_host_waker() {
+        let (signal, receiver) = signal();
+        signal.send(Completion::Failed(RuntimeError::Timeout));
+        for _ in 0..2 {
+            let wakes = Arc::new(AtomicUsize::new(0));
+            let counter = wakes.clone();
+            signal.set_host_waker(Arc::new(move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }));
+            assert_eq!(wakes.load(Ordering::SeqCst), 1);
+        }
+        assert_eq!(receiver.try_iter().count(), 1);
+    }
+
+    #[test]
+    fn task_wakes_are_independent_of_coalesced_host_wakes() {
+        struct Counter(AtomicUsize);
+        impl Wake for Counter {
+            fn wake(self: Arc<Self>) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let (signal, _receiver) = signal();
+        let counter = Arc::new(Counter(AtomicUsize::new(0)));
+        let waker = Waker::from(counter.clone());
+        for _ in 0..2 {
+            *signal.task_waker.lock().unwrap() = Some(waker.clone());
+            signal.send(Completion::Failed(RuntimeError::Timeout));
+        }
+        assert_eq!(counter.0.load(Ordering::SeqCst), 2);
     }
 }

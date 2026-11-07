@@ -441,10 +441,15 @@ struct RunState<A: App> {
 
 impl<A: App> RunState<A> {
     fn request_frame(&mut self) -> Result<(), RuntimeError> {
-        if self.surface_dirty
-            || self
-                .presentation
-                .frame_in_flight(self.runtime.progress().completed_submissions)
+        if self.surface_dirty {
+            return Ok(());
+        }
+        // Browsers can reserve a display wake before the previous GPU frame
+        // completes. render_frame still gates all GUI/render preparation.
+        #[cfg(not(target_family = "wasm"))]
+        if self
+            .presentation
+            .frame_in_flight(self.runtime.progress().completed_submissions)
         {
             return Ok(());
         }
@@ -879,9 +884,13 @@ impl<A: App> AppHandler<A> {
             state.redraw_pending = true;
             state.gui_deadline = None;
         }
+        let can_request_frame = state.runtime.available_submission_slots() > 0;
+        #[cfg(target_family = "wasm")]
+        let can_request_frame =
+            can_request_frame || state.presentation.policy == PresentationPolicy::Vsync;
         if active
             && state.redraw_pending
-            && state.runtime.available_submission_slots() > 0
+            && can_request_frame
             && let Err(error) = state.request_frame()
         {
             self.fail(event_loop, error.into());

@@ -254,6 +254,97 @@ return `Result<(), RunError>` after exiting and shutting down. Browser `run`
 returns after startup; later failures stop the event loop and display an error
 overlay rather than returning through the already completed call.
 
+### Browser completion progress
+
+Some Firefox WebGPU implementations can delay `onSubmittedWorkDone` delivery
+until a slow browser poll after queue submissions stop. A full submission queue
+then stalls fixed ticks; the single-frame VSync gate can also stall rendering
+even with free submission slots. See [Issue #21](https://github.com/necocen/mikage/issues/21)
+and [Mozilla's scheduling report](https://bugzilla.mozilla.org/show_bug.cgi?id=2008103).
+`Device::poll` is a no-op on browser WebGPU, so polling it cannot resolve this wait.
+
+`AppRuntime` automatically arms one cancellable browser timer while WebGPU
+completion endpoints are outstanding. Only after at least 2 ms without an ordinary
+submission or advancing completion does it call `queue.submit([])` to encourage
+notification delivery. A real submission or completion postpones the retry;
+all endpoints completing, device loss, shutdown or Drop cancels it. There is no
+timer in reactive idle after work completes. The global timer also works for
+async/offscreen hosts in Web Workers, without a window or host polling loop.
+Native completion workers and the WebGL backend keep their existing behavior.
+
+The retry does not encode application work, register another completion callback,
+create a token, change tick/frame counters, or free submission capacity. Only an
+actual completion notification releases pending work and triggers owner-thread
+`after_complete` hooks. Fixed wall-time limits, bounded backlog and display-paced
+presentation still apply. This is a best-effort browser workaround: background
+timer throttling or genuinely slow GPU work can still delay progress. The 2 ms
+value is a nominal inactivity threshold, not a guaranteed wake interval or
+completion deadline. The [HTML timer specification](https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#timers)
+clamps sufficiently nested short timers to at least 4 ms and does not guarantee
+exact delivery. Load, power management and visibility can extend waits further.
+Neither simulation correctness nor submission limits require timer precision.
+
+Completion bursts coalesce into one host wake; each wake drains all queued
+endpoints. Registering a host waker also wakes it for work already queued.
+For browser VSync presentation, one rAF may be reserved while a frame or submission
+capacity is still pending. The redraw callback rechecks GPU completion and capacity
+before camera/GUI/render preparation, retaining one prepared frame in flight.
+This avoids waiting until completion to reserve the next display opportunity.
+
+The [browser regression fixture](../tests/fixtures/web-completion/README.md)
+holds real completed-work notifications until a probe arrives and separately
+checks a 100 ms delay that probes cannot shorten, async capacity waits, ordered
+hooks, and timer cancellation on shutdown, Drop and device loss.
+
+Validation on 2026-11-07 passed all seven fixture cases in both the Window and
+Web Worker environments of Firefox 159 and Chrome 156 (28 cases). Chrome's
+prompt native completion case required no probes. Firefox's device-lost event
+itself arrived up to about 100 ms after `destroy`; retries stopped when that
+event was delivered. CPU tests cover inactivity and late/out-of-order endpoints.
+
+The final runtime was measured with an optimized temporary copy of
+granular-clock `65f9c60`, seeded with `StdRng::seed_from_u64(21)` so each run
+simulated the same particle trajectory. The original consumer repository was
+not changed. Each browser ran separately in a focused foreground popup on
+macOS 27/Apple GPU, with a 1280×720 physical canvas at DPR1, 1600 particles,
+0.4 ms Fixed ticks, max 4 ticks/wake, 1.6 ms backlog, 8 submission slots and
+Reactive + Vsync. After 5,000 warmup ticks, the next 10,000 ticks were measured.
+Two final-runtime runs in each browser, interleaved with timer prototypes,
+produced these ranges:
+
+| Browser | Simulation speed | Render submits/s | Completion mean (ms) | Completion p95 (ms) |
+| --- | ---: | ---: | ---: | ---: |
+| Chrome 156 | 0.548–0.559x | 141.9–142.4 | 4.88–4.98 | 5.44–5.51 |
+| Firefox 159 | 0.486–0.488x | 133.0–133.6 | 5.56–5.59 | 7.18–7.36 |
+
+These are host submission/notification timings, including actual GPU work,
+not GPU timestamps. All measured runs kept at most eight real submissions
+outstanding, prepared no frame before the previous frame completed, and
+reported no JavaScript errors. Both browsers used non-fallback adapters.
+Chrome's popup viewport was one CSS pixel shorter than Firefox's; physical
+canvas dimensions matched. Other foreground runs reached about 0.57x in Chrome,
+and Firefox throughput varied substantially between measurement sessions.
+These observations do not establish a portable speedup or Chrome parity.
+
+Shorter effective timer intervals and fewer completion callbacks were also
+tested in temporary runtime copies. Neither restored Firefox's simulation
+throughput to Chrome's, so those additional mechanisms were not adopted.
+The injected-delay fixture supplies the deterministic progress/backpressure
+regression check; elapsed milliseconds and FPS are environment-dependent
+observations. Physical refresh-rate switching and background-tab throughput
+were not measured.
+
+The change also passed 161 CPU tests, four Metal runtime integration tests, six
+doctests, strict native library Clippy, formatting and all 21 native/WASM feature
+configurations (including the new fixture). The pinned size fixture produced
+3,524,277 optimized WASM bytes and 1,443,048 gzip bytes, within its existing budgets.
+The native window smoke test subsequently passed in a user-run desktop session
+with VSync, 0.4 ms Fixed ticks and two submission slots: 892 ticks and 60 frames
+over 0.5064 s, advancing 0.3568 s of simulation within the wall-time bound.
+Pause/resume, reactive idle/redraw, exact scene/window captures and GPU value
+checks all passed. The earlier HTTP 503 from suspended window presentation did
+not recur in that run.
+
 ## Ordered composition and diagnostics
 
 `render_with` calls `prepare_render` and `render`, then invokes the supplied
