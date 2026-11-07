@@ -5,11 +5,16 @@ headless execution. Create pipelines, buffers, and bind groups directly through
 `mikage::wgpu`; the framework supplies application scheduling, presentation,
 cameras, rendering helpers, and optional egui and HTTP diagnostics.
 
-Mikage **0.8.0** uses **wgpu 30.0.1**, **egui 0.37.0**, **winit 0.30.13**, and
+Mikage **0.9.0** uses **wgpu 30.0.1**, **egui 0.37.0**, **winit 0.30.13**, and
 **glam 0.34** and requires **Rust 1.95+**. See the
 [0.7 → 0.8 migration guide](docs/migration-0.8.md) for the public math dependency
 change and the [0.5 → 0.6 migration guide](docs/migration-0.6.md) for earlier
 application lifecycle changes.
+
+When upgrading from 0.8, complete `RunConfig` struct literals must add
+`presentation_policy: mikage::PresentationPolicy::Immediate`; constructors and
+literals using `..Default::default()` continue to select that default. See
+[VSync presentation and the 0.9 configuration change](docs/runtime.md#independent-vsync-presentation).
 
 ## Quick start
 
@@ -205,6 +210,7 @@ the embedding application. See the [external surface migration notes](docs/migra
 | `present_mode` | `AutoVsync` | Presentation mode |
 | `sample_count` | 1 | MSAA sample count |
 | `redraw_policy` | `Continuous` | Continuous or reactive presentation |
+| `presentation_policy` | `Immediate` | Original scheduling, or VSync-paced frames with independent fixed ticks |
 | `simulation_policy` | `PerRedraw` | Per-redraw, fixed-step, or manual simulation |
 | `max_in_flight_submissions` | 8 | Bounded runtime queue capacity |
 | `init_logging` | `true` | Initialize tracing (`RUST_LOG` on native, browser console on WASM) |
@@ -243,6 +249,27 @@ The handle can be cloned into a background worker and wakes a sleeping runner
 without egui. Requests made during rendering schedule another frame. Reactive
 camera frames still follow `simulation_policy`; use `Manual` for a static viewer
 that should never tick automatically. See the [reactive rendering guide](docs/runtime.md#reactive-window-rendering).
+
+For a fixed simulation that continues between VSync frames, opt into
+`PresentationPolicy::Vsync` alongside `AutoVsync` (the default present mode):
+
+```rust
+let config = mikage::RunConfig::default()
+    .with_redraw_policy(mikage::RedrawPolicy::Reactive)
+    .with_presentation_policy(mikage::PresentationPolicy::Vsync)
+    .with_simulation_policy(mikage::SimulationPolicy::Fixed {
+        dt: std::time::Duration::from_micros(400),
+        max_ticks_per_wake: 4,
+        max_backlog: std::time::Duration::from_micros(1600),
+    });
+```
+
+Surface availability follows the display's VSync; no 60 Hz timer is imposed.
+Native surface acquisition runs on a worker so waiting for a drawable leaves the
+host free to schedule due ticks and handle input. GUI construction and rendering
+use the latest state once a frame is available. See
+[independent VSync presentation](docs/runtime.md#independent-vsync-presentation)
+for submission backpressure and platform behavior.
 
 ## Captures and agent HTTP API
 

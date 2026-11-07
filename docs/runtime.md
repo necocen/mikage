@@ -84,6 +84,92 @@ rendering or while the surface is suspended. A redraw respects submission
 capacity and does not introduce a tick in `Manual` mode. External/headless hosts
 continue to own their presentation scheduling.
 
+## Independent VSync presentation
+
+In 0.9, `RunConfig` gains the public `presentation_policy` field. When migrating
+an exhaustive struct literal from 0.8, add
+`presentation_policy: PresentationPolicy::Immediate`. Configurations built with
+constructors or `..Default::default()` select that value automatically.
+
+`RedrawPolicy` chooses what invalidates a window. `PresentationPolicy` chooses
+when that invalidation can become another frame. The default `Immediate` retains
+the original acquisition/submission behavior and supports uncapped present modes.
+Opt into `PresentationPolicy::Vsync` to let surface availability pace rendering
+while fixed simulation continues on its own wall clock:
+
+```rust
+use mikage::{PresentationPolicy, RedrawPolicy, RunConfig, SimulationPolicy, wgpu};
+use std::time::Duration;
+
+let config = RunConfig::default()
+    .with_present_mode(wgpu::PresentMode::AutoVsync)
+    .with_redraw_policy(RedrawPolicy::Reactive)
+    .with_presentation_policy(PresentationPolicy::Vsync)
+    .with_simulation_policy(SimulationPolicy::Fixed {
+        dt: Duration::from_micros(400),
+        max_ticks_per_wake: 4,
+        max_backlog: Duration::from_micros(1600),
+    });
+```
+
+The policy requires `AutoVsync`, `Fifo`, or `FifoRelaxed`; incompatible present
+modes return `RunError::InvalidConfig` before starting the event loop. It requests
+the backend's minimum supported presentation latency (desired maximum latency 1).
+There is no fixed refresh-rate timer or fixed ticks-per-frame ratio: changing
+between 60 Hz and 120 Hz leaves `dt`, the wall-time limit and catch-up limits
+unchanged. Slower CPU/GPU work or host timers can reduce simulation throughput.
+`Fixed` rendering never executes another tick; `PerRedraw` retains its documented
+one-tick-per-ordinary-redraw behavior, and `Manual` remains explicit.
+
+On native hosts, a single worker acquires the next surface texture and presents
+submitted frames. While acquisition waits for the presentation engine, the host
+continues fixed ticks, completion processing and input delivery. Tick, camera,
+app and GUI invalidations coalesce before GUI construction, `prepare_render` and
+`render`; OS-originated redraws also pass the same availability check. Application
+and camera hooks remain on the window thread, so apps need not implement `Send`.
+The worker holds at most one acquisition/present operation. At most one rendered
+frame is in flight in the runtime, in addition to the presentation engine's
+backend-dependent buffering; its successor renders the latest simulation state.
+
+Acquisition waits reserve no runtime submission slots. When a frame becomes
+available, one slot is reserved so continuous ticks cannot starve rendering.
+When capacity is exhausted, completion notifications wake the runner instead of
+polling an expired deadline. Native wgpu serializes `Queue::present` with submits;
+the host defers new tick/diagnostic submissions during that operation and resumes
+on the worker's notification, retaining only bounded wall-time backlog. Rendering
+and compute still share the device queue and GPU execution time. This policy
+does not guarantee real-time physics or GPU preemption of long render work.
+
+Resize/reconfiguration waits until acquired textures are released. Input and
+camera state update while acquisition is pending, and the next frame uses the
+new size/state. Paused apps still redraw; exact-tick diagnostic captures hold the
+simulation boundary until the requested frame is encoded. Suspended/occluded
+windows stop automatic work. Reactive idle has no presentation polling timer.
+On WASM, winit supplies display-aligned `requestAnimationFrame` events; the same
+coalescing and frame-in-flight bound apply without a native worker. Headless and
+explicit `AppRuntime::render` calls retain host-owned scheduling.
+
+The capture example can exercise this path, including minimal submission
+capacity and the issue's 0.4 ms clock:
+
+```sh
+cargo build --example agent_capture --features agent
+python3 tests/smoke_agent.py --vsync --tick-micros 400 --submission-slots 2
+```
+
+Validation on macOS/Metal passed 152 CPU tests, 37 rendering/compute tests,
+four headless runtime tests, six doctests, strict Clippy and the native/WASM
+feature matrix. A native run with two submission slots advanced 934 fixed
+0.4 ms ticks and submitted 44 frames in 0.507 seconds, representing 0.3736 seconds
+of simulated time. These are host submission counts, not measured scanout times.
+Both single-sample and 4x MSAA capture tests passed pause/resume, exact boundaries,
+reactive idle and explicit redraw. A separate native probe verified smooth zoom
+settling, resize/capture dimensions, minimize/restore, GUI repaints, all app hooks
+on the owner thread and no second render preparation before frame completion.
+It coalesced 200 app invalidations into one frame and used about 0.01 CPU seconds
+during 0.5 seconds of idle. WASM was compile-checked; other native window backends
+and physical refresh-rate switching were not exercised.
+
 ## Exact headless stepping
 
 Create the GPU and app without a window, then explicitly choose both tick count

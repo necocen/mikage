@@ -293,6 +293,12 @@ pub(super) fn pump<A: App>(
         let _ = fence.respond.send(response);
     }
     diagnostics.fences = pending_fences;
+    // wgpu serializes Queue::present with Queue::submit on native backends.
+    // Wait for the presentation worker's wake instead of blocking the host
+    // inside a diagnostic submission. CPU/input requests above remain responsive.
+    if state.presentation.presenting() {
+        return;
+    }
     for _ in 0..8 {
         process_boundaries(&mut state.runtime, diagnostics);
         if diagnostics.requires_frame(&state.runtime) {

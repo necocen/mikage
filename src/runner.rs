@@ -19,6 +19,10 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::{Window, WindowAttributes, WindowId};
 
+mod presentation;
+use presentation::Presentation;
+pub use presentation::PresentationPolicy;
+
 #[cfg(all(feature = "agent", not(target_family = "wasm")))]
 #[path = "runner/agent_driver.rs"]
 mod agent_driver;
@@ -145,6 +149,8 @@ pub struct RunConfig<C: InteractiveCamera = OrbitCamera> {
     pub init_logging: bool,
     pub canvas: Option<String>,
     pub redraw_policy: RedrawPolicy,
+    /// Frame availability/backpressure, independent of the simulation clock.
+    pub presentation_policy: PresentationPolicy,
     pub simulation_policy: SimulationPolicy,
     pub max_in_flight_submissions: usize,
     pub pixel_scroll_per_line: f32,
@@ -182,6 +188,7 @@ impl<C: InteractiveCamera> RunConfig<C> {
             init_logging: true,
             canvas: None,
             redraw_policy: RedrawPolicy::Continuous,
+            presentation_policy: PresentationPolicy::Immediate,
             simulation_policy: SimulationPolicy::PerRedraw,
             max_in_flight_submissions: 8,
             pixel_scroll_per_line: 50.0,
@@ -200,6 +207,7 @@ impl<C: InteractiveCamera> RunConfig<C> {
             init_logging: self.init_logging,
             canvas: self.canvas,
             redraw_policy: self.redraw_policy,
+            presentation_policy: self.presentation_policy,
             simulation_policy: self.simulation_policy,
             max_in_flight_submissions: self.max_in_flight_submissions,
             pixel_scroll_per_line: self.pixel_scroll_per_line,
@@ -230,6 +238,12 @@ impl<C: InteractiveCamera> RunConfig<C> {
     }
     pub fn with_redraw_policy(mut self, policy: RedrawPolicy) -> Self {
         self.redraw_policy = policy;
+        self
+    }
+    /// Selects display-paced presentation independently of simulation scheduling.
+    /// Vsync requires a VSync present mode and leaves fixed ticks on their own clock.
+    pub fn with_presentation_policy(mut self, policy: PresentationPolicy) -> Self {
+        self.presentation_policy = policy;
         self
     }
     pub fn with_simulation_policy(mut self, policy: SimulationPolicy) -> Self {
@@ -306,6 +320,16 @@ impl From<RuntimeError> for RunError {
 }
 
 fn validate_run_config<C: InteractiveCamera>(config: &RunConfig<C>) -> Result<(), RunError> {
+    if config.presentation_policy == PresentationPolicy::Vsync
+        && !matches!(
+            config.present_mode,
+            wgpu::PresentMode::AutoVsync | wgpu::PresentMode::Fifo | wgpu::PresentMode::FifoRelaxed
+        )
+    {
+        return Err(RunError::InvalidConfig(
+            "Vsync presentation requires a VSync present mode",
+        ));
+    }
     if config.max_in_flight_submissions < 2 {
         return Err(RunError::InvalidConfig(
             "window runtime requires at least two submission slots",
@@ -396,6 +420,8 @@ struct RunState<A: App> {
     input: InputState,
     touch_tracker: TouchTracker,
     redraw_policy: RedrawPolicy,
+    presentation: Presentation,
+    surface_dirty: bool,
     simulation_policy: SimulationPolicy,
     pointer_suppressed: bool,
     input_dirty: bool,
@@ -414,6 +440,55 @@ struct RunState<A: App> {
 }
 
 impl<A: App> RunState<A> {
+    fn request_frame(&mut self) -> Result<(), RuntimeError> {
+        if self.surface_dirty
+            || self
+                .presentation
+                .frame_in_flight(self.runtime.progress().completed_submissions)
+        {
+            return Ok(());
+        }
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(worker) = &mut self.presentation.worker {
+            if worker.busy() {
+                return Ok(());
+            }
+            if worker.ready.is_none() {
+                worker.acquire(
+                    self.surface
+                        .as_ref()
+                        .expect("active surface")
+                        .acquisition_handle(),
+                )?;
+                return Ok(());
+            }
+        }
+        if self.presentation.queue_redraw() {
+            self.window.request_redraw();
+        }
+        Ok(())
+    }
+
+    fn update_surface(&mut self) -> Result<(), RunError> {
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(worker) = &mut self.presentation.worker {
+            if worker.busy() {
+                return Ok(());
+            }
+            if self.surface_dirty || self.suspended || self.occluded {
+                worker.ready.take();
+            }
+        }
+        if self.surface_dirty {
+            self.surface
+                .as_mut()
+                .expect("active surface")
+                .resize(&self.runtime.gpu, self.surface_descriptor.size)?;
+            self.surface_dirty = false;
+        }
+        Ok(())
+    }
+
     fn before_camera_change(&mut self) {
         if self.redraw_policy == RedrawPolicy::Reactive {
             self.camera_clock
@@ -642,9 +717,10 @@ impl<A: App> AppHandler<A> {
             max_in_flight_submissions: config.max_in_flight_submissions,
         })?;
         let proxy = self.proxy.clone();
-        runtime.set_waker(Arc::new(move || {
+        let wake: crate::runtime::RuntimeWaker = Arc::new(move || {
             let _ = proxy.send_event(());
-        }));
+        });
+        runtime.set_waker(wake.clone());
         runtime
             .camera
             .set_viewport_size(surface.size().width, surface.size().height);
@@ -657,6 +733,8 @@ impl<A: App> AppHandler<A> {
             input: InputState::new(config.pixel_scroll_per_line),
             touch_tracker: TouchTracker::new(config.touch_pinch_sensitivity),
             redraw_policy: config.redraw_policy,
+            presentation: Presentation::new(config.presentation_policy, wake),
+            surface_dirty: false,
             simulation_policy: config.simulation_policy,
             pointer_suppressed: false,
             input_dirty: false,
@@ -679,6 +757,8 @@ impl<A: App> AppHandler<A> {
 
     fn shutdown(&mut self) {
         if let Some(state) = &mut self.state {
+            #[cfg(not(target_family = "wasm"))]
+            state.presentation.worker.take();
             state.runtime.shutdown();
         }
         #[cfg(all(feature = "agent", not(target_family = "wasm")))]
@@ -696,6 +776,21 @@ impl<A: App> AppHandler<A> {
         if let Some(state) = &mut self.state {
             if let Err(error) = state.runtime.poll_completions() {
                 self.fail(event_loop, error.into());
+                return;
+            }
+            #[cfg(not(target_family = "wasm"))]
+            if let Some(worker) = &mut state.presentation.worker {
+                match worker.poll() {
+                    Ok(Some(token)) => state.runtime.mark_presented(&token),
+                    Ok(None) => {}
+                    Err(error) => {
+                        self.fail(event_loop, error.into());
+                        return;
+                    }
+                }
+            }
+            if let Err(error) = state.update_surface() {
+                self.fail(event_loop, error);
                 return;
             }
             deliver_input(state);
@@ -727,11 +822,8 @@ impl<A: App> AppHandler<A> {
         }
         let delta = now.duration_since(state.last_schedule);
         state.last_schedule = now;
-        let active = !state
-            .surface
-            .as_ref()
-            .expect("active surface")
-            .is_suspended()
+        let active = state.surface_descriptor.size.width > 0
+            && state.surface_descriptor.size.height > 0
             && !state.occluded
             && !state.suspended;
         #[cfg(all(feature = "agent", not(target_family = "wasm")))]
@@ -751,7 +843,13 @@ impl<A: App> AppHandler<A> {
                 state.discarded_wall_time += accumulated.saturating_sub(max_backlog);
                 state.backlog = accumulated.min(max_backlog);
                 for _ in 0..max_ticks_per_wake {
-                    if state.backlog < dt || state.runtime.available_submission_slots() <= 1 {
+                    if state.presentation.presenting()
+                        || state.backlog < dt
+                        || state.runtime.available_submission_slots()
+                            <= state
+                                .presentation
+                                .tick_reserve(state.runtime.progress().completed_submissions)
+                    {
                         break;
                     }
                     #[cfg(all(feature = "agent", not(target_family = "wasm")))]
@@ -781,16 +879,32 @@ impl<A: App> AppHandler<A> {
             state.redraw_pending = true;
             state.gui_deadline = None;
         }
-        if active && state.redraw_pending && state.runtime.available_submission_slots() > 0 {
-            state.window.request_redraw();
+        if active
+            && state.redraw_pending
+            && state.runtime.available_submission_slots() > 0
+            && let Err(error) = state.request_frame()
+        {
+            self.fail(event_loop, error.into());
+            return;
         }
-        let mut deadline = if active { state.gui_deadline } else { None };
+        // Once dirty, the GUI is already waiting for the next usable surface.
+        // Do not keep waking on a GUI deadline while presentation/capacity blocks it.
+        let mut deadline = if active && !state.redraw_pending {
+            state.gui_deadline
+        } else {
+            None
+        };
         if active
             && automatic
+            && !state.presentation.presenting()
             && let SimulationPolicy::Fixed { dt, .. } = state.simulation_policy
         {
             // Completion notifications resume a full queue; do not busy-poll a past deadline.
-            if state.runtime.available_submission_slots() > 1 {
+            if state.runtime.available_submission_slots()
+                > state
+                    .presentation
+                    .tick_reserve(state.runtime.progress().completed_submissions)
+            {
                 let tick_deadline = now + dt.saturating_sub(state.backlog);
                 deadline = Some(deadline.map_or(tick_deadline, |d| d.min(tick_deadline)));
             }
@@ -815,6 +929,7 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
         }
         if let Some(state) = &mut self.state {
             state.suspended = false;
+            state.presentation.redraw_received();
             state.last_schedule = Instant::now();
             state.last_render = Instant::now();
             state.camera_clock = CameraClock::new(Instant::now());
@@ -889,6 +1004,13 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
             size: window.inner_size(),
             present_mode: config.present_mode,
             sample_count: config.sample_count,
+            desired_maximum_frame_latency: if config.presentation_policy
+                == PresentationPolicy::Vsync
+            {
+                1
+            } else {
+                2
+            },
             ..Default::default()
         };
         #[cfg(not(target_family = "wasm"))]
@@ -932,6 +1054,7 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
     fn suspended(&mut self, _: &ActiveEventLoop) {
         if let Some(state) = &mut self.state {
             state.suspended = true;
+            state.presentation.redraw_received();
             state.backlog = Duration::ZERO;
         }
     }
@@ -1133,6 +1256,7 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                 state.runtime.camera.on_drag_end();
             }
             WindowEvent::Focused(true) => {
+                state.presentation.redraw_received();
                 state.occluded = false;
                 state.redraw_pending = true;
                 state.last_schedule = Instant::now();
@@ -1140,6 +1264,7 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                 state.camera_clock = CameraClock::new(Instant::now());
             }
             WindowEvent::Occluded(value) => {
+                state.presentation.redraw_received();
                 state.occluded = value;
                 state.backlog = Duration::ZERO;
                 state.last_render = Instant::now();
@@ -1150,17 +1275,14 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                 }
             }
             WindowEvent::Resized(size) => {
+                state.presentation.redraw_received();
                 if size.width > 0 && size.height > 0 {
                     state.occluded = false;
                 }
                 state.surface_descriptor.size = size;
-                if let Err(err) = state
-                    .surface
-                    .as_mut()
-                    .expect("active surface")
-                    .resize(&state.runtime.gpu, size)
-                {
-                    self.fail(event_loop, err.into());
+                state.surface_dirty = true;
+                if let Err(err) = state.update_surface() {
+                    self.fail(event_loop, err);
                     return;
                 }
                 state
@@ -1175,6 +1297,8 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                 state.redraw_pending = true;
             }
             WindowEvent::RedrawRequested => {
+                state.presentation.redraw_received();
+                state.redraw_pending = true;
                 deliver_input(state);
                 if let Err(err) = render_frame(state) {
                     self.fail(event_loop, err);
@@ -1252,16 +1376,36 @@ fn render_frame<A: App>(state: &mut RunState<A>) -> Result<(), RunError> {
     {
         return Ok(());
     }
-    if state.runtime.available_submission_slots() == 0 {
+    if state.runtime.available_submission_slots() == 0
+        || state.surface_dirty
+        || state.presentation.presenting()
+        || state
+            .presentation
+            .frame_in_flight(state.runtime.progress().completed_submissions)
+    {
         state.redraw_pending = true;
         return Ok(());
     }
-    let (frame, suboptimal) = match state
+    #[cfg(not(target_family = "wasm"))]
+    let acquired = if let Some(worker) = &mut state.presentation.worker {
+        let Some(frame) = worker.ready.take() else {
+            return Ok(());
+        };
+        Some(frame)
+    } else {
+        state
+            .surface
+            .as_ref()
+            .expect("active surface")
+            .acquire_surface_texture()
+    };
+    #[cfg(target_family = "wasm")]
+    let acquired = state
         .surface
         .as_ref()
         .expect("active surface")
-        .acquire_surface_texture()
-    {
+        .acquire_surface_texture();
+    let (frame, suboptimal) = match acquired {
         Some(wgpu::CurrentSurfaceTexture::Success(frame)) => (frame, false),
         Some(wgpu::CurrentSurfaceTexture::Suboptimal(frame)) => (frame, true),
         Some(wgpu::CurrentSurfaceTexture::Outdated) => {
@@ -1408,16 +1552,27 @@ fn render_frame<A: App>(state: &mut RunState<A>) -> Result<(), RunError> {
         }
     })?;
     state.egui.finish(prepared);
-    state.runtime.gpu.queue.present(frame);
-    state.runtime.mark_presented(&token);
+    state.presentation.submitted(token.id);
+    if state.presentation.policy == PresentationPolicy::Vsync {
+        state.window.pre_present_notify();
+    }
+    #[cfg(not(target_family = "wasm"))]
+    if let Some(worker) = &mut state.presentation.worker {
+        worker.present(state.runtime.gpu.queue.clone(), frame, token.clone())?;
+    } else {
+        state.runtime.gpu.queue.present(frame);
+        state.runtime.mark_presented(&token);
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        state.runtime.gpu.queue.present(frame);
+        state.runtime.mark_presented(&token);
+    }
     #[cfg(all(feature = "agent", not(target_family = "wasm")))]
     state.diagnostics.after_frame_submit(&token);
     if suboptimal {
-        state
-            .surface
-            .as_mut()
-            .expect("active surface")
-            .reconfigure(&state.runtime.gpu)?;
+        state.surface_dirty = true;
+        state.update_surface()?;
     }
     let repaint = state.egui.repaint_after();
     state.gui_deadline = if repaint == Duration::MAX {
@@ -1565,6 +1720,7 @@ mod tests {
         assert_eq!(c.width, 1280);
         assert_eq!(c.height, 720);
         assert_eq!(c.simulation_policy, SimulationPolicy::PerRedraw);
+        assert_eq!(c.presentation_policy, PresentationPolicy::Immediate);
         assert_eq!(c.max_in_flight_submissions, 8);
     }
     #[test]
@@ -1573,10 +1729,43 @@ mod tests {
         let c = RunConfig::new("test")
             .with_size(10, 20)
             .with_simulation_policy(policy)
+            .with_presentation_policy(PresentationPolicy::Vsync)
             .with_camera(());
         assert_eq!(c.title, "test");
         assert_eq!(c.width, 10);
         assert_eq!(c.simulation_policy, policy);
+        assert_eq!(c.presentation_policy, PresentationPolicy::Vsync);
+    }
+
+    #[test]
+    fn vsync_rejects_tearing_or_mailbox_modes() {
+        for mode in [
+            wgpu::PresentMode::Immediate,
+            wgpu::PresentMode::AutoNoVsync,
+            wgpu::PresentMode::Mailbox,
+        ] {
+            let config = RunConfig::default()
+                .with_presentation_policy(PresentationPolicy::Vsync)
+                .with_present_mode(mode);
+            assert!(matches!(
+                validate_run_config(&config),
+                Err(RunError::InvalidConfig(_))
+            ));
+        }
+        for mode in [
+            wgpu::PresentMode::AutoVsync,
+            wgpu::PresentMode::Fifo,
+            wgpu::PresentMode::FifoRelaxed,
+        ] {
+            assert!(
+                validate_run_config(
+                    &RunConfig::default()
+                        .with_presentation_policy(PresentationPolicy::Vsync)
+                        .with_present_mode(mode)
+                )
+                .is_ok()
+            );
+        }
     }
 
     #[test]
