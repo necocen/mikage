@@ -84,6 +84,21 @@ rendering or while the surface is suspended. A redraw respects submission
 capacity and does not introduce a tick in `Manual` mode. External/headless hosts
 continue to own their presentation scheduling.
 
+## Touch input and GUI capture
+
+The window runner maps one camera-owned finger to drag and two to pinch/pan.
+A touch that starts on an egui panel or window belongs to the GUI, even before
+the next GUI frame processes the event. Moving that finger outside the GUI does
+not start a camera gesture. New touches use physical coordinates converted with
+the GUI's pixel scale and the last rendered layout.
+
+Starting a GUI touch or transferring mouse/trackpad input to egui cancels active
+camera touch gestures. Losing window focus or suspending the application does
+the same. Cancellation clears finger IDs and pinch/pan baselines; remaining
+moves from those fingers are ignored, and camera control resumes with fresh
+touch starts. Custom cameras receive `on_touch_drag_end` when an active touch
+gesture is cancelled.
+
 ## Independent VSync presentation
 
 In 0.9, `RunConfig` gains the public `presentation_policy` field. When migrating

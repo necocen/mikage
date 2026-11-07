@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## v0.9.2
+
+### Fixed
+
+- **Touch input after GUI interaction** — Prevent stale finger IDs from turning one-finger camera rotation into pinch/pan or disabling gestures after egui controls are touched. Hit-test new touches against the GUI layout before egui processes its queued input, retain camera ownership only for accepted touch starts, and discard orphan moves. Cancel active touch gestures and reset pinch/pan baselines when the GUI takes input, the window loses focus, or the application is suspended. Addresses [#25](https://github.com/necocen/mikage/issues/25). Public APIs and dependency versions are unchanged.
+
+### Validation
+
+- Pass 175 CPU tests, six doctests, strict Clippy and all 21 native/WASM feature configurations. Chrome 156 touch checks cover 12 cases across normal and 2x pixel scales: repeated GUI taps followed by one-/two-finger gestures, scene input queued behind stale GUI hover, GUI drags leaving the panel, cancellation, focus loss and GUI capture of an active scene gesture. iPhone hardware was not tested.
+
 ## v0.9.1
 
 ### Fixed
