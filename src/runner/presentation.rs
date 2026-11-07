@@ -1,5 +1,8 @@
 //! Bounded presentation work. Application hooks always stay on the host thread.
 
+use super::Instant;
+use std::time::Duration;
+
 /// Controls when the window runner prepares another frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PresentationPolicy {
@@ -18,6 +21,7 @@ pub(super) struct Presentation {
     pub policy: PresentationPolicy,
     redraw_queued: bool,
     last_submission: Option<u64>,
+    acquire_retry: Option<Instant>,
     #[cfg(not(target_family = "wasm"))]
     pub worker: Option<SurfaceWorker>,
 }
@@ -30,6 +34,7 @@ impl Presentation {
             policy,
             redraw_queued: false,
             last_submission: None,
+            acquire_retry: None,
             #[cfg(not(target_family = "wasm"))]
             worker: (policy == PresentationPolicy::Vsync).then(|| SurfaceWorker::new(wake)),
         }
@@ -57,6 +62,32 @@ impl Presentation {
 
     pub fn redraw_received(&mut self) {
         self.redraw_queued = false;
+    }
+
+    pub fn resumed(&mut self) {
+        self.redraw_received();
+        self.acquire_retry = None;
+    }
+
+    pub fn defer_acquire(&mut self, now: Instant) {
+        self.acquire_retry = Some(now + Duration::from_millis(16));
+    }
+
+    pub fn acquisition_deferred(&self, now: Instant) -> bool {
+        self.acquire_retry.is_some_and(|deadline| now < deadline)
+    }
+
+    pub fn retry_deadline(&self) -> Option<Instant> {
+        self.acquire_retry
+    }
+
+    pub fn take_retry(&mut self, now: Instant) -> bool {
+        if self.acquire_retry.is_some_and(|deadline| now >= deadline) {
+            self.acquire_retry = None;
+            true
+        } else {
+            false
+        }
     }
 
     pub fn presenting(&self) -> bool {
@@ -302,6 +333,38 @@ mod native {
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    #[test]
+    fn failed_acquisition_retries_once_without_a_past_deadline_spin() {
+        let mut presentation = Presentation::new(PresentationPolicy::Vsync, Arc::new(|| {}));
+        let now = Instant::now();
+        presentation.defer_acquire(now);
+        let retry = presentation.retry_deadline().unwrap();
+        // Extra redraw delivery cannot turn a surface failure into a busy loop.
+        presentation.redraw_received();
+        assert!(presentation.acquisition_deferred(retry - Duration::from_nanos(1)));
+        assert!(!presentation.take_retry(retry - Duration::from_nanos(1)));
+        assert!(!presentation.acquisition_deferred(retry));
+        assert!(presentation.take_retry(retry));
+        assert_eq!(presentation.retry_deadline(), None);
+        assert!(!presentation.take_retry(retry + Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn visibility_restoration_and_late_acquire_failure_preserve_gpu_fences() {
+        let mut presentation = Presentation::new(PresentationPolicy::Vsync, Arc::new(|| {}));
+        let now = Instant::now();
+        presentation.submitted(7);
+        presentation.defer_acquire(now);
+        presentation.resumed();
+        assert!(!presentation.acquisition_deferred(now));
+        // A worker can deliver an old Occluded result after a visible OS event.
+        // It only postpones another acquire; no persistent OS state is latched.
+        presentation.defer_acquire(now);
+        assert!(presentation.take_retry(presentation.retry_deadline().unwrap()));
+        assert!(presentation.frame_in_flight(6));
+        assert!(!presentation.frame_in_flight(7));
+    }
 
     #[test]
     fn ticks_keep_capacity_until_a_frame_is_ready_then_yield_to_rendering() {

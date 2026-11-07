@@ -96,6 +96,15 @@ impl CameraClock {
         dt
     }
 
+    fn advance_frame(&mut self, now: Instant, occluded: bool) -> Duration {
+        if occluded {
+            self.last_update = Some(now);
+            Duration::ZERO
+        } else {
+            self.advance(now)
+        }
+    }
+
     fn finish_frame(
         &mut self,
         policy: RedrawPolicy,
@@ -108,6 +117,23 @@ impl CameraClock {
         }
         keep_updating || repaint.is_zero()
     }
+}
+
+// A capture renders privately; only an ordinary frame consumes the window's
+// pending invalidation and GUI deadline.
+fn frame_requests(
+    capture: bool,
+    previous: (bool, Option<Instant>),
+    current: (bool, Option<Instant>),
+) -> (bool, Option<Instant>) {
+    if !capture {
+        return current;
+    }
+    let deadline = match (previous.1, current.1) {
+        (Some(old), Some(new)) => Some(old.min(new)),
+        (old, new) => old.or(new),
+    };
+    (previous.0 || current.0, deadline)
 }
 
 /// Simulation scheduling is independent of presentation scheduling.
@@ -441,7 +467,7 @@ struct RunState<A: App> {
 
 impl<A: App> RunState<A> {
     fn request_frame(&mut self) -> Result<(), RuntimeError> {
-        if self.surface_dirty {
+        if self.surface_dirty || self.presentation.acquisition_deferred(Instant::now()) {
             return Ok(());
         }
         // Browsers can reserve a display wake before the previous GPU frame
@@ -472,6 +498,16 @@ impl<A: App> RunState<A> {
             self.window.request_redraw();
         }
         Ok(())
+    }
+
+    #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+    fn capture_available(&self) -> bool {
+        !self.suspended
+            && !self
+                .surface
+                .as_ref()
+                .expect("active surface")
+                .is_suspended()
     }
 
     fn update_surface(&mut self) -> Result<(), RunError> {
@@ -814,6 +850,13 @@ impl<A: App> AppHandler<A> {
         if event_loop.exiting() {
             return;
         }
+        #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+        if state.diagnostics.requires_frame(&state.runtime)
+            && let Err(err) = render_frame(state)
+        {
+            self.fail(event_loop, err);
+            return;
+        }
         let now = Instant::now();
         if state.redraw_request.take_pending() {
             state.redraw_pending = true;
@@ -831,6 +874,9 @@ impl<A: App> AppHandler<A> {
             && state.surface_descriptor.size.height > 0
             && !state.occluded
             && !state.suspended;
+        if active && state.presentation.take_retry(now) {
+            state.redraw_pending = true;
+        }
         #[cfg(all(feature = "agent", not(target_family = "wasm")))]
         let automatic = state
             .diagnostics
@@ -903,6 +949,9 @@ impl<A: App> AppHandler<A> {
         } else {
             None
         };
+        if active && let Some(retry) = state.presentation.retry_deadline() {
+            deadline = Some(deadline.map_or(retry, |existing| existing.min(retry)));
+        }
         if active
             && automatic
             && !state.presentation.presenting()
@@ -938,7 +987,7 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
         }
         if let Some(state) = &mut self.state {
             state.suspended = false;
-            state.presentation.redraw_received();
+            state.presentation.resumed();
             state.last_schedule = Instant::now();
             state.last_render = Instant::now();
             state.camera_clock = CameraClock::new(Instant::now());
@@ -1265,7 +1314,7 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                 state.runtime.camera.on_drag_end();
             }
             WindowEvent::Focused(true) => {
-                state.presentation.redraw_received();
+                state.presentation.resumed();
                 state.occluded = false;
                 state.redraw_pending = true;
                 state.last_schedule = Instant::now();
@@ -1273,7 +1322,7 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                 state.camera_clock = CameraClock::new(Instant::now());
             }
             WindowEvent::Occluded(value) => {
-                state.presentation.redraw_received();
+                state.presentation.resumed();
                 state.occluded = value;
                 state.backlog = Duration::ZERO;
                 state.last_render = Instant::now();
@@ -1284,7 +1333,7 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                 }
             }
             WindowEvent::Resized(size) => {
-                state.presentation.redraw_received();
+                state.presentation.resumed();
                 if size.width > 0 && size.height > 0 {
                     state.occluded = false;
                 }
@@ -1375,91 +1424,113 @@ fn show_wasm_gpu_error(window: Option<&Window>, message: &str) {
 
 fn render_frame<A: App>(state: &mut RunState<A>) -> Result<(), RunError> {
     state.runtime.poll_completions()?;
+    #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+    let capture_due = state.diagnostics.requires_frame(&state.runtime);
+    #[cfg(not(all(feature = "agent", not(target_family = "wasm"))))]
+    let capture_due = false;
     if state
         .surface
         .as_ref()
         .expect("active surface")
         .is_suspended()
         || state.suspended
-        || state.occluded
+        || (state.occluded && !capture_due)
     {
         return Ok(());
     }
     if state.runtime.available_submission_slots() == 0
         || state.surface_dirty
         || state.presentation.presenting()
+        || (!capture_due && state.presentation.acquisition_deferred(Instant::now()))
         || state
             .presentation
             .frame_in_flight(state.runtime.progress().completed_submissions)
     {
-        state.redraw_pending = true;
+        if !capture_due {
+            state.redraw_pending = true;
+        }
         return Ok(());
     }
-    #[cfg(not(target_family = "wasm"))]
-    let acquired = if let Some(worker) = &mut state.presentation.worker {
-        let Some(frame) = worker.ready.take() else {
-            return Ok(());
-        };
-        Some(frame)
+    // Diagnostic frames have their own render target and do not need a visible
+    // swapchain. This also avoids waiting for an acquisition already in progress.
+    let (frame, suboptimal) = if capture_due {
+        tracing::debug!(occluded = state.occluded, "rendering capture offscreen");
+        (None, false)
     } else {
-        state
+        #[cfg(not(target_family = "wasm"))]
+        let acquired = if let Some(worker) = &mut state.presentation.worker {
+            let Some(frame) = worker.ready.take() else {
+                return Ok(());
+            };
+            Some(frame)
+        } else {
+            state
+                .surface
+                .as_ref()
+                .expect("active surface")
+                .acquire_surface_texture()
+        };
+        #[cfg(target_family = "wasm")]
+        let acquired = state
             .surface
             .as_ref()
             .expect("active surface")
-            .acquire_surface_texture()
-    };
-    #[cfg(target_family = "wasm")]
-    let acquired = state
-        .surface
-        .as_ref()
-        .expect("active surface")
-        .acquire_surface_texture();
-    let (frame, suboptimal) = match acquired {
-        Some(wgpu::CurrentSurfaceTexture::Success(frame)) => (frame, false),
-        Some(wgpu::CurrentSurfaceTexture::Suboptimal(frame)) => (frame, true),
-        Some(wgpu::CurrentSurfaceTexture::Outdated) => {
-            state
-                .surface
-                .as_mut()
-                .expect("active surface")
-                .reconfigure(&state.runtime.gpu)?;
-            state.redraw_pending = true;
-            return Ok(());
-        }
-        Some(wgpu::CurrentSurfaceTexture::Lost) => {
-            // DX12 allows only one swapchain for an HWND. Release the old
-            // surface before constructing/configuring its replacement.
-            drop(state.surface.take());
-            state.surface = Some(
+            .acquire_surface_texture();
+        match acquired {
+            Some(wgpu::CurrentSurfaceTexture::Success(frame)) => (Some(frame), false),
+            Some(wgpu::CurrentSurfaceTexture::Suboptimal(frame)) => (Some(frame), true),
+            Some(wgpu::CurrentSurfaceTexture::Outdated) => {
                 state
-                    .runtime
-                    .gpu
-                    .attach_surface(state.window.clone(), state.surface_descriptor.clone())?,
-            );
-            state.redraw_pending = true;
-            return Ok(());
-        }
-        Some(wgpu::CurrentSurfaceTexture::Validation) => {
-            return Err(RuntimeError::InvalidTarget.into());
-        }
-        Some(wgpu::CurrentSurfaceTexture::Occluded) => {
-            state.occluded = true;
-            state.redraw_pending = false;
-            return Ok(());
-        }
-        Some(wgpu::CurrentSurfaceTexture::Timeout) | None => {
-            state.redraw_pending = false;
-            state.gui_deadline = Some(Instant::now() + Duration::from_millis(16));
-            return Ok(());
+                    .surface
+                    .as_mut()
+                    .expect("active surface")
+                    .reconfigure(&state.runtime.gpu)?;
+                state.redraw_pending = true;
+                return Ok(());
+            }
+            Some(wgpu::CurrentSurfaceTexture::Lost) => {
+                // DX12 allows only one swapchain for an HWND. Release the old
+                // surface before constructing/configuring its replacement.
+                drop(state.surface.take());
+                state.surface = Some(
+                    state
+                        .runtime
+                        .gpu
+                        .attach_surface(state.window.clone(), state.surface_descriptor.clone())?,
+                );
+                state.redraw_pending = true;
+                return Ok(());
+            }
+            Some(wgpu::CurrentSurfaceTexture::Validation) => {
+                return Err(RuntimeError::InvalidTarget.into());
+            }
+            Some(wgpu::CurrentSurfaceTexture::Occluded) => {
+                // An older worker result must not overwrite a newer OS visibility
+                // event. Only WindowEvent::Occluded owns the persistent OS state.
+                state.presentation.defer_acquire(Instant::now());
+                state.redraw_pending = false;
+                return Ok(());
+            }
+            Some(wgpu::CurrentSurfaceTexture::Timeout) | None => {
+                state.redraw_pending = false;
+                state.presentation.defer_acquire(Instant::now());
+                return Ok(());
+            }
         }
     };
+    let display_dirty = state.redraw_pending;
+    let display_deadline = state.gui_deadline;
+    let camera_was_animating = state.runtime.camera.needs_redraw();
     let now = Instant::now();
-    let dt = now
-        .duration_since(state.last_render)
-        .min(Duration::from_millis(250));
+    let dt = if state.occluded {
+        Duration::ZERO
+    } else {
+        now.duration_since(state.last_render)
+            .min(Duration::from_millis(250))
+    };
     state.last_render = now;
     #[cfg(all(feature = "agent", not(target_family = "wasm")))]
-    let capture_only = state.diagnostics.requires_frame(&state.runtime)
+    let capture_only = capture_due
         || !state
             .diagnostics
             .permits_automatic_tick(state.runtime.progress().submitted_ticks);
@@ -1471,7 +1542,7 @@ fn render_frame<A: App>(state: &mut RunState<A>) -> Result<(), RunError> {
     {
         state.runtime.try_tick(dt)?;
     }
-    let camera_dt = state.camera_clock.advance(now);
+    let camera_dt = state.camera_clock.advance_frame(now, state.occluded);
     state.runtime.camera.update(camera_dt.as_secs_f32());
     let prepared = state.egui.build(&state.window, &mut state.runtime.app);
     let config = state
@@ -1480,12 +1551,14 @@ fn render_frame<A: App>(state: &mut RunState<A>) -> Result<(), RunError> {
         .expect("active surface")
         .render_target_config();
     let size = state.surface.as_ref().expect("active surface").size();
-    let surface_view = frame.texture.create_view(&wgpu::TextureViewDescriptor {
-        format: Some(config.color_format),
-        ..Default::default()
+    let surface_view = frame.as_ref().map(|frame| {
+        frame.texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(config.color_format),
+            ..Default::default()
+        })
     });
     #[cfg(all(feature = "agent", not(target_family = "wasm")))]
-    let capture_texture = if state.diagnostics.requires_frame(&state.runtime) {
+    let capture_texture = if capture_due {
         Some(
             state
                 .runtime
@@ -1502,9 +1575,7 @@ fn render_frame<A: App>(state: &mut RunState<A>) -> Result<(), RunError> {
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
                     format: config.color_format,
-                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                        | wgpu::TextureUsages::COPY_SRC
-                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
                     view_formats: &[],
                 }),
         )
@@ -1516,9 +1587,12 @@ fn render_frame<A: App>(state: &mut RunState<A>) -> Result<(), RunError> {
         .as_ref()
         .map(|t| t.create_view(&Default::default()));
     #[cfg(all(feature = "agent", not(target_family = "wasm")))]
-    let target_view = capture_view.as_ref().unwrap_or(&surface_view);
+    let target_view = capture_view
+        .as_ref()
+        .or(surface_view.as_ref())
+        .expect("frame target");
     #[cfg(not(all(feature = "agent", not(target_family = "wasm"))))]
-    let target_view = &surface_view;
+    let target_view = surface_view.as_ref().expect("surface frame target");
     let target = RenderTarget {
         view: state
             .surface
@@ -1551,31 +1625,26 @@ fn render_frame<A: App>(state: &mut RunState<A>) -> Result<(), RunError> {
         #[cfg(all(feature = "agent", not(target_family = "wasm")))]
         if let Some(texture) = &capture_texture {
             diagnostics.encode_frame_captures("window", ctx, texture, &checkpoint);
-            crate::blit::blit(
-                ctx.gpu,
-                ctx.encoder,
-                target_view,
-                &surface_view,
-                config.color_format,
-            );
         }
     })?;
     state.egui.finish(prepared);
     state.presentation.submitted(token.id);
-    if state.presentation.policy == PresentationPolicy::Vsync {
+    if frame.is_some() && state.presentation.policy == PresentationPolicy::Vsync {
         state.window.pre_present_notify();
     }
-    #[cfg(not(target_family = "wasm"))]
-    if let Some(worker) = &mut state.presentation.worker {
-        worker.present(state.runtime.gpu.queue.clone(), frame, token.clone())?;
-    } else {
-        state.runtime.gpu.queue.present(frame);
-        state.runtime.mark_presented(&token);
-    }
-    #[cfg(target_family = "wasm")]
-    {
-        state.runtime.gpu.queue.present(frame);
-        state.runtime.mark_presented(&token);
+    if let Some(frame) = frame {
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(worker) = &mut state.presentation.worker {
+            worker.present(state.runtime.gpu.queue.clone(), frame, token.clone())?;
+        } else {
+            state.runtime.gpu.queue.present(frame);
+            state.runtime.mark_presented(&token);
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            state.runtime.gpu.queue.present(frame);
+            state.runtime.mark_presented(&token);
+        }
     }
     #[cfg(all(feature = "agent", not(target_family = "wasm")))]
     state.diagnostics.after_frame_submit(&token);
@@ -1584,15 +1653,20 @@ fn render_frame<A: App>(state: &mut RunState<A>) -> Result<(), RunError> {
         state.update_surface()?;
     }
     let repaint = state.egui.repaint_after();
-    state.gui_deadline = if repaint == Duration::MAX {
+    let repaint_deadline = if repaint == Duration::MAX {
         None
     } else {
         Instant::now().checked_add(repaint)
     };
-    state.redraw_pending = state.camera_clock.finish_frame(
+    let redraw = state.camera_clock.finish_frame(
         state.redraw_policy,
         state.runtime.camera.needs_redraw(),
         repaint,
+    );
+    (state.redraw_pending, state.gui_deadline) = frame_requests(
+        capture_due,
+        (display_dirty || camera_was_animating, display_deadline),
+        (redraw, repaint_deadline),
     );
     Ok(())
 }
@@ -1600,6 +1674,52 @@ fn render_frame<A: App>(state: &mut RunState<A>) -> Result<(), RunError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_keeps_window_invalidations_until_an_ordinary_frame() {
+        let now = Instant::now();
+        let original = (true, Some(now + Duration::from_secs(2)));
+        let captured = frame_requests(true, original, (false, None));
+        assert_eq!(captured, original);
+        let earlier = now + Duration::from_secs(1);
+        let captured_again = frame_requests(true, captured, (false, Some(earlier)));
+        assert_eq!(captured_again, (true, Some(earlier)));
+        assert_eq!(
+            frame_requests(false, captured_again, (false, None)),
+            (false, None)
+        );
+        assert_eq!(
+            frame_requests(true, (false, None), (false, None)),
+            (false, None)
+        );
+    }
+
+    #[test]
+    fn hidden_captures_freeze_camera_animation_and_exclude_hidden_time() {
+        let mut camera = crate::Camera2d::default();
+        camera.zoom_smoothing = 0.2;
+        camera.on_scroll(1.0);
+        let start = Instant::now();
+        let mut clock = CameraClock::new(start);
+        let initial = camera.zoom;
+        for seconds in [1, 10, 60] {
+            camera.update(
+                clock
+                    .advance_frame(start + Duration::from_secs(seconds), true)
+                    .as_secs_f32(),
+            );
+            assert_eq!(camera.zoom, initial);
+        }
+        camera.update(
+            clock
+                .advance_frame(
+                    start + Duration::from_secs(60) + Duration::from_millis(16),
+                    false,
+                )
+                .as_secs_f32(),
+        );
+        assert!(camera.zoom > initial && camera.zoom < initial + 0.03);
+    }
 
     #[test]
     fn reactive_scroll_after_idle_animates_then_sleeps() {

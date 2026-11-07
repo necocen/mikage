@@ -232,15 +232,9 @@ pub(super) fn pump<A: App>(
             },
         }
     }
+    let capture_available = state.capture_available();
     let diagnostics = &mut state.diagnostics;
-    if state
-        .surface
-        .as_ref()
-        .expect("active surface")
-        .is_suspended()
-        || state.occluded
-        || state.suspended
-    {
+    if !capture_available {
         diagnostics.captures.retain(|pending| {
             if matches!(pending.request.target.as_str(), "window" | "scene") {
                 let _ = pending.respond.send(AgentResponse::unavailable(
@@ -301,9 +295,6 @@ pub(super) fn pump<A: App>(
     }
     for _ in 0..8 {
         process_boundaries(&mut state.runtime, diagnostics);
-        if diagnostics.requires_frame(&state.runtime) {
-            state.redraw_pending = true;
-        }
         let Some(run) = &mut diagnostics.run_until else {
             break;
         };
@@ -364,15 +355,7 @@ fn enqueue_capture<A: App>(
         ));
         return;
     }
-    if matches!(request.target.as_str(), "window" | "scene")
-        && (state
-            .surface
-            .as_ref()
-            .expect("active surface")
-            .is_suspended()
-            || state.suspended
-            || state.occluded)
-    {
+    if matches!(request.target.as_str(), "window" | "scene") && !state.capture_available() {
         let _ = respond.send(AgentResponse::unavailable(
             "window presentation is suspended; named resource capture remains available",
         ));
@@ -483,13 +466,7 @@ pub(super) fn publish<A: App>(bridge: &AgentBridge, state: &RunState<A>) {
         snapshot.elapsed = state.runtime.progress().elapsed;
         snapshot.progress = state.runtime.progress().clone();
         snapshot.discarded_wall_time = state.discarded_wall_time.as_secs_f64();
-        snapshot.screenshot_supported = !(state
-            .surface
-            .as_ref()
-            .expect("active surface")
-            .is_suspended()
-            || state.occluded
-            || state.suspended);
+        snapshot.screenshot_supported = state.capture_available();
         snapshot.camera = Some(state.runtime.camera.agent_snapshot());
         snapshot.app = state.runtime.app.agent_status();
         snapshot.capture_targets = targets

@@ -10,8 +10,6 @@
 #[cfg(all(feature = "agent", not(target_family = "wasm")))]
 pub mod agent;
 pub mod app;
-#[cfg(all(feature = "window", feature = "agent", not(target_family = "wasm")))]
-mod blit;
 pub mod camera;
 pub mod capture;
 pub mod context;
