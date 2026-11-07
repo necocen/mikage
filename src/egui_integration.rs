@@ -72,6 +72,15 @@ mod enabled {
         pub fn wants_pointer_input(&self) -> bool {
             self.ctx.egui_wants_pointer_input()
         }
+
+        pub fn touch_over_gui(&self, window: &Window, touch: &winit::event::Touch) -> bool {
+            let pixels_per_point = egui_winit::pixels_per_point(&self.ctx, window);
+            let pos = egui::pos2(
+                touch.location.x as f32 / pixels_per_point,
+                touch.location.y as f32 / pixels_per_point,
+            );
+            position_over_gui(&self.ctx, pos)
+        }
         pub fn repaint_after(&self) -> Duration {
             self.repaint_after
         }
@@ -152,6 +161,104 @@ mod enabled {
             prepared.output.textures_delta.clear();
         }
     }
+
+    // Match egui's is_pointer_over_egui, using this touch's position instead of
+    // the previous frame's pointer. The unused root area belongs to the scene;
+    // panels and foreground windows belong to the GUI.
+    pub(crate) fn position_over_gui(ctx: &egui::Context, pos: egui::Pos2) -> bool {
+        ctx.layer_id_at(pos).is_some_and(|layer| {
+            layer.order != egui::Order::Background
+                || ctx.viewport(|viewport| {
+                    // Include the final layout of end-pass GUI plugins, using
+                    // the same rectangle as egui's is_pointer_over_egui.
+                    viewport
+                        .this_pass
+                        .root_ui_available_rect
+                        .or(viewport.prev_pass.root_ui_available_rect)
+                        .is_none_or(|rect| !rect.contains(pos))
+                })
+        })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn frame(ctx: &egui::Context, events: Vec<egui::Event>) {
+            let output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1280.0, 720.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::Panel::right("controls")
+                        .exact_size(300.0)
+                        .show(ui, |ui| {
+                            let _ = ui.button("Control");
+                        });
+                    egui::Window::new("floating")
+                        .fixed_pos(egui::pos2(100.0, 100.0))
+                        .fixed_size(egui::vec2(200.0, 100.0))
+                        .show(ui.ctx(), |ui| {
+                            ui.label("Floating controls");
+                        });
+                },
+            );
+            output.drop_without_applying_deltas();
+        }
+
+        #[test]
+        fn first_touch_hit_test_distinguishes_gui_from_unused_scene() {
+            let ctx = egui::Context::default();
+            frame(&ctx, vec![]);
+            frame(&ctx, vec![]);
+            assert!(!ctx.egui_wants_pointer_input());
+            assert!(position_over_gui(&ctx, egui::pos2(1050.0, 28.0)));
+            assert!(position_over_gui(&ctx, egui::pos2(150.0, 130.0)));
+            assert!(!position_over_gui(&ctx, egui::pos2(520.0, 300.0)));
+            assert!(!position_over_gui(&ctx, egui::pos2(-10.0, -10.0)));
+        }
+
+        #[test]
+        fn touch_hit_test_uses_current_position_instead_of_previous_hover() {
+            let ctx = egui::Context::default();
+            frame(&ctx, vec![]);
+            frame(
+                &ctx,
+                vec![egui::Event::PointerMoved(egui::pos2(1050.0, 28.0))],
+            );
+            assert!(ctx.egui_wants_pointer_input());
+            assert!(!position_over_gui(&ctx, egui::pos2(520.0, 300.0)));
+            frame(
+                &ctx,
+                vec![egui::Event::PointerMoved(egui::pos2(520.0, 300.0))],
+            );
+            assert!(!ctx.egui_wants_pointer_input());
+            assert!(position_over_gui(&ctx, egui::pos2(1050.0, 28.0)));
+        }
+
+        #[test]
+        fn touch_hit_test_includes_end_pass_panels() {
+            let ctx = egui::Context::default();
+            ctx.on_end_pass(
+                "late panel",
+                Arc::new(|ui| {
+                    egui::Panel::left("late controls")
+                        .exact_size(200.0)
+                        .show(ui, |ui| {
+                            ui.label("Controls added after the app GUI callback");
+                        });
+                }),
+            );
+            frame(&ctx, vec![]);
+            assert!(position_over_gui(&ctx, egui::pos2(50.0, 500.0)));
+            assert!(!position_over_gui(&ctx, egui::pos2(520.0, 300.0)));
+        }
+    }
 }
 
 #[cfg(not(feature = "window-gui"))]
@@ -175,6 +282,9 @@ mod disabled {
             false
         }
         pub fn wants_pointer_input(&self) -> bool {
+            false
+        }
+        pub fn touch_over_gui(&self, _: &Window, _: &winit::event::Touch) -> bool {
             false
         }
         pub fn repaint_after(&self) -> Duration {
