@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Browser GPU completion progress** — Retry delayed WebGPU completion delivery with an empty queue submit after a nominal 2 ms of inactivity; browser timer clamping and throttling may extend the wait. Coalesce completion wakes and reserve browser VSync redraws before GPU capacity is available, while retaining one prepared frame in flight. Preserve actual GPU fences, tick/frame counters and bounded work independently of timer precision; cancel the retry timer after completion, device loss, shutdown or Drop. Covers window, async and offscreen runtimes. Addresses [#21](https://github.com/necocen/mikage/issues/21).
+
 ## v0.9.0
 
 ### Changed

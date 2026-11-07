@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WebGPU completion regression</title>
+<pre id="result">Running…</pre>
+<script type="module">
+  if (new URLSearchParams(location.search).has('worker')) {
+    const worker = new Worker(`./probe.js${location.search}`, { type: 'module' });
+    worker.onmessage = ({ data }) => {
+      globalThis.__webCompletionResult = data;
+      document.querySelector('#result').textContent = JSON.stringify(data, null, 2);
+      worker.terminate();
+    };
+    worker.onerror = event => {
+      globalThis.__webCompletionResult = { ok: false, errors: [event.message] };
+    };
+  } else {
+    import('./probe.js');
+  }
+</script>
