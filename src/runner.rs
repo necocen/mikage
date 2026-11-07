@@ -20,8 +20,11 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::window::{Window, WindowAttributes, WindowId};
 
 mod presentation;
+mod simulation;
 use presentation::Presentation;
 pub use presentation::PresentationPolicy;
+use simulation::AutomaticSimulation;
+pub use simulation::SimulationControl;
 
 #[cfg(all(feature = "agent", not(target_family = "wasm")))]
 #[path = "runner/agent_driver.rs"]
@@ -449,6 +452,7 @@ struct RunState<A: App> {
     presentation: Presentation,
     surface_dirty: bool,
     simulation_policy: SimulationPolicy,
+    automatic_simulation: AutomaticSimulation,
     pointer_suppressed: bool,
     input_dirty: bool,
     occluded: bool,
@@ -466,6 +470,27 @@ struct RunState<A: App> {
 }
 
 impl<A: App> RunState<A> {
+    fn apply_simulation_control(&mut self, now: Instant) -> bool {
+        let changed = self.automatic_simulation.apply_pending(
+            now,
+            &mut self.backlog,
+            &mut self.last_schedule,
+        );
+        self.redraw_pending |= changed;
+        changed
+    }
+
+    fn permits_automatic_tick(&self) -> bool {
+        #[cfg(all(feature = "agent", not(target_family = "wasm")))]
+        if !self
+            .diagnostics
+            .permits_automatic_tick(self.runtime.progress().submitted_ticks)
+        {
+            return false;
+        }
+        self.automatic_simulation.permits_tick()
+    }
+
     fn request_frame(&mut self) -> Result<(), RuntimeError> {
         if self.surface_dirty || self.presentation.acquisition_deferred(Instant::now()) {
             return Ok(());
@@ -813,6 +838,11 @@ impl<A: App> AppHandler<A> {
             let _ = redraw_proxy.send_event(());
         }));
         app.set_redraw_request(redraw_request.clone());
+        let simulation_proxy = self.proxy.clone();
+        let simulation_control = SimulationControl::new(Arc::new(move || {
+            let _ = simulation_proxy.send_event(());
+        }));
+        app.set_simulation_control(simulation_control.clone());
         let gui_proxy = self.proxy.clone();
         let egui = EguiIntegration::new(
             &window,
@@ -846,6 +876,7 @@ impl<A: App> AppHandler<A> {
             presentation: Presentation::new(config.presentation_policy, wake),
             surface_dirty: false,
             simulation_policy: config.simulation_policy,
+            automatic_simulation: AutomaticSimulation::new(simulation_control, Instant::now()),
             pointer_suppressed: false,
             input_dirty: false,
             occluded: false,
@@ -937,6 +968,7 @@ impl<A: App> AppHandler<A> {
                     .map_or(deadline, |existing| existing.min(deadline)),
             );
         }
+        state.apply_simulation_control(now);
         let delta = now.duration_since(state.last_schedule);
         state.last_schedule = now;
         let active = state.surface_descriptor.size.width > 0
@@ -946,12 +978,7 @@ impl<A: App> AppHandler<A> {
         if active && state.presentation.take_retry(now) {
             state.redraw_pending = true;
         }
-        #[cfg(all(feature = "agent", not(target_family = "wasm")))]
-        let automatic = state
-            .diagnostics
-            .permits_automatic_tick(state.runtime.progress().submitted_ticks);
-        #[cfg(not(all(feature = "agent", not(target_family = "wasm"))))]
-        let automatic = true;
+        let automatic = state.permits_automatic_tick();
         if active && automatic {
             if let SimulationPolicy::Fixed {
                 dt,
@@ -963,7 +990,9 @@ impl<A: App> AppHandler<A> {
                 state.discarded_wall_time += accumulated.saturating_sub(max_backlog);
                 state.backlog = accumulated.min(max_backlog);
                 for _ in 0..max_ticks_per_wake {
+                    state.apply_simulation_control(Instant::now());
                     if state.presentation.presenting()
+                        || !state.permits_automatic_tick()
                         || state.backlog < dt
                         || state.runtime.available_submission_slots()
                             <= state
@@ -972,19 +1001,13 @@ impl<A: App> AppHandler<A> {
                     {
                         break;
                     }
-                    #[cfg(all(feature = "agent", not(target_family = "wasm")))]
-                    if !state
-                        .diagnostics
-                        .permits_automatic_tick(state.runtime.progress().submitted_ticks)
-                    {
-                        break;
-                    }
-                    match state.runtime.try_tick(dt) {
-                        Ok(_) => {
+                    let control = &state.automatic_simulation.control;
+                    match state.runtime.try_tick_if(dt, || control.permits_tick()) {
+                        Ok(Some(_)) => {
                             state.backlog -= dt;
                             state.redraw_pending = true;
                         }
-                        Err(RuntimeError::WouldBlock) => break,
+                        Ok(None) | Err(RuntimeError::WouldBlock) => break,
                         Err(err) => {
                             self.fail(event_loop, err.into());
                             return;
@@ -995,6 +1018,9 @@ impl<A: App> AppHandler<A> {
         } else {
             state.backlog = Duration::ZERO;
         }
+        state.apply_simulation_control(Instant::now());
+        let now = now.max(state.last_schedule);
+        let automatic = state.permits_automatic_tick();
         if active && state.gui_deadline.is_some_and(|deadline| deadline <= now) {
             state.redraw_pending = true;
             state.gui_deadline = None;
@@ -1193,11 +1219,15 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
     fn exiting(&mut self, _: &ActiveEventLoop) {
         self.shutdown();
     }
+    // Native wakes use ApplicationHandler's no-op user_event. macOS drains user
+    // events before redraws and AboutToWait: ticking here can perpetually add
+    // completion events to that drain. AboutToWait schedules one bounded pass
+    // after winit has delivered the batch's window events.
+    #[cfg(target_family = "wasm")]
     fn user_event(&mut self, event_loop: &ActiveEventLoop, _: ()) {
         if self.first_error.is_some() || event_loop.exiting() {
             return;
         }
-        #[cfg(target_family = "wasm")]
         if let Some(pending) = self.pending_gpu.take() {
             let result = pending.slot.borrow_mut().take();
             if let Some(result) = result {
@@ -1496,6 +1526,7 @@ fn show_wasm_gpu_error(window: Option<&Window>, message: &str) {
 
 fn render_frame<A: App>(state: &mut RunState<A>) -> Result<(), RunError> {
     state.runtime.poll_completions()?;
+    state.apply_simulation_control(Instant::now());
     #[cfg(all(feature = "agent", not(target_family = "wasm")))]
     let capture_due = state.diagnostics.requires_frame(&state.runtime);
     #[cfg(not(all(feature = "agent", not(target_family = "wasm"))))]
@@ -1600,6 +1631,13 @@ fn render_frame<A: App>(state: &mut RunState<A>) -> Result<(), RunError> {
         now.duration_since(state.last_render)
             .min(Duration::from_millis(250))
     };
+    let tick_dt = if state.occluded {
+        Duration::ZERO
+    } else {
+        state
+            .automatic_simulation
+            .per_redraw_dt(now, state.last_render)
+    };
     state.last_render = now;
     #[cfg(all(feature = "agent", not(target_family = "wasm")))]
     let capture_only = capture_due
@@ -1610,10 +1648,15 @@ fn render_frame<A: App>(state: &mut RunState<A>) -> Result<(), RunError> {
     let capture_only = false;
     if state.simulation_policy == SimulationPolicy::PerRedraw
         && !capture_only
+        && state.permits_automatic_tick()
         && state.runtime.available_submission_slots() > 1
     {
-        state.runtime.try_tick(dt)?;
+        let control = &state.automatic_simulation.control;
+        state
+            .runtime
+            .try_tick_if(tick_dt, || control.permits_tick())?;
     }
+    state.apply_simulation_control(Instant::now());
     let camera_dt = state.camera_clock.advance_frame(now, state.occluded);
     state.runtime.camera.update(camera_dt.as_secs_f32());
     let prepared = state.egui.build(&state.window, &mut state.runtime.app);

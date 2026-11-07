@@ -116,6 +116,12 @@ pub trait App: 'static {
     #[cfg(feature = "window")]
     fn set_redraw_request(&mut self, _request: crate::runner::RedrawRequest) {}
 
+    /// Called once during window startup. Store the handle to pause or resume
+    /// automatic simulation while keeping input, rendering and GPU completion
+    /// processing active. Headless/external hosts own their tick scheduling.
+    #[cfg(feature = "window")]
+    fn set_simulation_control(&mut self, _control: crate::runner::SimulationControl) {}
+
     #[cfg(feature = "gui")]
     fn gui(&mut self, _ui: &mut egui::Ui) {}
 

@@ -7,10 +7,16 @@ mod demo {
     use mikage::wgpu::{self, util::DeviceExt};
     use mikage::{
         App, CaptureRegistry, CommandContext, GpuContext, ReadbackId, ReadbackMetadata,
-        ReadbackRing, RenderContext, TickContext,
+        ReadbackRing, RedrawRequest, RenderContext, RenderUpdateContext, SimulationControl,
+        SubmissionToken, TickContext,
     };
     use serde_json::{Value, json};
     use std::collections::HashMap;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
+    use std::time::{Duration, Instant};
 
     pub struct CaptureApp {
         values: wgpu::Buffer,
@@ -20,6 +26,20 @@ mod demo {
         completed_readbacks: HashMap<ReadbackId, mikage::ReadbackResult>,
         tick: u64,
         last_values: Vec<u32>,
+        cpu_tick_work: Duration,
+        command_probe: u64,
+        gui_input_count: u64,
+        simulation_control: Option<SimulationControl>,
+        control_installs: u64,
+        redraw_request: Option<RedrawRequest>,
+        pause_on_next_tick: bool,
+        pause_on_next_complete: bool,
+        pause_hook: Option<&'static str>,
+        pause_tick: Option<u64>,
+        resumed_at: Option<Instant>,
+        first_tick_delay_micros: Option<u128>,
+        worker_snapshot: Arc<AtomicU64>,
+        rendered_snapshot: u64,
     }
 
     impl CaptureApp {
@@ -66,6 +86,20 @@ mod demo {
                 completed_readbacks: HashMap::new(),
                 tick: 0,
                 last_values: Vec::new(),
+                cpu_tick_work: Duration::ZERO,
+                command_probe: 0,
+                gui_input_count: 0,
+                simulation_control: None,
+                control_installs: 0,
+                redraw_request: None,
+                pause_on_next_tick: false,
+                pause_on_next_complete: false,
+                pause_hook: None,
+                pause_tick: None,
+                resumed_at: None,
+                first_tick_delay_micros: None,
+                worker_snapshot: Arc::new(AtomicU64::new(0)),
+                rendered_snapshot: 0,
             }
         }
     }
@@ -75,12 +109,57 @@ mod demo {
 
         fn tick(&mut self, ctx: &mut TickContext<'_>) {
             self.tick = ctx.tick_id;
+            if let Some(resumed_at) = self.resumed_at.take() {
+                self.first_tick_delay_micros = Some(resumed_at.elapsed().as_micros());
+            }
+            if std::mem::take(&mut self.pause_on_next_tick) {
+                self.simulation_control.as_ref().unwrap().pause();
+                self.pause_hook = Some("tick");
+                self.pause_tick = Some(self.tick);
+            }
+            if !self.cpu_tick_work.is_zero() {
+                // Exercise CPU-only apps that take longer than the fixed dt.
+                // Leave the encoder empty: its fast completion can arrive
+                // during the next tick and wake the native event loop again.
+                let started = Instant::now();
+                let mut work = self.tick;
+                while started.elapsed() < self.cpu_tick_work {
+                    for _ in 0..256 {
+                        work = std::hint::black_box(work)
+                            .wrapping_mul(6364136223846793005)
+                            .wrapping_add(1);
+                    }
+                }
+                std::hint::black_box(work);
+                return;
+            }
             let mut pass = ctx
                 .encoder
                 .begin_compute_pass(&wgpu::ComputePassDescriptor::default());
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.dispatch_workgroups(1, 1, 1);
+        }
+
+        fn set_simulation_control(&mut self, control: SimulationControl) {
+            self.control_installs += 1;
+            self.simulation_control = Some(control);
+        }
+
+        fn set_redraw_request(&mut self, request: RedrawRequest) {
+            self.redraw_request = Some(request);
+        }
+
+        fn after_complete(&mut self, _gpu: &GpuContext, token: &SubmissionToken) {
+            if token.tick_id.is_some() && std::mem::take(&mut self.pause_on_next_complete) {
+                self.simulation_control.as_ref().unwrap().pause();
+                self.pause_hook = Some("after_complete");
+                self.pause_tick = Some(self.tick);
+            }
+        }
+
+        fn prepare_render(&mut self, _ctx: &mut RenderUpdateContext<'_, ()>) {
+            self.rendered_snapshot = self.worker_snapshot.load(Ordering::Acquire);
         }
 
         fn render(&mut self, ctx: &mut RenderContext<'_, ()>) {
@@ -109,6 +188,9 @@ mod demo {
                 self.last_values
             ));
             ui.label("Capture window/scene as PNG, or values as raw bytes.");
+            if !self.cpu_tick_work.is_zero() && ui.button("Input probe").clicked() {
+                self.gui_input_count += 1;
+            }
         }
 
         fn capture_targets(&self, registry: &mut CaptureRegistry) {
@@ -116,7 +198,72 @@ mod demo {
         }
 
         fn agent_status(&self) -> Value {
-            json!({"tick":self.tick,"last_values":self.last_values})
+            json!({"tick":self.tick,"last_values":self.last_values,
+                "cpu_tick_micros":self.cpu_tick_work.as_micros(),
+                "command_probe":self.command_probe,
+                "gui_input_count":self.gui_input_count,
+                "control_installs":self.control_installs,
+                "simulation_paused":self.simulation_control.as_ref().is_some_and(SimulationControl::is_paused),
+                "pause_hook":self.pause_hook,"pause_tick":self.pause_tick,
+                "first_tick_delay_micros":self.first_tick_delay_micros,
+                "worker_snapshot":self.worker_snapshot.load(Ordering::Acquire),
+                "rendered_snapshot":self.rendered_snapshot})
+        }
+
+        fn on_agent_command(&mut self, payload: Value) -> Result<Value, String> {
+            if let Some(micros) = payload.get("cpu_tick_micros") {
+                let micros = micros
+                    .as_u64()
+                    .filter(|micros| *micros <= 100_000)
+                    .ok_or("cpu_tick_micros must be between 0 and 100000")?;
+                self.cpu_tick_work = Duration::from_micros(micros);
+            }
+            if let Some(probe) = payload.get("probe") {
+                self.command_probe = probe.as_u64().ok_or("probe must be a u64")?;
+            }
+            if let Some(operation) = payload.get("simulation") {
+                let operation = operation.as_str().ok_or("simulation must be a string")?;
+                let control = self
+                    .simulation_control
+                    .as_ref()
+                    .ok_or("simulation control was not installed")?;
+                self.pause_on_next_tick = false;
+                self.pause_on_next_complete = false;
+                self.pause_hook = None;
+                self.pause_tick = None;
+                self.resumed_at = None;
+                match operation {
+                    "pause" => control.pause(),
+                    "resume" | "pause_on_tick" | "pause_on_complete" | "pause_resume" => {
+                        match operation {
+                            "pause_on_tick" => self.pause_on_next_tick = true,
+                            "pause_on_complete" => self.pause_on_next_complete = true,
+                            "pause_resume" => control.pause(),
+                            _ => {}
+                        }
+                        self.resumed_at = Some(Instant::now());
+                        self.first_tick_delay_micros = None;
+                        control.resume();
+                    }
+                    _ => return Err("unknown simulation operation".into()),
+                }
+            }
+            if let Some(snapshot) = payload.get("worker_snapshot") {
+                let revision = snapshot.as_u64().ok_or("worker_snapshot must be a u64")?;
+                let snapshot = self.worker_snapshot.clone();
+                let redraw = self
+                    .redraw_request
+                    .clone()
+                    .ok_or("redraw request was not installed")?;
+                std::thread::spawn(move || {
+                    // Let the command's own invalidation settle first, then
+                    // emulate a later CPU-worker result that only redraws.
+                    std::thread::sleep(Duration::from_millis(150));
+                    snapshot.store(revision, Ordering::Release);
+                    redraw.request_redraw();
+                });
+            }
+            Ok(self.agent_status())
         }
 
         fn encode_agent_command(
