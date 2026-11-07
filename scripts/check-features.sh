@@ -113,6 +113,7 @@ assert_http_isolation 'native default without agent' --features window-gui
 # harness for browsers. Compile portable libs plus browser binaries/examples.
 check 'WASM core' --target "$wasm_target" --no-default-features --lib
 check 'WASM async completion regression fixture' --manifest-path tests/fixtures/web-completion/Cargo.toml --target-dir target --target "$wasm_target" --lib
+check 'WASM simulation control regression fixture' --manifest-path tests/fixtures/simulation-control/Cargo.toml --target-dir target --target "$wasm_target" --lib
 check 'WASM window' --target "$wasm_target" --no-default-features --features window --lib
 check 'WASM GUI without window' --target "$wasm_target" --no-default-features --features gui --lib
 check 'WASM agent feature without native HTTP' --target "$wasm_target" --no-default-features --features agent --lib

@@ -84,6 +84,77 @@ rendering or while the surface is suspended. A redraw respects submission
 capacity and does not introduce a tick in `Manual` mode. External/headless hosts
 continue to own their presentation scheduling.
 
+## Pausing automatic simulation at runtime
+
+`App::set_simulation_control` receives a cloneable, thread-safe
+`SimulationControl` once at window startup, on native and WASM hosts. Store it
+alongside `RedrawRequest` to switch between automatic GPU ticks and an external
+CPU worker:
+
+```rust
+use mikage::{App, RedrawRequest, SimulationControl};
+
+#[derive(Default)]
+struct Simulation {
+    control: Option<SimulationControl>,
+    redraw: Option<RedrawRequest>,
+}
+
+impl App for Simulation {
+    type Camera = ();
+
+    fn set_simulation_control(&mut self, control: SimulationControl) {
+        self.control = Some(control);
+    }
+
+    fn set_redraw_request(&mut self, redraw: RedrawRequest) {
+        self.redraw = Some(redraw);
+    }
+}
+
+impl Simulation {
+    fn enter_worker_mode_after_readback(&self) {
+        self.control.as_ref().unwrap().pause();
+    }
+
+    fn show_worker_snapshot(&self) {
+        // Publish the worker's latest snapshot to host-owned application state
+        // first; prepare_render can upload it without advancing physics.
+        self.redraw.as_ref().unwrap().request_redraw();
+    }
+
+    fn return_to_gpu_after_upload(&self) {
+        self.control.as_ref().unwrap().resume();
+    }
+}
+```
+
+`pause()` stops automatic `Fixed` and `PerRedraw` ticks and the Fixed timer.
+It does not pause VSync presentation, GUI/camera animation, input, redraw requests,
+readback, or `after_complete` processing. A worker snapshot can therefore trigger
+only a render, without a polling tick or its empty encoder submission. Rendering
+still submits GPU work, and the browser completion-progress probe may still
+submit an empty queue while real GPU endpoints are outstanding.
+
+Requests wake a sleeping runner and apply between automatic ticks. A request from
+`on_input`, `gui`, `tick`, `after_submit`, or `after_complete` is handled before
+the next automatic tick starts; an already running tick finishes normally.
+Repeated requests coalesce. Even a pause followed by resume before the host
+handles either resets the simulation clock and backlog. Resume keeps the original
+policy, fixed `dt` and limits, starts with zero backlog, and excludes paused time
+from PerRedraw tick durations. Camera and presentation clocks remain independent.
+
+The handle controls only automatic work: `Manual`, explicit `AppRuntime` stepping
+and diagnostic stepping remain host-owned. An agent pause, exact-capture boundary,
+occlusion, or OS suspension can independently block automatic ticks; public
+`resume()` does not clear those stop reasons.
+
+`is_paused()` reports the requested application state, not a host acknowledgement
+or GPU fence. Keep GPU/CPU state transfer in the application's mode-switch state
+machine: finish GPU-to-CPU readback before requesting the pause and handing the
+snapshot to the worker; upload the returning CPU state before resuming GPU ticks.
+Pausing never cancels submitted work or waits for it to finish.
+
 ## Touch input and GUI capture
 
 The window runner maps one camera-owned finger to drag and two to pinch/pan.
@@ -154,6 +225,13 @@ the host defers new tick/diagnostic submissions during that operation and resume
 on the worker's notification, retaining only bounded wall-time backlog. Rendering
 and compute still share the device queue and GPU execution time. This policy
 does not guarantee real-time physics or GPU preemption of long render work.
+
+Native completion notifications wake the event loop without executing ticks in
+the user-event callback. The runner schedules one bounded pass in `about_to_wait`,
+after the event batch's window events. This lets redraws and input progress even
+when expensive CPU ticks submit empty GPU encoders whose completions arrive
+during the next tick. The tick limit applies to that scheduling pass; a single
+synchronous `App::tick` can still delay the host until it returns.
 
 Resize/reconfiguration waits until acquired textures are released. Input and
 camera state update while acquisition is pending, and the next frame uses the

@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## v0.9.3
+
+### Added
+
+- **Runtime simulation control** — Supply a cloneable `SimulationControl` through `App::set_simulation_control`. Pause/resume automatic Fixed or PerRedraw ticks without stopping VSync redraws, GUI, cameras, input or pending GPU completions. Paused Fixed modes stop their timer and per-tick empty submissions; resume clears backlog and excludes paused wall time. Explicit runtime/agent stepping and independent diagnostic pauses retain their behavior. Addresses [#28](https://github.com/necocen/mikage/issues/28).
+
+### Fixed
+
+- **Native event-loop fairness** — Defer completion-triggered scheduling to `about_to_wait` so repeated GPU completion notifications cannot keep CPU-heavy Fixed ticks inside macOS's user-event drain and starve redraws or input. Keep per-pass tick/backlog limits and browser scheduling unchanged. Addresses [#27](https://github.com/necocen/mikage/issues/27).
+
+### Validation
+
+- Pass 176 CPU tests, six doctests, strict Clippy and all 22 native/WASM configurations. Metal checks cover four GPU library tests and four runtime tests. Native window regressions cover expensive CPU-only ticks, presentation and GUI input, public pause/resume, Worker redraws, GPU transfers and independent diagnostic pauses. Chrome and Firefox pass Fixed, PerRedraw and Manual control cases. The native starvation regression fails against the original runner and passes with the fix. Locked optimized WASM remains within the existing budgets at 3,527,764 bytes raw and 1,445,251 bytes gzip.
+
 ## v0.9.2
 
 ### Fixed

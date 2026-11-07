@@ -9,7 +9,7 @@ Rust version. Action dependencies are pinned to commits and tracked by Renovate.
 | Job | Coverage |
 | --- | --- |
 | Format, lint and CPU tests | Formatting, strict library Clippy, library tests with `agent` enabled (excluding GPU tests), and doctests |
-| Features (Linux, Windows, macOS) | All 21 native/WASM configurations, GUI/HTTP dependency isolation, and opt-in WebGL backend checks in `scripts/check-features.sh`; macOS also compiles the external CAMetalLayer consumer |
+| Features (Linux, Windows, macOS) | All 22 native/WASM configurations, GUI/HTTP dependency isolation, and opt-in WebGL backend checks in `scripts/check-features.sh`; macOS also compiles the external CAMetalLayer consumer |
 | WASM size (WebGPU) | Fixed cube/camera/GUI application using default dependency features and WebGPU at runtime, final WASM and gzip byte limits; reports and runnable demo uploaded as artifacts |
 | GPU tests (Vulkan / Lavapipe) | GPU readback/capture library tests, offscreen rendering and image comparisons, compute results, and headless runtime/capture lifecycle |
 
@@ -47,6 +47,29 @@ bash scripts/check-features.sh
 MIKAGE_REQUIRE_GPU=1 cargo test --lib --features agent ::gpu_ -- --test-threads=1
 MIKAGE_REQUIRE_GPU=1 cargo test --features agent --test gpu --test runtime -- --test-threads=1
 ```
+
+The native scheduling regressions require a visible window and a working GPU:
+
+```sh
+cargo build --example agent_capture --features agent
+python3 tests/smoke_scheduler.py
+python3 tests/smoke_simulation_control.py
+python3 tests/smoke_simulation_control.py --per-redraw
+```
+
+The first switches to expensive CPU-only ticks with empty GPU encoders and checks
+that ordinary presentation and host commands keep progressing. The control tests
+cover idle pause, Worker snapshot redraws without ticks, GPU transfers and fences,
+independent diagnostic pauses, hook-triggered pauses and fresh resume timing.
+For native input, switch the example to CPU work with `app.command` payload
+`{"cpu_tick_micros":4000}`, click its **Input probe** button, and check that
+`app.gui_input_count` increases while presentation continues. HTTP commands alone
+do not exercise native pointer delivery.
+
+The [browser simulation-control fixture](../tests/fixtures/simulation-control/README.md)
+exercises Fixed, PerRedraw and Manual policies with real WebGPU, Worker snapshots
+and hook-triggered pauses. Its WASM build is included in the feature matrix;
+browser execution remains a separate local check.
 
 To use Lavapipe on Ubuntu, install `libvulkan1`, `mesa-vulkan-drivers`,
 `vulkan-tools`, and `ripgrep`, then select its driver before running the GPU

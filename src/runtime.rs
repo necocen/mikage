@@ -423,6 +423,24 @@ impl<A: App> AppRuntime<A> {
     /// Execute and submit one tick, or return `WouldBlock` before changing the app.
     pub fn try_tick(&mut self, dt: Duration) -> Result<SubmissionToken, RuntimeError> {
         self.ensure_capacity()?;
+        self.tick_with_capacity(dt)
+    }
+
+    /// Recheck host control after completion hooks have run, before app mutation.
+    #[cfg(feature = "window")]
+    pub(crate) fn try_tick_if(
+        &mut self,
+        dt: Duration,
+        permits_tick: impl FnOnce() -> bool,
+    ) -> Result<Option<SubmissionToken>, RuntimeError> {
+        self.ensure_capacity()?;
+        if !permits_tick() {
+            return Ok(None);
+        }
+        self.tick_with_capacity(dt).map(Some)
+    }
+
+    fn tick_with_capacity(&mut self, dt: Duration) -> Result<SubmissionToken, RuntimeError> {
         let tick_id = self.progress.encoded_ticks + 1;
         let elapsed = self.progress.elapsed + dt.as_secs_f64();
         let mut encoder = self
@@ -686,6 +704,67 @@ mod completion_signal_tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
     use std::task::Wake;
+
+    #[cfg(all(feature = "window", not(target_family = "wasm")))]
+    #[test]
+    fn gpu_automatic_tick_rechecks_control_after_completion_hooks() {
+        struct PausingApp {
+            permitted: Arc<AtomicBool>,
+            ticks: u64,
+        }
+        impl App for PausingApp {
+            type Camera = ();
+            fn tick(&mut self, _: &mut crate::TickContext<'_>) {
+                self.ticks += 1;
+            }
+            fn after_complete(&mut self, _: &GpuContext, _: &SubmissionToken) {
+                self.permitted.store(false, Ordering::Release);
+            }
+        }
+        let gpu = match pollster::block_on(GpuContext::headless(crate::GpuDescriptor::default())) {
+            Ok(gpu) => gpu,
+            Err(crate::GpuInitError::AdapterUnavailable(error))
+                if std::env::var_os("MIKAGE_REQUIRE_GPU").is_none() =>
+            {
+                eprintln!("Skipping GPU control test: {error}");
+                return;
+            }
+            Err(error) => panic!("GPU initialization failed: {error}"),
+        };
+        let permitted = Arc::new(AtomicBool::new(true));
+        let mut runtime = AppRuntime::new(
+            gpu,
+            PausingApp {
+                permitted: permitted.clone(),
+                ticks: 0,
+            },
+            (),
+        );
+        let dt = Duration::from_micros(400);
+        runtime.try_tick(dt).unwrap();
+        // Let the real completion worker enqueue its notification without
+        // draining it: try_tick_if's own capacity check must run the hook.
+        let started = std::time::Instant::now();
+        while !runtime.signal.host_pending.load(Ordering::Acquire) {
+            assert!(started.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(permitted.load(Ordering::Acquire));
+        assert!(
+            runtime
+                .try_tick_if(dt, || permitted.load(Ordering::Acquire))
+                .unwrap()
+                .is_none()
+        );
+        assert!(!permitted.load(Ordering::Acquire));
+        assert_eq!(runtime.app.ticks, 1);
+        assert_eq!(runtime.progress().completed_ticks, 1);
+        assert_eq!(runtime.progress().submitted_ticks, 1);
+        assert_eq!(runtime.progress().submitted_submissions, 1);
+        // Explicit stepping remains available even when the host is paused.
+        runtime.try_tick(dt).unwrap();
+        assert_eq!(runtime.app.ticks, 2);
+    }
 
     fn signal() -> (CompletionSignal, mpsc::Receiver<Completion>) {
         let (sender, receiver) = mpsc::channel();
