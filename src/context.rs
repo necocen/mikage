@@ -243,7 +243,7 @@ impl GpuContext {
         Self::initialize(instance, None, &descriptor).await
     }
     /// Selects a GPU for a safe surface target. Borrowed targets retain their
-    /// lifetime; owned targets such as Arc<Window> can produce a static surface.
+    /// lifetime; owned targets such as `Arc<Window>` can produce a static surface.
     ///
     /// ```compile_fail
     /// use mikage::{GpuContext, SurfaceContext, wgpu};

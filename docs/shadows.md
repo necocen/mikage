@@ -37,8 +37,8 @@ clip space: X/Y in `[-1, 1]`, Z in `[0, 1]`. Supply an orthographic projection
 and a light view looking toward the scene, with the eye on the side indicated
 by `SceneLighting::direction`. Choose bounds/near/far that contain the intended
 casters and receivers; positions outside the light volume are unshadowed.
-The example uses `glam::perspective::directx::orthographic` and
-`glam::view::look_at_mat4`. Texture Y conversion is handled by the receiver.
+The example uses `glam::camera::rh::proj::directx::orthographic` and
+`glam::camera::rh::view::look_at_mat4`. Texture Y conversion is handled by the receiver.
 
 - `resolution` defaults to 1024. Zero and values above device limits are errors.
 - `depth_bias` and `slope_bias` configure raster depth bias (defaults 2 and 2.0).

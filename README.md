@@ -451,8 +451,8 @@ be available to readback or named capture.
 Lightweight WGSL preprocessor that resolves `#import` directives:
 
 ```rust
+// Built-in mikage::* modules (such as mikage::scene_types) are pre-registered.
 let mut sp = ShaderProcessor::new();
-sp.register("mikage::scene_types", mikage::SCENE_TYPES_WGSL);
 sp.register("my_app::utils", include_str!("shaders/utils.wgsl"));
 let resolved = sp.resolve(include_str!("shaders/main.wgsl"))?;
 ```

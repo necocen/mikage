@@ -6,18 +6,45 @@
 //!
 //! # Example (default vertex)
 //!
-//! ```ignore
-//! let hex = mikage::RegularPolygonMesh::generate(6);
+//! ```no_run
+//! use mikage::{
+//!     GpuContext, InstanceData, InstanceRenderer, InstanceRendererConfig, RegularPolygonMesh,
+//!     RenderTargetConfig, SceneBinding, wgpu,
+//! };
+//! # fn example(
+//! #     gpu: &GpuContext,
+//! #     target: RenderTargetConfig,
+//! #     scene: &SceneBinding,
+//! #     instances: &[InstanceData],
+//! #     encoder: &mut wgpu::CommandEncoder,
+//! #     view: &wgpu::TextureView,
+//! # ) {
+//! let hex = RegularPolygonMesh::generate(6);
 //! let mut renderer = InstanceRenderer::new(
-//!     &ctx, scene.layout(),
-//!     &hex.positions, &hex.normals, &hex.indices,
+//!     gpu,
+//!     target,
+//!     scene.layout(),
+//!     &hex.positions,
+//!     &hex.normals,
+//!     &hex.indices,
 //!     InstanceRendererConfig::default_2d(),
 //! );
 //!
-//! renderer.update_instances(&device, &queue, &instances);
+//! renderer.update_instances(gpu, instances);
 //!
 //! // In render pass (scene bind group already set at group 0):
+//! # let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+//! #     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+//! #         view,
+//! #         resolve_target: None,
+//! #         depth_slice: None,
+//! #         ops: wgpu::Operations::default(),
+//! #     })],
+//! #     ..Default::default()
+//! # });
+//! pass.set_bind_group(0, scene.bind_group(), &[]);
 //! renderer.render(&mut pass);
+//! # }
 //! ```
 //!
 //! # Custom vertex types
@@ -25,7 +52,13 @@
 //! Implement [`InstanceVertex`] for your own type and use
 //! [`InstanceRenderer::with_shader`]:
 //!
-//! ```ignore
+//! ```no_run
+//! use bytemuck::{Pod, Zeroable};
+//! use mikage::{
+//!     GpuContext, InstanceRenderer, InstanceRendererConfig, InstanceVertex, RegularPolygonMesh,
+//!     RenderTargetConfig, SceneBinding, wgpu,
+//! };
+//!
 //! #[repr(C)]
 //! #[derive(Clone, Copy, Pod, Zeroable)]
 //! struct TileInstance {
@@ -42,12 +75,24 @@
 //!     }
 //! }
 //!
-//! let renderer = InstanceRenderer::<TileInstance>::with_shader(
-//!     &ctx, scene.layout(),
-//!     &mesh.positions, &mesh.normals, &mesh.indices,
-//!     &resolved_shader_source,
+//! # fn create(
+//! #     gpu: &GpuContext,
+//! #     target: RenderTargetConfig,
+//! #     scene: &SceneBinding,
+//! #     resolved_shader_source: &str,
+//! # ) -> InstanceRenderer<TileInstance> {
+//! let mesh = RegularPolygonMesh::generate(4);
+//! InstanceRenderer::<TileInstance>::with_shader(
+//!     gpu,
+//!     target,
+//!     scene.layout(),
+//!     &mesh.positions,
+//!     &mesh.normals,
+//!     &mesh.indices,
+//!     resolved_shader_source,
 //!     InstanceRendererConfig::default_2d(),
-//! );
+//! )
+//! # }
 //! ```
 
 use std::marker::PhantomData;

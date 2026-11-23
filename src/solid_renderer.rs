@@ -32,15 +32,35 @@
 //!
 //! # Example
 //!
-//! ```ignore
-//! let mut solid = SolidRenderer::new(&ctx, &scene_bind_group_layout);
+//! ```no_run
+//! use mikage::glam::{Mat4, Vec4};
+//! use mikage::{CubeMesh, GpuContext, RenderTargetConfig, SceneBinding, SolidRenderer, wgpu};
+//! # fn example(
+//! #     gpu: &GpuContext,
+//! #     target: RenderTargetConfig,
+//! #     scene: &SceneBinding,
+//! #     encoder: &mut wgpu::CommandEncoder,
+//! #     view: &wgpu::TextureView,
+//! # ) {
+//! let mut solid = SolidRenderer::new(gpu, target, scene.layout());
 //!
-//! let cube = mikage::CubeMesh::generate();
-//! let id = solid.add_object(&ctx, &cube.positions, &cube.normals, &cube.indices);
-//! solid.update_object(&ctx, id, Mat4::IDENTITY, Vec4::ONE);
+//! let cube = CubeMesh::generate();
+//! let id = solid.add_object(gpu, &cube.positions, &cube.normals, &cube.indices);
+//! solid.update_object(gpu, id, Mat4::IDENTITY, Vec4::ONE);
 //!
 //! // In render pass (scene bind group already set at group 0):
+//! # let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+//! #     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+//! #         view,
+//! #         resolve_target: None,
+//! #         depth_slice: None,
+//! #         ops: wgpu::Operations::default(),
+//! #     })],
+//! #     ..Default::default()
+//! # });
+//! pass.set_bind_group(0, scene.bind_group(), &[]);
 //! solid.render(&mut pass);
+//! # }
 //! ```
 
 use bytemuck::{Pod, Zeroable};
@@ -385,15 +405,12 @@ impl SolidRenderer {
         }
     }
 
-    /// Adds an object with the given mesh data.
+    /// Adds an object with the given mesh data and returns its handle.
     ///
     /// `positions` and `normals` must have the same length. They are
     /// interleaved into a single vertex buffer (position + normal per vertex).
-    /// Returns a [`SolidObjectId`] handle for later updates.
     ///
     /// The object starts with an identity model matrix and white color.
-    /// Registers a new mesh object and returns its handle.
-    ///
     /// Call [`update_object`](SolidRenderer::update_object) to set the
     /// actual transform and color.
     pub fn add_object(

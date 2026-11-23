@@ -9,7 +9,8 @@ use winit::keyboard::KeyCode;
 ///
 /// Events consumed by egui (e.g. keyboard input while a text field is focused,
 /// or pointer input over an egui window) are **not** reflected here. This
-/// ensures that `update()` and `on_window_event()` see a consistent,
+/// ensures that [`App::on_input`](crate::App::on_input) and
+/// [`App::on_window_event`](crate::App::on_window_event) see a consistent,
 /// egui-filtered view of input.
 ///
 /// `keys_pressed` / `mouse_buttons_pressed` contain keys/buttons that were
