@@ -9,6 +9,7 @@
 
 pub mod camera2d;
 pub mod orbit;
+mod velocity;
 
 pub use camera2d::Camera2d;
 pub use orbit::OrbitCamera;

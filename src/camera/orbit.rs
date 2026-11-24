@@ -1,9 +1,11 @@
 use glam::camera::rh::{proj::directx, view};
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Vec2, Vec3};
 
+use super::velocity::{DragVelocityTracker, REFERENCE_DT};
 use super::{Camera, InteractiveCamera};
 
 const MIN_ANGULAR_VELOCITY: f32 = 1e-6;
+const MIN_PAN_VELOCITY_SQUARED: f32 = 1e-12;
 
 /// 3D orbit camera that rotates around a target point.
 ///
@@ -46,7 +48,7 @@ pub struct OrbitCamera {
     pub max_distance: f32,
     pub min_pitch: f32,
     pub max_pitch: f32,
-    /// Damping factor for orbit inertia (0.0 = instant stop, 0.9 = smooth).
+    /// Damping factor for orbit and pan inertia (0.0 = instant stop, 0.9 = smooth).
     pub damping: f32,
 
     /// Whether camera input is enabled. Use [`set_enabled`](InteractiveCamera::set_enabled)
@@ -54,9 +56,12 @@ pub struct OrbitCamera {
     /// When disabled, input events are ignored but inertial motion continues.
     enabled: bool,
 
-    // Internal velocity state for damping
+    // Internal velocity state for damping (in units per 60fps reference frame)
     velocity_yaw: f32,
     velocity_pitch: f32,
+    velocity_pan: Vec3,
+    orbit_tracker: DragVelocityTracker<Vec2>,
+    pan_tracker: DragVelocityTracker<Vec3>,
     is_dragging: bool,
 }
 
@@ -81,6 +86,9 @@ impl Default for OrbitCamera {
             enabled: true,
             velocity_yaw: 0.0,
             velocity_pitch: 0.0,
+            velocity_pan: Vec3::ZERO,
+            orbit_tracker: DragVelocityTracker::default(),
+            pan_tracker: DragVelocityTracker::default(),
             is_dragging: false,
         }
     }
@@ -132,9 +140,14 @@ impl InteractiveCamera for OrbitCamera {
             self.yaw += dyaw;
             self.pitch += dpitch;
             self.pitch = self.pitch.clamp(self.min_pitch, self.max_pitch);
-            // Track velocity for damping
-            self.velocity_yaw = dyaw;
-            self.velocity_pitch = dpitch;
+            self.pan_tracker.cancel();
+            self.velocity_pan = Vec3::ZERO;
+            let velocity = self.orbit_tracker.record(
+                Vec2::new(dyaw, dpitch),
+                Vec2::new(self.velocity_yaw, self.velocity_pitch),
+            );
+            self.velocity_yaw = velocity.x;
+            self.velocity_pitch = velocity.y;
             self.is_dragging = true;
         } else if right || middle {
             // Pan
@@ -143,6 +156,10 @@ impl InteractiveCamera for OrbitCamera {
             let pan = right_vec * (-dx as f32 * self.pan_speed * self.distance)
                 + up_vec * (dy as f32 * self.pan_speed * self.distance);
             self.target += pan;
+            self.orbit_tracker.cancel();
+            self.velocity_yaw = 0.0;
+            self.velocity_pitch = 0.0;
+            self.velocity_pan = self.pan_tracker.record(pan, self.velocity_pan);
             self.is_dragging = true;
         }
     }
@@ -156,6 +173,13 @@ impl InteractiveCamera for OrbitCamera {
     }
 
     fn on_drag_end(&mut self) {
+        if let Some(velocity) = self.orbit_tracker.finish() {
+            self.velocity_yaw = velocity.x;
+            self.velocity_pitch = velocity.y;
+        }
+        if let Some(velocity) = self.pan_tracker.finish() {
+            self.velocity_pan = velocity;
+        }
         self.is_dragging = false;
     }
 
@@ -168,10 +192,10 @@ impl InteractiveCamera for OrbitCamera {
         // Velocities are per-reference-frame deltas (reference = 60fps).
         // Use exact geometric series to compute displacement over `factor`
         // reference frames, ensuring identical results at any frame rate.
-        if self.velocity_yaw.abs() > MIN_ANGULAR_VELOCITY
-            || self.velocity_pitch.abs() > MIN_ANGULAR_VELOCITY
-        {
-            const REFERENCE_DT: f32 = 1.0 / 60.0;
+        let has_orbit = self.velocity_yaw.abs() > MIN_ANGULAR_VELOCITY
+            || self.velocity_pitch.abs() > MIN_ANGULAR_VELOCITY;
+        let has_pan = self.velocity_pan.length_squared() > MIN_PAN_VELOCITY_SQUARED;
+        if has_orbit || has_pan {
             let factor = dt / REFERENCE_DT;
             let decay = self.damping.powf(factor);
             let movement_scale = if (1.0 - self.damping).abs() > 1e-6 {
@@ -179,12 +203,18 @@ impl InteractiveCamera for OrbitCamera {
             } else {
                 factor // limit as damping → 1.0
             };
-            self.yaw += self.velocity_yaw * movement_scale;
-            self.pitch += self.velocity_pitch * movement_scale;
-            self.pitch = self.pitch.clamp(self.min_pitch, self.max_pitch);
+            if has_orbit {
+                self.yaw += self.velocity_yaw * movement_scale;
+                self.pitch += self.velocity_pitch * movement_scale;
+                self.pitch = self.pitch.clamp(self.min_pitch, self.max_pitch);
 
-            self.velocity_yaw *= decay;
-            self.velocity_pitch *= decay;
+                self.velocity_yaw *= decay;
+                self.velocity_pitch *= decay;
+            }
+            if has_pan {
+                self.target += self.velocity_pan * movement_scale;
+                self.velocity_pan *= decay;
+            }
         }
     }
 
@@ -192,7 +222,8 @@ impl InteractiveCamera for OrbitCamera {
         self.damping > 0.0
             && !self.is_dragging
             && (self.velocity_yaw.abs() > MIN_ANGULAR_VELOCITY
-                || self.velocity_pitch.abs() > MIN_ANGULAR_VELOCITY)
+                || self.velocity_pitch.abs() > MIN_ANGULAR_VELOCITY
+                || self.velocity_pan.length_squared() > MIN_PAN_VELOCITY_SQUARED)
     }
 
     fn set_enabled(&mut self, enabled: bool) {
@@ -565,6 +596,73 @@ mod tests {
         let mut cam = OrbitCamera::default();
         cam.on_scroll(1.0);
         assert!(!cam.needs_redraw());
+    }
+
+    #[test]
+    fn pan_inertia_decays_and_requests_redraw_until_settled() {
+        let mut cam = OrbitCamera::default();
+        cam.damping = 0.9;
+        assert!(!cam.needs_redraw());
+
+        cam.on_mouse_drag(100.0, 50.0, false, true, false);
+        assert!(!cam.needs_redraw(), "drag input requests its own frames");
+        assert!(cam.velocity_pan.length_squared() > 0.0);
+
+        cam.on_drag_end();
+        assert!(cam.needs_redraw());
+
+        let target_after_drag = cam.target;
+        cam.update(1.0 / 60.0);
+        assert!(
+            (cam.target - target_after_drag).length() > 1e-5,
+            "target should continue moving due to pan inertia"
+        );
+
+        for _ in 0..300 {
+            if !cam.needs_redraw() {
+                break;
+            }
+            cam.update(1.0 / 60.0);
+        }
+        assert!(!cam.needs_redraw());
+        let settled = cam.target;
+        cam.update(1.0 / 60.0);
+        assert_eq!(cam.target, settled);
+    }
+
+    #[test]
+    fn pan_without_damping_stops_immediately() {
+        let mut cam = OrbitCamera::default();
+        cam.on_mouse_drag(100.0, 50.0, false, true, false);
+        cam.on_drag_end();
+        assert!(!cam.needs_redraw());
+        let target_after = cam.target;
+        cam.update(1.0 / 60.0);
+        assert_eq!(cam.target, target_after);
+    }
+
+    #[test]
+    fn switching_between_orbit_and_pan_clears_prior_mode_inertia() {
+        let mut cam = OrbitCamera::default();
+        cam.damping = 0.9;
+
+        cam.on_mouse_drag(100.0, 0.0, true, false, false);
+        cam.on_drag_end();
+        assert!(cam.velocity_yaw.abs() > MIN_ANGULAR_VELOCITY);
+
+        // Starting a pan must clear leftover orbit velocity so releasing pan
+        // does not resume the earlier spin.
+        cam.on_mouse_drag(50.0, 0.0, false, true, false);
+        cam.on_drag_end();
+        assert_eq!(cam.velocity_yaw, 0.0);
+        assert_eq!(cam.velocity_pitch, 0.0);
+        assert!(cam.velocity_pan.length_squared() > MIN_PAN_VELOCITY_SQUARED);
+
+        // Starting an orbit similarly clears leftover pan velocity.
+        cam.on_mouse_drag(50.0, 0.0, true, false, false);
+        cam.on_drag_end();
+        assert_eq!(cam.velocity_pan, Vec3::ZERO);
+        assert!(cam.velocity_yaw.abs() > MIN_ANGULAR_VELOCITY);
     }
 
     #[test]

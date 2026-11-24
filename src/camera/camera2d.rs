@@ -1,6 +1,7 @@
 use glam::camera::rh::proj::directx;
 use glam::{Mat4, Vec2, Vec3};
 
+use super::velocity::{DragVelocityTracker, REFERENCE_DT};
 use super::{Camera, InteractiveCamera};
 
 /// 2D orthographic camera with pan and zoom.
@@ -68,6 +69,7 @@ pub struct Camera2d {
 
     // Internal state
     velocity: Vec2,
+    pan_tracker: DragVelocityTracker<Vec2>,
     is_dragging: bool,
     /// Viewport width in physical pixels (updated via `set_viewport_size`).
     viewport_width: f32,
@@ -96,6 +98,7 @@ impl Default for Camera2d {
             zoom_smoothing: 0.0,
             enabled: true,
             velocity: Vec2::ZERO,
+            pan_tracker: DragVelocityTracker::default(),
             is_dragging: false,
             viewport_width: 1280.0,
             viewport_height: 720.0,
@@ -175,12 +178,6 @@ impl Camera for Camera2d {
     }
 }
 
-/// EMA retain factor for velocity smoothing during drag.
-/// Higher values weight previous velocity more, producing a smoother
-/// direction estimate at the cost of responsiveness.
-/// 0.5 gives a half-life of ~1 event — fast convergence while still
-/// smoothing out noisy final deltas on release.
-const VELOCITY_SMOOTHING: f32 = 0.5;
 const MIN_VELOCITY_SQUARED: f32 = 1e-12;
 
 impl InteractiveCamera for Camera2d {
@@ -196,11 +193,7 @@ impl InteractiveCamera for Camera2d {
             let world_per_px = 2.0 / (self.viewport_height * self.zoom);
             let delta = Vec2::new(-dx as f32 * world_per_px, dy as f32 * world_per_px);
             self.position += delta;
-            // Exponential moving average: smooths direction while preserving
-            // speed. When starting a drag during inertia, the existing velocity
-            // blends with the new drag deltas instead of resetting to zero,
-            // avoiding a stutter at the transition.
-            self.velocity = self.velocity * VELOCITY_SMOOTHING + delta * (1.0 - VELOCITY_SMOOTHING);
+            self.velocity = self.pan_tracker.record(delta, self.velocity);
         }
     }
 
@@ -253,12 +246,13 @@ impl InteractiveCamera for Camera2d {
     }
 
     fn on_drag_end(&mut self) {
+        if let Some(velocity) = self.pan_tracker.finish() {
+            self.velocity = velocity;
+        }
         self.is_dragging = false;
     }
 
     fn update(&mut self, dt: f32) {
-        const REFERENCE_DT: f32 = 1.0 / 60.0;
-
         // Smooth zoom animation (runs regardless of drag/damping state).
         if let Some(target) = self.target_zoom {
             // Keep the stopping tolerance independent of dt so a tiny first

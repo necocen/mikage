@@ -1212,11 +1212,17 @@ impl<A: App> ApplicationHandler for AppHandler<A> {
                         .on_pinch_pan(*delta as f32, 0.0, 0.0, None);
                 }
                 // Trackpad pan gesture (native)
-                WindowEvent::PanGesture { delta, .. } => {
+                WindowEvent::PanGesture { delta, phase, .. } => {
                     state
                         .runtime
                         .camera
                         .on_pinch_pan(0.0, delta.x as f64, delta.y as f64, None);
+                    if matches!(
+                        phase,
+                        winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled
+                    ) {
+                        state.runtime.camera.on_drag_end();
+                    }
                 }
                 _ => {}
             }
