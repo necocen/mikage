@@ -344,8 +344,10 @@ themselves. See the [HTTP API guide](docs/agent-http-api.md),
 
 ### SolidRenderer
 
-Construct renderers with `&GpuContext` and the destination's `RenderTargetConfig`.
-For example, `SolidRenderer::new(gpu, target, scene.layout())`.
+Construct renderers with `&GpuContext` and the destination's `RenderTargetConfig`,
+using either the convenience constructors or `SolidRenderer::builder(target, &scene)`
+(which accepts `&SceneBinding`, `&ColoredSceneBinding`, or `&wgpu::BindGroupLayout`
+and chains `.with_shadows(&shadow)`).
 
 Renders solid-colored meshes with per-object model matrix and RGBA color. Objects with alpha >= 1.0 use the lit (Lambert diffuse) pipeline; alpha < 1.0 uses the unlit pipeline.
 
@@ -415,12 +417,14 @@ impl InstanceVertex for TileInstance {
     }
 }
 
-// Use with a custom shader:
-let renderer = InstanceRenderer::<TileInstance>::with_shader(
-    gpu, target, scene.layout(),
+// Use with a custom shader (or InstanceRenderer::builder(...) for built-in InstanceData):
+let renderer = InstanceRenderer::<TileInstance>::builder_with_shader(
+    target, &scene,
     &mesh.positions, &mesh.normals, &mesh.indices,
-    &resolved_shader, config,
-);
+    &resolved_shader,
+)
+.with_config(config)
+.build(gpu);
 ```
 
 ## Compute shaders

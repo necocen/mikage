@@ -2724,3 +2724,113 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         }
     });
 }
+
+#[test]
+fn renderer_builders_support_standard_colored_and_shadowed_paths() {
+    gpu_test!(|gpu: GpuTest| {
+        let standard_scene = SceneBinding::new(&gpu.device);
+        standard_scene.update_lighting(
+            &gpu.queue,
+            mikage::SceneLighting {
+                direction: glam::Vec3::Z,
+                ambient_intensity: 0.25,
+                directional_intensity: 0.5,
+            },
+        );
+        let mut solid = SolidRenderer::builder(TARGET_CONFIG, &standard_scene).build(&gpu);
+        let id = lighting_object(&gpu, &mut solid);
+        solid.update_object(&gpu, id, glam::Mat4::IDENTITY, glam::Vec4::ONE);
+        let pixels = render_solid_scene(&gpu, LIGHT_SIZE, LIGHT_SIZE, &solid, &standard_scene);
+        assert_linear_pixel(&pixels, 8, 8, [0.75; 3]);
+
+        let colored_scene = mikage::ColoredSceneBinding::new(&gpu.device);
+        colored_scene.update_lighting(
+            &gpu.queue,
+            mikage::SceneLighting {
+                direction: glam::Vec3::Z,
+                ambient_intensity: 0.2,
+                directional_intensity: 0.8,
+            },
+        );
+        colored_scene.update_light_colors(
+            &gpu.queue,
+            mikage::SceneLightColors {
+                ambient: glam::Vec3::new(0.0, 0.5, 1.0),
+                directional: glam::Vec3::new(1.0, 0.25, 0.0),
+            },
+        );
+        let shadow = mikage::DirectionalShadow::new(
+            &gpu,
+            mikage::DirectionalShadowConfig {
+                resolution: 64,
+                enabled: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let mut colored_solid = SolidRenderer::builder(TARGET_CONFIG, &colored_scene)
+            .with_shadows(&shadow)
+            .build(&gpu);
+        let id = lighting_object(&gpu, &mut colored_solid);
+        colored_solid.update_object(&gpu, id, glam::Mat4::IDENTITY, glam::Vec4::ONE);
+
+        let mut instances = InstanceRenderer::builder(
+            TARGET_CONFIG,
+            &colored_scene,
+            &LIGHT_POSITIONS,
+            &LIGHT_NORMALS,
+            &LIGHT_INDICES,
+        )
+        .with_depth(true)
+        .with_storage_binding(false)
+        .with_shadows(&shadow)
+        .build(&gpu);
+        instances.update_instances(
+            &gpu,
+            &[InstanceData {
+                pos_scale: [0.0, 0.0, 0.0, 1.0],
+                color: [1.0; 4],
+            }],
+        );
+
+        let target = mikage::OffscreenTarget::new(
+            &gpu,
+            mikage::dpi::PhysicalSize::new(LIGHT_SIZE, LIGHT_SIZE),
+            TARGET_CONFIG,
+        )
+        .unwrap();
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        {
+            let mut pass = target_pass(&mut encoder, &target, wgpu::Color::BLACK);
+            pass.set_bind_group(0, colored_scene.bind_group(), &[]);
+            colored_solid.render(&mut pass);
+        }
+        gpu.queue.submit([encoder.finish()]);
+        let solid_pixels = readback_texture(
+            &gpu.device,
+            &gpu.queue,
+            target.texture(),
+            LIGHT_SIZE,
+            LIGHT_SIZE,
+        );
+        // Expected linear RGB: ambient 0.2*(0,0.5,1) + directional 0.8*(1,0.25,0) = (0.8, 0.3, 0.2)
+        assert_linear_pixel(&solid_pixels, 8, 8, [0.8, 0.3, 0.2]);
+
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        {
+            let mut pass = target_pass(&mut encoder, &target, wgpu::Color::BLACK);
+            pass.set_bind_group(0, colored_scene.bind_group(), &[]);
+            instances.render(&mut pass);
+        }
+        gpu.queue.submit([encoder.finish()]);
+        let inst_pixels = readback_texture(
+            &gpu.device,
+            &gpu.queue,
+            target.texture(),
+            LIGHT_SIZE,
+            LIGHT_SIZE,
+        );
+        assert_linear_pixel(&inst_pixels, 8, 8, [0.8, 0.3, 0.2]);
+    });
+}

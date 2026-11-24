@@ -11,6 +11,6 @@ pub use mesh::{
     RegularPolygonMesh,
 };
 pub use scene::{
-    ColoredSceneBinding, DEPTH_FORMAT, SceneBinding, SceneLightColors, SceneLighting, SceneUniform,
-    create_depth_texture,
+    ColoredSceneBinding, DEPTH_FORMAT, RendererScene, SceneBinding, SceneLightColors,
+    SceneLighting, SceneUniform, create_depth_texture,
 };

@@ -164,7 +164,73 @@ pub struct SolidRenderer {
     shadows: Option<SolidShadowPipelines>,
 }
 
+/// Builder for [`SolidRenderer`].
+///
+/// Unifies standard, colored-light, and shadowed construction without adding
+/// separate constructors per feature combination.
+///
+/// ```no_run
+/// use mikage::{
+///     ColoredSceneBinding, DirectionalShadow, GpuContext, RenderTargetConfig, SolidRenderer,
+/// };
+/// # fn create(
+/// #     gpu: &GpuContext,
+/// #     target: RenderTargetConfig,
+/// #     scene: &ColoredSceneBinding,
+/// #     shadow: &DirectionalShadow,
+/// # ) -> SolidRenderer {
+/// SolidRenderer::builder(target, scene)
+///     .with_shadows(shadow)
+///     .build(gpu)
+/// # }
+/// ```
+pub struct SolidRendererBuilder<'a> {
+    target: crate::RenderTargetConfig,
+    scene: crate::RendererScene<'a>,
+    shadows: Option<&'a crate::DirectionalShadow>,
+}
+
+impl<'a> SolidRendererBuilder<'a> {
+    /// Enables directional shadow casting and receiving using the given shadow map.
+    /// Unsupported shadow sampling falls back to ordinary lighting.
+    pub fn with_shadows(mut self, shadows: &'a crate::DirectionalShadow) -> Self {
+        self.shadows = Some(shadows);
+        self
+    }
+
+    /// Builds the [`SolidRenderer`].
+    pub fn build(self, gpu: &crate::GpuContext) -> SolidRenderer {
+        let lit_fragment = if self.scene.is_colored() {
+            "fragment_colored"
+        } else {
+            "fragment_lit"
+        };
+        SolidRenderer::create(
+            gpu,
+            self.target,
+            self.scene.layout(),
+            lit_fragment,
+            self.shadows,
+        )
+    }
+}
+
 impl SolidRenderer {
+    /// Starts a builder for [`SolidRenderer`].
+    ///
+    /// Accepts `&SceneBinding`, `&ColoredSceneBinding`, or `&wgpu::BindGroupLayout`.
+    /// Passing `&ColoredSceneBinding` automatically selects colored lighting.
+    pub fn builder<'a>(
+        target: crate::RenderTargetConfig,
+        scene: impl Into<crate::RendererScene<'a>>,
+    ) -> SolidRendererBuilder<'a> {
+        SolidRendererBuilder {
+            target,
+            scene: scene.into(),
+            shadows: None,
+        }
+    }
+
     /// Creates a new SolidRenderer.
     ///
     /// `scene_bind_group_layout` is the layout for `@group(0)` containing
@@ -175,7 +241,7 @@ impl SolidRenderer {
         target: crate::RenderTargetConfig,
         scene_bind_group_layout: &wgpu::BindGroupLayout,
     ) -> Self {
-        Self::create(gpu, target, scene_bind_group_layout, "fragment_lit", None)
+        Self::builder(target, scene_bind_group_layout).build(gpu)
     }
 
     /// Uses independent linear RGB light colors from a [`ColoredSceneBinding`](crate::ColoredSceneBinding).
@@ -186,7 +252,7 @@ impl SolidRenderer {
         target: crate::RenderTargetConfig,
         scene: &crate::ColoredSceneBinding,
     ) -> Self {
-        Self::create(gpu, target, scene.layout(), "fragment_colored", None)
+        Self::builder(target, scene).build(gpu)
     }
 
     /// Reuses each object's geometry and model buffer for casting/receiving.
@@ -197,7 +263,9 @@ impl SolidRenderer {
         scene_layout: &wgpu::BindGroupLayout,
         shadows: &crate::DirectionalShadow,
     ) -> Self {
-        Self::create(gpu, target, scene_layout, "fragment_lit", Some(shadows))
+        Self::builder(target, scene_layout)
+            .with_shadows(shadows)
+            .build(gpu)
     }
 
     /// Composes colored illumination and shadows; only directional light is masked.
@@ -207,13 +275,9 @@ impl SolidRenderer {
         scene: &crate::ColoredSceneBinding,
         shadows: &crate::DirectionalShadow,
     ) -> Self {
-        Self::create(
-            gpu,
-            target,
-            scene.layout(),
-            "fragment_colored",
-            Some(shadows),
-        )
+        Self::builder(target, scene)
+            .with_shadows(shadows)
+            .build(gpu)
     }
 
     fn create(

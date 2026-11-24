@@ -40,14 +40,15 @@ pub use context::*;
 pub use headless::*;
 pub use helpers::{
     ColoredSceneBinding, CubeMesh, DEPTH_FORMAT, IcoSphereMesh, MeshBuffers,
-    POSITION_NORMAL_LAYOUT, PlaneMesh, QuadMesh2d, RegularPolygonMesh, SceneBinding,
+    POSITION_NORMAL_LAYOUT, PlaneMesh, QuadMesh2d, RegularPolygonMesh, RendererScene, SceneBinding,
     SceneLightColors, SceneLighting, SceneUniform, UniformBuffer, create_compute_pipeline,
     create_depth_texture, create_storage_buffer_init, storage_buffer_entry, uniform_buffer_entry,
 };
 #[cfg(feature = "window")]
 pub use input::InputState;
 pub use instance_renderer::{
-    ComputeBufferState, InstanceData, InstanceRenderer, InstanceRendererConfig, InstanceVertex,
+    ComputeBufferState, InstanceData, InstanceRenderer, InstanceRendererBuilder,
+    InstanceRendererConfig, InstanceVertex,
 };
 pub use readback::*;
 #[cfg(all(feature = "window", feature = "agent", not(target_family = "wasm")))]
@@ -66,7 +67,9 @@ pub use shader_processor::{
 pub use shadows::{
     DirectionalShadow, DirectionalShadowConfig, ShadowError, ShadowFilter, ShadowOptions,
 };
-pub use solid_renderer::{ModelUniform, SolidObjectId, SolidRenderer, SolidShading};
+pub use solid_renderer::{
+    ModelUniform, SolidObjectId, SolidRenderer, SolidRendererBuilder, SolidShading,
+};
 pub use tonemap::{
     HDR_FORMAT, ToneMapOperator, ToneMapOutput, ToneMapSettings, ToneMapSource, ToneMapper,
 };
