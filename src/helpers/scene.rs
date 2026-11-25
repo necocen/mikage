@@ -426,6 +426,53 @@ impl ColoredSceneBinding {
     }
 }
 
+/// Scene `@group(0)` contract accepted by [`SolidRendererBuilder`](crate::SolidRendererBuilder)
+/// and [`InstanceRendererBuilder`](crate::InstanceRendererBuilder).
+///
+/// Pass `&SceneBinding`, `&ColoredSceneBinding`, or a raw `&wgpu::BindGroupLayout`.
+/// Passing `&ColoredSceneBinding` automatically selects the colored-light fragment
+/// shaders, keeping pipeline layouts matched to group 0 at compile time.
+#[derive(Clone, Copy)]
+pub enum RendererScene<'a> {
+    /// Standard `@group(0)` layout (`SceneUniform` at binding 0).
+    Standard(&'a wgpu::BindGroupLayout),
+    /// Colored-light `@group(0)` layout (`SceneUniform` at binding 0 + `LightColors` at binding 1).
+    Colored(&'a ColoredSceneBinding),
+}
+
+impl<'a> RendererScene<'a> {
+    /// Returns the underlying `@group(0)` bind group layout.
+    pub fn layout(&self) -> &'a wgpu::BindGroupLayout {
+        match self {
+            Self::Standard(layout) => layout,
+            Self::Colored(scene) => scene.layout(),
+        }
+    }
+
+    /// Returns `true` when this scene supplies independent RGB light colors.
+    pub fn is_colored(&self) -> bool {
+        matches!(self, Self::Colored(_))
+    }
+}
+
+impl<'a> From<&'a wgpu::BindGroupLayout> for RendererScene<'a> {
+    fn from(layout: &'a wgpu::BindGroupLayout) -> Self {
+        Self::Standard(layout)
+    }
+}
+
+impl<'a> From<&'a SceneBinding> for RendererScene<'a> {
+    fn from(scene: &'a SceneBinding) -> Self {
+        Self::Standard(scene.layout())
+    }
+}
+
+impl<'a> From<&'a ColoredSceneBinding> for RendererScene<'a> {
+    fn from(scene: &'a ColoredSceneBinding) -> Self {
+        Self::Colored(scene)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

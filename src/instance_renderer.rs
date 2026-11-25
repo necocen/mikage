@@ -220,7 +220,163 @@ pub struct ComputeBufferState<'a> {
     pub reallocated: bool,
 }
 
+/// Builder for [`InstanceRenderer`].
+///
+/// Unifies built-in 2D/3D, colored-light, shadowed, compute-storage, and custom-shader
+/// construction without multi-argument constructor combinations.
+///
+/// ```no_run
+/// use mikage::{
+///     ColoredSceneBinding, DirectionalShadow, GpuContext, IcoSphereMesh, InstanceRenderer,
+///     RenderTargetConfig,
+/// };
+/// # fn create(
+/// #     gpu: &GpuContext,
+/// #     target: RenderTargetConfig,
+/// #     scene: &ColoredSceneBinding,
+/// #     shadow: &DirectionalShadow,
+/// # ) -> InstanceRenderer {
+/// let sphere = IcoSphereMesh::generate(2);
+/// InstanceRenderer::builder(
+///     target,
+///     scene,
+///     &sphere.positions,
+///     &sphere.normals,
+///     &sphere.indices,
+/// )
+/// .with_storage_binding(true)
+/// .with_shadows(shadow)
+/// .build(gpu)
+/// # }
+/// ```
+pub struct InstanceRendererBuilder<'a, V: InstanceVertex = InstanceData> {
+    target: crate::RenderTargetConfig,
+    scene: crate::RendererScene<'a>,
+    positions: &'a [[f32; 3]],
+    normals: &'a [[f32; 3]],
+    indices: &'a [u32],
+    config: InstanceRendererConfig,
+    shader_source: Option<&'a str>,
+    shadows: Option<&'a crate::DirectionalShadow>,
+    _phantom: PhantomData<V>,
+}
+
+impl<'a, V: InstanceVertex> InstanceRendererBuilder<'a, V> {
+    /// Replaces the renderer configuration (for example `InstanceRendererConfig::default_2d()`).
+    pub fn with_config(mut self, config: InstanceRendererConfig) -> Self {
+        self.config = config;
+        self
+    }
+
+    /// Enables or disables depth testing and depth writes.
+    pub fn with_depth(mut self, depth: bool) -> Self {
+        self.config.depth = depth;
+        self
+    }
+
+    /// Adds `STORAGE` usage to the instance buffer for GPU compute writes.
+    pub fn with_storage_binding(mut self, storage_binding: bool) -> Self {
+        self.config.storage_binding = storage_binding;
+        self
+    }
+
+    /// Overrides the vertex and fragment shader entry points.
+    pub fn with_entry_points(
+        mut self,
+        vertex_entry: &'static str,
+        fragment_entry: &'static str,
+    ) -> Self {
+        self.config.vertex_entry = vertex_entry;
+        self.config.fragment_entry = fragment_entry;
+        self
+    }
+
+    /// Builds the [`InstanceRenderer`].
+    pub fn build(self, gpu: &crate::GpuContext) -> InstanceRenderer<V> {
+        if let Some(shader_source) = self.shader_source {
+            return InstanceRenderer::create(
+                gpu,
+                self.target,
+                self.scene.layout(),
+                self.positions,
+                self.normals,
+                self.indices,
+                shader_source,
+                self.config,
+                None,
+            );
+        }
+
+        let mut config = self.config;
+        if self.scene.is_colored() && config.fragment_entry == "fragment_lit" {
+            config.fragment_entry = "fragment_colored";
+        }
+        let shadows_supported = self
+            .shadows
+            .is_some_and(crate::DirectionalShadow::is_supported);
+        let mut source = SHADER_SOURCE.to_owned();
+        if config.fragment_entry == "fragment_colored" || shadows_supported {
+            source.push_str(include_str!(
+                "../assets/shaders/instancing_light_colors.wgsl"
+            ));
+        }
+        if shadows_supported {
+            source.push_str(include_str!("../assets/shaders/instancing_shadows.wgsl"));
+        }
+        let resolved = mikage_shader_processor()
+            .resolve(&source)
+            .expect("failed to resolve instancing shader imports");
+        InstanceRenderer::create(
+            gpu,
+            self.target,
+            self.scene.layout(),
+            self.positions,
+            self.normals,
+            self.indices,
+            &resolved,
+            config,
+            self.shadows,
+        )
+    }
+}
+
+impl<'a> InstanceRendererBuilder<'a, InstanceData> {
+    /// Enables directional shadow casting and receiving using the given shadow map.
+    ///
+    /// Applies to built-in instancing shaders created via [`InstanceRenderer::builder`].
+    /// Unsupported shadow sampling falls back to ordinary lighting.
+    pub fn with_shadows(mut self, shadows: &'a crate::DirectionalShadow) -> Self {
+        self.shadows = Some(shadows);
+        self
+    }
+}
+
 impl InstanceRenderer<InstanceData> {
+    /// Starts a builder for [`InstanceRenderer`] using the built-in instancing shader.
+    ///
+    /// Defaults to [`InstanceRendererConfig::default_3d()`]. Accepts `&SceneBinding`,
+    /// `&ColoredSceneBinding`, or `&wgpu::BindGroupLayout`; passing `&ColoredSceneBinding`
+    /// automatically selects colored lighting for lit entry points.
+    pub fn builder<'a>(
+        target: crate::RenderTargetConfig,
+        scene: impl Into<crate::RendererScene<'a>>,
+        positions: &'a [[f32; 3]],
+        normals: &'a [[f32; 3]],
+        indices: &'a [u32],
+    ) -> InstanceRendererBuilder<'a, InstanceData> {
+        InstanceRendererBuilder {
+            target,
+            scene: scene.into(),
+            positions,
+            normals,
+            indices,
+            config: InstanceRendererConfig::default_3d(),
+            shader_source: None,
+            shadows: None,
+            _phantom: PhantomData,
+        }
+    }
+
     /// Reuses the current instance buffer (including GPU-written data) for
     /// shadows. Alpha below one is discarded in the caster fragment shader.
     #[allow(clippy::too_many_arguments)]
@@ -234,29 +390,10 @@ impl InstanceRenderer<InstanceData> {
         indices: &[u32],
         config: InstanceRendererConfig,
     ) -> Self {
-        let mut shader = SHADER_SOURCE.to_owned();
-        if config.fragment_entry == "fragment_colored" || shadow.is_supported() {
-            shader.push_str(include_str!(
-                "../assets/shaders/instancing_light_colors.wgsl"
-            ));
-        }
-        if shadow.is_supported() {
-            shader.push_str(include_str!("../assets/shaders/instancing_shadows.wgsl"));
-        }
-        let source = mikage_shader_processor()
-            .resolve(&shader)
-            .expect("resolve instancing shader");
-        Self::create(
-            gpu,
-            target,
-            scene_layout,
-            positions,
-            normals,
-            indices,
-            &source,
-            config,
-            Some(shadow),
-        )
+        Self::builder(target, scene_layout, positions, normals, indices)
+            .with_config(config)
+            .with_shadows(shadow)
+            .build(gpu)
     }
 
     /// Composes RGB light colors and shadows. Bind the colored scene at group 0.
@@ -269,27 +406,20 @@ impl InstanceRenderer<InstanceData> {
         positions: &[[f32; 3]],
         normals: &[[f32; 3]],
         indices: &[u32],
-        mut config: InstanceRendererConfig,
+        config: InstanceRendererConfig,
     ) -> Self {
-        if config.fragment_entry == "fragment_lit" {
-            config.fragment_entry = "fragment_colored";
-        }
-        Self::with_shadows(
-            gpu,
-            target,
-            scene.layout(),
-            shadow,
-            positions,
-            normals,
-            indices,
-            config,
-        )
+        Self::builder(target, scene, positions, normals, indices)
+            .with_config(config)
+            .with_shadows(shadow)
+            .build(gpu)
     }
+
     /// Creates an `InstanceRenderer` using the built-in instancing shader.
     ///
     /// This is a convenience constructor for the default [`InstanceData`] layout
     /// (position + scale + color). For custom vertex types, use
-    /// [`with_shader`](InstanceRenderer::with_shader).
+    /// [`with_shader`](InstanceRenderer::with_shader) or
+    /// [`builder_with_shader`](InstanceRenderer::builder_with_shader).
     pub fn new(
         gpu: &crate::GpuContext,
         target: crate::RenderTargetConfig,
@@ -299,25 +429,9 @@ impl InstanceRenderer<InstanceData> {
         indices: &[u32],
         config: InstanceRendererConfig,
     ) -> Self {
-        let mut source = SHADER_SOURCE.to_owned();
-        if config.fragment_entry == "fragment_colored" {
-            source.push_str(include_str!(
-                "../assets/shaders/instancing_light_colors.wgsl"
-            ));
-        }
-        let resolved = mikage_shader_processor()
-            .resolve(&source)
-            .expect("failed to resolve instancing shader imports");
-        Self::with_shader(
-            gpu,
-            target,
-            scene_bind_group_layout,
-            positions,
-            normals,
-            indices,
-            &resolved,
-            config,
-        )
+        Self::builder(target, scene_bind_group_layout, positions, normals, indices)
+            .with_config(config)
+            .build(gpu)
     }
 
     /// Uses independent linear RGB light colors from a [`ColoredSceneBinding`](crate::ColoredSceneBinding).
@@ -333,34 +447,40 @@ impl InstanceRenderer<InstanceData> {
         positions: &[[f32; 3]],
         normals: &[[f32; 3]],
         indices: &[u32],
-        mut config: InstanceRendererConfig,
+        config: InstanceRendererConfig,
     ) -> Self {
-        if config.fragment_entry == "fragment_lit" {
-            config.fragment_entry = "fragment_colored";
-        }
-        let mut source = SHADER_SOURCE.to_owned();
-        if config.fragment_entry == "fragment_colored" {
-            source.push_str(include_str!(
-                "../assets/shaders/instancing_light_colors.wgsl"
-            ));
-        }
-        let resolved = mikage_shader_processor()
-            .resolve(&source)
-            .expect("failed to resolve instancing shader imports");
-        Self::with_shader(
-            gpu,
-            target,
-            scene.layout(),
-            positions,
-            normals,
-            indices,
-            &resolved,
-            config,
-        )
+        Self::builder(target, scene, positions, normals, indices)
+            .with_config(config)
+            .build(gpu)
     }
 }
 
 impl<V: InstanceVertex> InstanceRenderer<V> {
+    /// Starts a builder for [`InstanceRenderer`] using a custom import-resolved WGSL shader.
+    ///
+    /// Defaults to [`InstanceRendererConfig::default_3d()`]. Accepts `&SceneBinding`,
+    /// `&ColoredSceneBinding`, or `&wgpu::BindGroupLayout`.
+    pub fn builder_with_shader<'a>(
+        target: crate::RenderTargetConfig,
+        scene: impl Into<crate::RendererScene<'a>>,
+        positions: &'a [[f32; 3]],
+        normals: &'a [[f32; 3]],
+        indices: &'a [u32],
+        shader_source: &'a str,
+    ) -> InstanceRendererBuilder<'a, V> {
+        InstanceRendererBuilder {
+            target,
+            scene: scene.into(),
+            positions,
+            normals,
+            indices,
+            config: InstanceRendererConfig::default_3d(),
+            shader_source: Some(shader_source),
+            shadows: None,
+            _phantom: PhantomData,
+        }
+    }
+
     /// Creates an `InstanceRenderer` with a custom shader and vertex type.
     ///
     /// `shader_source` must be import-resolved WGSL. Use [`ShaderProcessor`](crate::ShaderProcessor)
@@ -379,17 +499,16 @@ impl<V: InstanceVertex> InstanceRenderer<V> {
         shader_source: &str,
         config: InstanceRendererConfig,
     ) -> Self {
-        Self::create(
-            gpu,
+        Self::builder_with_shader(
             target,
             scene_bind_group_layout,
             positions,
             normals,
             indices,
             shader_source,
-            config,
-            None,
         )
+        .with_config(config)
+        .build(gpu)
     }
 
     #[allow(clippy::too_many_arguments)]
