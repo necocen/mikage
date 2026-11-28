@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+## v0.9.4
+
+### Added
+
+- **Renderer builder API** — Add additive, backwards-compatible builders (`RendererScene`, `SolidRendererBuilder`, `InstanceRendererBuilder`) via `SolidRenderer::builder`, `InstanceRenderer::builder`, and `InstanceRenderer::builder_with_shader`. Passing `&ColoredSceneBinding` selects colored-light shaders automatically while preserving compile-time `@group(0)` layout safety; existing convenience constructors remain intact and delegate to the builders ([#40](https://github.com/necocen/mikage/pull/40)).
+- **Time-based camera inertia and `OrbitCamera` pan inertia** — Replace per-event drag velocity estimation with a 100 ms sliding-window, exponentially recency-weighted estimator shared by `Camera2d` and `OrbitCamera` (native `std::time::Instant` and WASM `web_time::Instant`, with no new dependencies). Release speeds now stay consistent across 60/120/240 Hz input rates, resist lift-off jitter, fade to zero when holding still before release, and compound momentum on rapid same-direction consecutive flicks. `OrbitCamera` right-drag / two-finger pan now also carries smooth inertia with reactive redraw tracking ([#38](https://github.com/necocen/mikage/pull/38)).
+
+### Changed
+
+- **Internal runner and agent modularization** — Extract touch gesture tracking into `runner/touch.rs` ([#37](https://github.com/necocen/mikage/pull/37)) and split `JobStore` and `AgentCaptureWorker` into `agent/jobs.rs` and `agent/capture.rs` ([#39](https://github.com/necocen/mikage/pull/39)), with no public API or dependency changes.
+
+### Fixed
+
+- **Trackpad pan gesture completion** — Call `on_drag_end()` when native `WindowEvent::PanGesture` finishes or is cancelled so pan inertia starts cleanly ([#38](https://github.com/necocen/mikage/pull/38)).
+- **Documentation and compile-checked doctests** — Convert ignored `SolidRenderer` and `InstanceRenderer` module doctests into compile-checked `no_run` examples updated to current signatures, fix the `rustdoc::invalid_html_tags` warning on `Arc<Window>` in `GpuContext::for_surface`, update stale `glam` 0.34 paths in `docs/shadows.md`, remove redundant `ShaderProcessor` module registration in `README.md`, and fix stale hook references in `InputState` docs ([#36](https://github.com/necocen/mikage/pull/36)).
+
+### Validation
+
+- All five merged PRs (#36–#40) passed all six CI jobs on GitHub Actions, covering formatting, strict library Clippy, 188 CPU tests, 11 doctests (`0` ignored), the 22-configuration Linux/Windows/macOS native/WASM feature matrix, the macOS external-surface consumer, Vulkan/Lavapipe GPU tests (including builder rendering checks), and locked WebGPU WASM size budgets. Public APIs and dependency versions remain compatible with 0.9.x.
+
 ## v0.9.3
 
 ### Added
